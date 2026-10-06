@@ -5468,6 +5468,8 @@ window.__ModuleLoader__.load({
         // 用 -10 盖过它；同一优先级会让官方那份注册直接报错（实测）
         ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark', priority: BRAND_PRIORITY }, BrandMark))
         ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name', priority: BRAND_PRIORITY }, BrandName))
+        // 新对话空白页标题前的标志（DSH 放的是官方的鲸鱼）
+        ctx.slots.inject('conversation.hero.brand.mark', () => ctx.slots.register({ name: 'conversation.hero.brand.mark', priority: BRAND_PRIORITY }, BrandMark))
       } catch (error) {
         console.warn('[vpssh] 品牌注册失败，沿用 DSH 默认', error)
         reportClientError('品牌注册失败', error)
