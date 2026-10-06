@@ -40,6 +40,13 @@ export function keyComment(name) {
 /** 检查（必要时生成）插件专用钥匙 */
 export async function ensureKey({ env = process.env, create = false, keyPath, passphrase = '' } = {}) {
   const p = paths(env)
+  if (p.agentKey && !keyPath) {
+    // 钥匙在 vpssh-keyd 那里：只读公钥，不生成也不碰私钥
+    const pubkey = (await readFile(p.defaultKey, 'utf8').catch(() => '')).trim()
+    if (!pubkey) return { path: p.defaultKey, pubkey: '', created: false, missing: true }
+    const res = await runProcess('ssh-keygen', ['-lf', p.defaultKey], { timeoutMs: 10_000 }).catch(() => null)
+    return { path: p.defaultKey, pubkey, created: false, fingerprint: res?.exitCode === 0 ? res.stdout.trim() : '', hasPassphrase: false, agent: true }
+  }
   const file = keyPath || p.defaultKey
   const pub = `${file}.pub`
   if (await exists(pub)) {

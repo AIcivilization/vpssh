@@ -1263,10 +1263,17 @@ function caddyReload() {
 /** 把新的 trusted host 持久化到 state/gate.env 与 state/config.json（供下次 systemd 启动与 status 展示）。 */
 function persistTrustedHost(domain) {
 	try {
-		const lines = [`GATE_HOME=${process.env.GATE_HOME || GATE_HOME}`, `DSH_BIN=${process.env.DSH_BIN || DSH_BIN}`];
-		if (process.env.DSH_HOME) lines.push(`DSH_HOME=${process.env.DSH_HOME}`);
+		// 只换 DSH_TRUSTED_HOST 这一行，其余（install.sh 写的本机 SSH 端口等）原样保留
+		const file = path.join(STATE_DIR, "gate.env");
+		let lines = [];
+		try {
+			lines = fs.readFileSync(file, "utf8").split("\n").filter((l) => l && !l.startsWith("DSH_TRUSTED_HOST="));
+		} catch {
+			lines = [`GATE_HOME=${process.env.GATE_HOME || GATE_HOME}`, `DSH_BIN=${process.env.DSH_BIN || DSH_BIN}`];
+			if (process.env.DSH_HOME) lines.push(`DSH_HOME=${process.env.DSH_HOME}`);
+		}
 		lines.push(`DSH_TRUSTED_HOST=${domain}`);
-		fs.writeFileSync(path.join(STATE_DIR, "gate.env"), lines.join("\n") + "\n", { mode: 0o600 });
+		fs.writeFileSync(file, lines.join("\n") + "\n", { mode: 0o600 });
 	} catch (err) {
 		log(`warn: persist gate.env failed: ${err.message}`);
 	}

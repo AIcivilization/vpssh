@@ -73,7 +73,9 @@ export function paths(env = process.env) {
     sshConfig: join(home, '.ssh', 'config'),
     sshDropinDir: join(home, '.ssh', 'config.d'),
     sshDropin: join(home, '.ssh', 'config.d', 'vpssh.conf'),
-    defaultKey: join(home, '.ssh', 'vpssh_ed25519'),
+    // 装在服务器上时，私钥由 vpssh-keyd 保管（插件读不到），这里只有公钥：ssh 用它挑 agent 里的钥匙
+    defaultKey: env.VPSSH_KEY_PUB?.trim() ? resolve(env.VPSSH_KEY_PUB.trim()) : join(home, '.ssh', 'vpssh_ed25519'),
+    agentKey: Boolean(env.VPSSH_KEY_PUB?.trim()),
   }
 }
 
@@ -451,6 +453,9 @@ function hostBlock({ alias, hostname, port, user, identityFile, proxyJump, note 
   if (identityFile) {
     lines.push(`  IdentityFile ${sshConfigPath(identityFile)}`)
     lines.push('  IdentitiesOnly yes')
+    // 只给了公钥 = 私钥在 vpssh-keyd 那里：明确走 SSH_AUTH_SOCK。系统的 ssh_config 可能把 IdentityAgent
+    // 指到别处（实测 OrbStack 就会），用户配置先读、先生效，写在这里就不受它影响
+    if (String(identityFile).endsWith('.pub')) lines.push('  IdentityAgent SSH_AUTH_SOCK')
   }
   if (proxyJump) lines.push(`  ProxyJump ${proxyJump}`)
   return `${lines.join('\n')}\n`

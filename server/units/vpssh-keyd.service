@@ -1,0 +1,43 @@
+# vpssh-keyd systemd unit 模板
+# install.sh 将 __NODE_BIN__ 替换为实际 node 路径后安装到 /etc/systemd/system/vpssh-keyd.service
+#
+# 替 vpssh 保管 SSH 私钥（见 keyd/keyd.js）。私钥在 /var/lib/vpssh-keys，只有 vpssh-keys 用户能读；
+# vpssh 用户经 /run/vpssh-keys/agent.sock 请它签名登录。socket 属组 vpssh（Group=），目录 0750。
+
+[Unit]
+Description=vpssh key holder (signs SSH logins; the private key never leaves this service)
+Before=vpssh.service
+
+[Service]
+Type=simple
+User=vpssh-keys
+Group=vpssh
+ExecStart=__NODE_BIN__ /opt/vpssh/keyd/keyd.js
+Restart=always
+RestartSec=1
+UMask=0027
+RuntimeDirectory=vpssh-keys
+RuntimeDirectoryMode=0750
+StateDirectory=vpssh-keys
+StateDirectoryMode=0755
+
+# 只做签名：不需要网络、不需要写系统里别的地方
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+ProtectProc=invisible
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

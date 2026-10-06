@@ -119,7 +119,7 @@ trap 'warn "安装失败（行 ${LINENO}），可用 journalctl -u vpssh -n 50 �
 REINSTALL=0
 
 step1_prechecks() {
-	log "步骤 1/10：前置检查"
+	log "步骤 1/11：前置检查"
 	[[ $EUID -eq 0 ]] || die "请用 root 运行（sudo bash install.sh ...）"
 	command -v curl >/dev/null 2>&1 || { apt-get update -y >/dev/null; apt-get install -y curl ca-certificates >/dev/null; }
 
@@ -184,7 +184,7 @@ install_node_cn() {
 }
 
 step2_node() {
-	log "步骤 2/10：Node.js 22 + pnpm"
+	log "步骤 2/11：Node.js 22 + pnpm"
 	local major
 	major=$(node --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\).*/\1/p' || true)
 	if [[ "${major:-0}" -ge 22 ]]; then
@@ -215,7 +215,7 @@ step2_node() {
 ## region: 步骤 3：DSH 版本化安装
 
 step3_dsh() {
-	log "步骤 3/10：DeepSeek Harness ${DSH_VERSION}（版本化安装）"
+	log "步骤 3/11：DeepSeek Harness ${DSH_VERSION}（版本化安装）"
 	local prefix="$INSTALL_ROOT/dsh/$DSH_VERSION"
 	local bin="$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js"
 	if [[ -f "$bin" ]]; then
@@ -248,7 +248,7 @@ step3_dsh() {
 ## region: 步骤 4：运行身份
 
 step4_user() {
-	log "步骤 4/10：系统用户 $DSH_USER"
+	log "步骤 4/11：系统用户 $DSH_USER"
 	if ! id "$DSH_USER" >/dev/null 2>&1; then
 		useradd --system --shell /usr/sbin/nologin --home-dir /home/vpssh --create-home "$DSH_USER"
 	fi
@@ -259,14 +259,74 @@ step4_user() {
 
 ## endregion
 
-## region: 步骤 5：vpssh 插件
+## region: 步骤 5：钥匙保管与本机账号
+
+KEYS_USER="vpssh-keys"
+LOCAL_ADMIN="vpssh-admin"
+KEY_PUB="/var/lib/vpssh-keys/vpssh_ed25519.pub"
+LOCAL_SSH_PORT=22
+
+# 1) vpssh-keyd：私钥只有 vpssh-keys 用户能读，vpssh 只能请它签名（见 keyd/keyd.js）
+# 2) 本机账号 vpssh-admin：vpssh 经本机 SSH 管这台机器自己，和管别的机器一样走确认。
+#    只接受从 127.0.0.1 用 vpssh 的钥匙登录，没有密码；免密 sudo（管服务器离不开它）
+step5_keys() {
+	log "步骤 5/11：钥匙保管与本机账号"
+	id "$KEYS_USER" >/dev/null 2>&1 || useradd --system --shell /usr/sbin/nologin --no-create-home --home-dir /nonexistent "$KEYS_USER"
+	mkdir -p "$INSTALL_ROOT/keyd"
+	fetch_file keyd/keyd.js "$INSTALL_ROOT/keyd/keyd.js"
+	node --check "$INSTALL_ROOT/keyd/keyd.js" || die "keyd/keyd.js 语法检查失败"
+	fetch_file units/vpssh-keyd.service /tmp/vpssh-keyd.service.tpl
+	sed "s|__NODE_BIN__|$(command -v node)|" /tmp/vpssh-keyd.service.tpl >/etc/systemd/system/vpssh-keyd.service
+	systemctl daemon-reload
+	systemctl enable vpssh-keyd >/dev/null 2>&1
+	systemctl restart vpssh-keyd
+	local i
+	for i in $(seq 1 20); do [[ -s "$KEY_PUB" && -S /run/vpssh-keys/agent.sock ]] && break; sleep 0.5; done
+	[[ -s "$KEY_PUB" ]] || die "vpssh-keyd 没有生成钥匙，见 journalctl -u vpssh-keyd -n 30"
+
+	# 本机 SSH 服务：没有就装上
+	if ! command -v sshd >/dev/null 2>&1; then
+		log "安装 openssh-server（vpssh 经本机 SSH 管理这台机器）"
+		apt-get install -y openssh-server >/dev/null
+	fi
+	systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
+	LOCAL_SSH_PORT=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
+	LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"
+
+	if ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
+		useradd --create-home --shell /bin/bash "$LOCAL_ADMIN"
+		passwd -l "$LOCAL_ADMIN" >/dev/null
+	fi
+	local sudoers="/etc/sudoers.d/vpssh-admin"
+	printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$LOCAL_ADMIN" >"$sudoers.tmp"
+	chmod 440 "$sudoers.tmp"
+	visudo -cf "$sudoers.tmp" >/dev/null || die "sudoers 校验失败"
+	mv "$sudoers.tmp" "$sudoers"
+	local home ssh_dir
+	home=$(getent passwd "$LOCAL_ADMIN" | cut -d: -f6)
+	ssh_dir="$home/.ssh"
+	mkdir -p "$ssh_dir"
+	printf 'from="127.0.0.1,::1",no-agent-forwarding,no-X11-forwarding %s\n' "$(cat "$KEY_PUB")" >"$ssh_dir/authorized_keys"
+	chown -R "$LOCAL_ADMIN:" "$ssh_dir"
+	chmod 700 "$ssh_dir"
+	chmod 600 "$ssh_dir/authorized_keys"
+	# sshd 限制了 AllowUsers / AllowGroups 时提醒（不替用户改 sshd 配置）
+	if sshd -T 2>/dev/null | grep -qiE '^(allowusers|allowgroups) '; then
+		warn "sshd 设了 AllowUsers/AllowGroups：请把 $LOCAL_ADMIN 加进去，否则 vpssh 管不了这台机器"
+	fi
+	log "钥匙由 vpssh-keyd 保管；本机账号 $LOCAL_ADMIN（SSH 端口 $LOCAL_SSH_PORT）"
+}
+
+## endregion
+
+## region: 步骤 6：vpssh 插件
 
 # vpssh 的全部功能都在这个 DSH 插件里（本仓库 plugin/）。只装它，不装别的插件。
 # 放在 $INSTALL_ROOT/plugin（root 所有），再登记到 DSH 的 web profile。
 # 登记时 pnpm 要复制文件（copy）：默认的硬链接碰到 root 的文件会被内核拒绝（protected_hardlinks）；
 # 也不能用 link: 软链接，插件按需加载的 @deepseek-ai/* 包要从 profile 里解析。
 step5_plugin() {
-	log "步骤 5/10：vpssh 插件"
+	log "步骤 6/11：vpssh 插件"
 	local dst="$INSTALL_ROOT/plugin"
 	rm -rf "$dst.new"
 	mkdir -p "$dst.new"
@@ -290,7 +350,7 @@ step5_plugin() {
 
 ## endregion
 
-## region: 步骤 6：vpssh 网关
+## region: 步骤 7：vpssh 网关
 
 # 一次性启动令牌：初始向导在安装结束到用户首次打开浏览器之间是全网可达的，
 # 谁先提交谁就是管理员。令牌写进 state/setup.token，向导提交成功后由 gate 删除。
@@ -311,7 +371,7 @@ generate_setup_token() {
 }
 
 step6_gate() {
-	log "步骤 6/10：vpssh 网关"
+	log "步骤 7/11：vpssh 网关"
 	mkdir -p "$INSTALL_ROOT/gate" "$INSTALL_ROOT/bin"
 	fetch_file gate/server.js "$INSTALL_ROOT/gate/server.js"
 	node --check "$INSTALL_ROOT/gate/server.js" || die "gate/server.js 语法检查失败"
@@ -331,10 +391,10 @@ step6_gate() {
 
 ## endregion
 
-## region: 步骤 7：Caddy
+## region: 步骤 8：Caddy
 
 step7_caddy() {
-	log "步骤 7/10：Caddy"
+	log "步骤 8/11：Caddy"
 	if ! command -v caddy >/dev/null 2>&1; then
 		apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gpg >/dev/null
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -370,7 +430,7 @@ step7_caddy() {
 
 ## endregion
 
-## region: 步骤 8：systemd + gate.env + config.json
+## region: 步骤 9：systemd + gate.env + config.json
 
 detect_public_ip() {
 	local ip url
@@ -415,7 +475,7 @@ resolve_trusted_host() {
 }
 
 step8_systemd() {
-	log "步骤 8/10：systemd 服务"
+	log "步骤 9/11：systemd 服务"
 	mkdir -p "$INSTALL_ROOT/state" "$INSTALL_ROOT/backups"
 
 	local trusted="$TRUSTED_HOST"
@@ -427,6 +487,7 @@ GATE_HOME=$INSTALL_ROOT
 DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
 DSH_HOME=$DSH_HOME_DIR
 DSH_TRUSTED_HOST=$trusted
+VPSSH_LOCAL_PORT=$LOCAL_SSH_PORT
 EOF
 	chmod 600 "$INSTALL_ROOT/state/gate.env"
 	chown "$DSH_USER" "$INSTALL_ROOT/state/gate.env"
@@ -463,10 +524,10 @@ EOF
 
 ## endregion
 
-## region: 步骤 9：防火墙
+## region: 步骤 10：防火墙
 
 step9_firewall() {
-	log "步骤 9/10：防火墙"
+	log "步骤 10/11：防火墙"
 	if command -v ufw >/dev/null 2>&1; then
 		ufw allow 22/tcp >/dev/null
 		ufw allow 80/tcp >/dev/null
@@ -479,7 +540,7 @@ step9_firewall() {
 
 ## endregion
 
-## region: 步骤 10：健康自检 + 完成输出
+## region: 步骤 11：健康自检 + 完成输出
 
 wait_gate_health() {
 	local i body
@@ -495,7 +556,7 @@ wait_gate_health() {
 }
 
 step10_verify() {
-	log "步骤 10/10：健康自检"
+	log "步骤 11/11：健康自检"
 	local body healthy=1
 	body=$(wait_gate_health) || {
 		warn "gate 未就绪，请查看: journalctl -u vpssh -n 50"
@@ -564,6 +625,7 @@ step1_prechecks
 step2_node
 step3_dsh
 step4_user
+step5_keys
 step5_plugin
 step6_gate
 resolve_trusted_host

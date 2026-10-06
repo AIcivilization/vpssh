@@ -55,7 +55,7 @@ export async function uninstallPreview({ env = process.env, desktop, pluginManag
     hosts: Object.keys(doc.hosts),
     present: {
       sshConfig: hasIncludeLine(sshConfigText) || (await exists(p.sshDropin)),
-      key: await exists(p.defaultKey),
+      key: p.agentKey ? false : await exists(p.defaultKey), // vpssh-keyd 保管的钥匙不归插件删
       data: await exists(p.base),
     },
     paths: { sshConfig: p.sshConfig, sshDropin: p.sshDropin, key: p.defaultKey, data: p.base },
@@ -111,7 +111,8 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
 
   // —— 服务器上（必须在删本机连接配置和钥匙之前）——
   // 本机插件钥匙的公钥主体：撤销时靠它找到服务器上属于这台电脑的那一行（别的电脑的钥匙不碰）
-  const pub = (await exists(`${p.defaultKey}.pub`)) ? (await readFile(`${p.defaultKey}.pub`, 'utf8')).trim() : ''
+  const pubFile = p.agentKey ? p.defaultKey : `${p.defaultKey}.pub`
+  const pub = (await exists(pubFile)) ? (await readFile(pubFile, 'utf8')).trim() : ''
   const keyBody = pub.split(/\s+/)[1] ?? ''
   const hasKey = /^[A-Za-z0-9+/=]{40,}$/.test(keyBody)
   const specs = [{ name: 'key', pattern: '[A-Za-z0-9+/=]{40,}', required: true }]
@@ -172,7 +173,7 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
       step('sshConfig', false, L(`移除 SSH 配置失败：${error.message}`, `Removing the SSH configuration failed: ${error.message}`))
     }
   }
-  if (choices.key) {
+  if (choices.key && !p.agentKey) {
     try {
       await rm(p.defaultKey, { force: true })
       await rm(`${p.defaultKey}.pub`, { force: true })

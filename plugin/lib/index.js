@@ -12,6 +12,7 @@ import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { registerCommands } from './commands.js'
 import { loadBindingCache, repairSshSetup } from './config.js'
+import { ensureLocalHost } from './local-host.js'
 import { markPart, noteDuplicate, pruneErrors, recordError, setForm } from './health.js'
 import { registerTools } from './tools.js'
 import { localToolGuard, registerVpsMode } from './vps-mode.js'
@@ -121,6 +122,11 @@ export function apply(ctx, config = {}) {
 
   // 已有的对话绑定读进内存：工具守卫是同步的，靠这份副本判断
   loadBindingCache(deps.env).catch((error) => note('读取对话绑定失败', error))
+
+  // vpssh 所在的这台服务器：第一次启动时登记成第一台机器（install.sh 给了账号才做）
+  ensureLocalHost({ env: deps.env })
+    .then((r) => { if (r.added) console.info(`[vpssh] 已把这台服务器登记为机器 ${r.added}`) })
+    .catch((error) => note('登记本机失败', error))
 
   // AI 工具（硬依赖 tools）
   registerTools(ctx, deps)
