@@ -80,6 +80,7 @@ test('品牌：侧栏顶部换成 vpssh，自己画的标志', async () => {
   const mark = ctx.registered.get('sidebar.brand.mark')
   const brandName = ctx.registered.get('sidebar.brand.name')
   assert.ok(mark && brandName, '标志和名字两个插槽都要注册')
+  assert.ok(mark.descriptor.priority < 0 && brandName.descriptor.priority < 0, 'DSH 官方品牌占着优先级 0，要用更小的盖过它')
   assert.match(renderToStaticMarkup(React.createElement(brandName.component)), />vpssh</)
   assert.match(renderToStaticMarkup(React.createElement(mark.component, { size: 32 })), /width="32"/, '按侧栏要的尺寸画')
 })

@@ -5288,6 +5288,7 @@ window.__ModuleLoader__.load({
       return h('span', { title: L('全平台 AI 驱动的 VPS 管理及 SSH 工具', 'AI-driven VPS management and SSH tool for every platform') }, 'vpssh')
     }
 
+    const BRAND_PRIORITY = -10
     let layoutOpened = false
 
     // ——————————————————————— 注册 ———————————————————————
@@ -5451,11 +5452,25 @@ window.__ModuleLoader__.load({
       }
       // 插槽注册失败只降级：命令与 AI 工具不依赖界面
       try {
-        ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark' }, BrandMark))
-        ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name' }, BrandName))
+        // 网页版也装着 DSH 官方品牌（ui-brand-official，优先级 0）。品牌插槽只放一个，优先级小的显示：
+        // 用 -10 盖过它；同一优先级会让官方那份注册直接报错（实测）
+        ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark', priority: BRAND_PRIORITY }, BrandMark))
+        ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name', priority: BRAND_PRIORITY }, BrandName))
       } catch (error) {
         console.warn('[vpssh] 品牌注册失败，沿用 DSH 默认', error)
         reportClientError('品牌注册失败', error)
+      }
+      try {
+        // 浏览器标签页、加到手机主屏时的名字：DSH 写的是 DeepSeek Harness，换成 vpssh（DSH 改标题时跟着换）
+        const fixTitle = () => {
+          if (document.title.includes('DeepSeek Harness')) document.title = document.title.replaceAll('DeepSeek Harness', 'vpssh')
+        }
+        fixTitle()
+        if (typeof MutationObserver === 'function') {
+          new MutationObserver(fixTitle).observe(document.head, { childList: true, subtree: true, characterData: true })
+        }
+      } catch {
+        // 没有 DOM（测试环境）
       }
       try {
         // 对话头部：VPS 开关（打开 = 这个对话在操作这台机器）

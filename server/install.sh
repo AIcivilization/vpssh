@@ -385,6 +385,8 @@ CFG_DOMAIN=""
 resolve_trusted_host() {
 	TRUSTED_HOST="${DOMAIN:-}"
 	local existing_domain=""
+	# 显式传了 --ip：以它为准，重装时也覆盖原来的访问地址
+	[[ -z "$TRUSTED_HOST" && -n "$FORCE_IP" ]] && TRUSTED_HOST=$(detect_public_ip)
 	if [[ -z "$TRUSTED_HOST" && $REINSTALL -eq 1 ]]; then
 		if [[ -f "$INSTALL_ROOT/state/gate.env" ]]; then
 			TRUSTED_HOST=$(sed -n 's/^DSH_TRUSTED_HOST=//p' "$INSTALL_ROOT/state/gate.env" | tail -1)
