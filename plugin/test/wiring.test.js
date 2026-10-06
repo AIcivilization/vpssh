@@ -66,7 +66,7 @@ function hostWithApproval(request) {
 }
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-wire-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-wire-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: 'hk', hosts: { hk: { note: '香港', group: '生产' } } }, env)
   const sshConfig = join(home, 'ssh_config')
@@ -87,7 +87,7 @@ async function sandbox() {
 beforeEach(() => _resetInstanceGuard())
 
 test('同一个 DSH 里加载了两份（插件市场热挂载 + profile）：第二份让路，不报「已经注册过」；第一份卸载后能接班', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-twice-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-twice-'))
   const cfg = { env: { HOME: home, DSH_HOME: join(home, '.dsh') } }
   const disposers = []
   const first = fakeCtx()
@@ -115,7 +115,7 @@ test('同一个 DSH 里加载了两份（插件市场热挂载 + profile）：�
 
 test('apply：5 个工具、21 条命令、1 个 skill、本机 bash 守卫、VPS 模式监听，全部注册成功', async () => {
   const ctx = fakeCtx()
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-apply-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-apply-'))
   apply(ctx, { env: { HOME: home, DSH_HOME: join(home, '.dsh') } })
   await new Promise((r) => setTimeout(r, 100)) // 工具与 skill 是异步注册
 
@@ -141,7 +141,7 @@ test('apply：5 个工具、21 条命令、1 个 skill、本机 bash 守卫、VP
 
 test('webServer 挂载后：设置页路由与终端共用一个 token，插件卸载时一并反注册', async () => {
   const ctx = fakeCtx()
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-web-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-web-'))
   apply(ctx, { env: { HOME: home, DSH_HOME: join(home, '.dsh') } })
 
   const exact = new Map()
@@ -162,11 +162,11 @@ test('webServer 挂载后：设置页路由与终端共用一个 token，插件�
   await ctx._injected.get('webServer')(webCtx)
 
   assert.deepEqual(ctx._warnings, [], `注册时有警告：${ctx._warnings.join(' | ')}`)
-  assert.ok(upgrades.has('/api-vps/ws/terminal'), '终端连接要注册')
-  for (const f of ['xterm.mjs', 'addon-fit.mjs', 'xterm.css']) assert.ok(exact.has(`/api-vps/assets/${f}`), f)
-  assert.ok(exact.has('/api-vps/overview'))
+  assert.ok(upgrades.has('/api-vpssh/ws/terminal'), '终端连接要注册')
+  for (const f of ['xterm.mjs', 'addon-fit.mjs', 'xterm.css']) assert.ok(exact.has(`/api-vpssh/assets/${f}`), f)
+  assert.ok(exact.has('/api-vpssh/overview'))
   const html = taps[0]('<head></head>')
-  assert.match(html, /__DSH_VPS_TOKEN__="[a-f0-9]{48}"/, '页面里只注入一个 token，终端和路由共用')
+  assert.match(html, /__VPSSH_TOKEN__="[a-f0-9]{48}"/, '页面里只注入一个 token，终端和路由共用')
 
   assert.equal(effects.length, 2)
   for (const e of effects) await e.dispose()
@@ -187,7 +187,7 @@ test('工具层：没有审批就拒绝改动，用户允许后才执行', async
   const allowExec = defs2.find((d) => d.name === 'vps_exec')
 
   const denied = await denyExec.execute(
-    { host: 'hk', script: 'mkdir -p /tmp/dsh-vps-should-not-exist', intent: 'change', reason: '建目录' },
+    { host: 'hk', script: 'mkdir -p /tmp/vpssh-should-not-exist', intent: 'change', reason: '建目录' },
     { agent: 'a', callId: 'c1', signal: undefined },
   )
   assert.equal(denied.ok, false)
@@ -269,7 +269,7 @@ test('命令层：/vps-install 不加 --yes 只出计划，不执行', async () 
 })
 
 test('命令层：没指定机器且没有当前机器时，提示怎么办', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-empty-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-empty-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   const registered = []
   registerCommands({ commands: { register: (d) => { registered.push(d); return () => {} } } }, { env })
@@ -621,7 +621,7 @@ test('/vps-sh 迷你终端：记住目录、目录没了回家目录、交互命
   const inv = (rawInput) => ({ rawInput, agent: { session: { id: 'sess-term' } } })
   await registered.find((c) => c.name === 'vps-use').handler(inv('hk'))
 
-  const dir = await mk(join(tmpdir(), 'dsh-vps-cwd-'))
+  const dir = await mk(join(tmpdir(), 'vpssh-cwd-'))
   const went = await sh.handler(inv(`cd ${dir}`))
   assert.equal(went.kind, 'success', went.text)
   assert.equal(went.text.split('\n')[0], `[hk:${dir}] $ cd ${dir}`)
@@ -631,7 +631,7 @@ test('/vps-sh 迷你终端：记住目录、目录没了回家目录、交互命
   const here = await sh.handler(inv('pwd'))
   assert.match(here.text, /下次问 AI 时会附上这段输出/, '第一条会附给 AI 的命令要提示')
   assert.match(here.text.split('\n')[0], new RegExp(`^\\[hk:${dir}\\] \\$ pwd　${dir}$`), '下一条在记住的目录里执行')
-  assert.doesNotMatch(here.text, /__DSH_VPS_CWD__/, '目录标记不能漏进输出')
+  assert.doesNotMatch(here.text, /__VPSSH_CWD__/, '目录标记不能漏进输出')
   assert.doesNotMatch((await sh.handler(inv('pwd'))).text, /下次问 AI/, '只提示一次')
 
   // cd 失败：目录不变
@@ -646,7 +646,7 @@ test('/vps-sh 迷你终端：记住目录、目录没了回家目录、交互命
   assert.doesNotMatch(gone.text.split('\n')[0], new RegExp(dir))
 
   // 交互命令改写：输出里说明改了什么，并照改后的执行
-  const logFile = join(await mk(join(tmpdir(), 'dsh-vps-log-')), 'app.log')
+  const logFile = join(await mk(join(tmpdir(), 'vpssh-log-')), 'app.log')
   await writeFile(logFile, 'line1\nline2\n')
   const tailed = await sh.handler(inv(`tail -f ${logFile}`))
   assert.equal(tailed.kind, 'success', tailed.text)

@@ -32,8 +32,8 @@ import { runProcess } from './spawn.js'
 import { assertAlias, baseOptions, classifySshFailure, noSshClientHint, sshArgs } from './ssh.js'
 import { L, withLang } from './i18n.js'
 
-export const TERMINAL_PATH = '/api-vps/ws/terminal'
-export const TERMINAL_PROTOCOL = 'dsh-vps-terminal'
+export const TERMINAL_PATH = '/api-vpssh/ws/terminal'
+export const TERMINAL_PROTOCOL = 'vpssh-terminal'
 export const TTY_MARK = '__DSH_TTY__='
 export const XTERM_VERSION = '6.0.0'
 
@@ -76,7 +76,7 @@ export function isLoopbackRequest(req) {
   return loopbackAddress(req?.socket?.remoteAddress) && loopbackHostname(hostnameOf(req?.headers?.host))
 }
 
-/** 浏览器 WebSocket 不能加请求头：token 放在子协议列表里，形如 "dsh-vps-terminal, <token>" */
+/** 浏览器 WebSocket 不能加请求头：token 放在子协议列表里，形如 "vpssh-terminal, <token>" */
 export function protocolsOf(req) {
   return String(req?.headers?.['sec-websocket-protocol'] ?? '')
     .split(',')
@@ -722,7 +722,7 @@ export function registerTerminal(webCtx, deps = {}) {
   for (const [file, type] of Object.entries(ASSETS)) {
     register(() => server.register({
       kind: 'exact',
-      path: `/api-vps/assets/${file}`,
+      path: `/api-vpssh/assets/${file}`,
       handler: async (req, res) => {
         const rejection = connection()?.requestRejection?.(req)
         if (rejection !== undefined) {

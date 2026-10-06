@@ -13,9 +13,9 @@ const require = createRequire(import.meta.url)
 // 启动时加载的版本；磁盘上的可能更新（装了新版还没重启）
 const LOADED_VERSION = require('../package.json').version
 
-export const PACKAGE = 'dsh-vps-manager'
-export const RELEASES_URL = 'https://github.com/AIcivilization/dsh-vps-manager/releases'
-const GITHUB_LATEST = 'https://api.github.com/repos/AIcivilization/dsh-vps-manager/releases/latest'
+export const PACKAGE = 'vpssh'
+export const RELEASES_URL = 'https://github.com/AIcivilization/vpssh/releases'
+const GITHUB_LATEST = 'https://api.github.com/repos/AIcivilization/vpssh/releases/latest'
 // npm 官方源连不上（国内常见）就问镜像
 const NPM_REGISTRIES = ['https://registry.npmjs.org', 'https://registry.npmmirror.com']
 const CHECK_EVERY_MS = 6 * 60 * 60 * 1000
@@ -82,7 +82,7 @@ async function installedVersion() {
   }
 }
 
-const cacheFile = (env) => join(dshHome(env), 'vps-manager', 'update.json')
+const cacheFile = (env) => join(dshHome(env), 'vpssh', 'update.json')
 
 async function readCache(env) {
   try {

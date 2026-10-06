@@ -10,7 +10,7 @@ import {
 } from '../lib/vps-mode.js'
 
 async function sandbox({ facts } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-mode-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-mode-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: '', hosts: { 'vps-dsh': { note: '洛杉矶' }, jp: {} } }, env)
   if (facts) {

@@ -11,7 +11,7 @@ import { checkReach, noteReach } from '../lib/reach.js'
 import { runProcess } from '../lib/spawn.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-reach-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-reach-'))
   return { home, env: { HOME: home, DSH_HOME: join(home, '.dsh') } }
 }
 

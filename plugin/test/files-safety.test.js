@@ -10,7 +10,7 @@ import { readAudit } from '../lib/audit.js'
 import { runProcess } from '../lib/spawn.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-fs-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-fs-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   const runner = (alias, payload, opts = {}) =>
     runProcess('sh', ['-s'], {
@@ -71,7 +71,7 @@ test('覆盖已有文件会先备份，备份不落在原目录', async () => {
   assert.equal(res.status, STATUS.done)
   assert.equal(await readFile(target, 'utf8'), '新内容\n')
   assert.ok(res.backupPath, '应给出备份路径')
-  assert.match(res.backupPath, /\.cache\/dsh-vps\/backups\//, '备份必须放在专用目录，不能落在原目录')
+  assert.match(res.backupPath, /\.cache\/vpssh\/backups\//, '备份必须放在专用目录，不能落在原目录')
   assert.equal(await readFile(res.backupPath, 'utf8'), '原始内容\n')
   assert.ok(res.restoreCommand.includes(res.backupPath))
 

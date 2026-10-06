@@ -15,7 +15,7 @@ async function runWithPrelude(script, { prefix = '' } = {}) {
 }
 
 test('has_cmd：命令存在返回 0，不存在返回 1（即使底层返回 127）', async () => {
-  const real = await runWithPrelude('has_cmd ls; echo "存在=$?"; has_cmd dsh-vps-no-such-cmd; echo "缺失=$?"')
+  const real = await runWithPrelude('has_cmd ls; echo "存在=$?"; has_cmd vpssh-no-such-cmd; echo "缺失=$?"')
   assert.match(real.stdout, /存在=0/)
   assert.match(real.stdout, /缺失=1/)
 

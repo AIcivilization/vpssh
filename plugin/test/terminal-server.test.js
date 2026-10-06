@@ -151,7 +151,7 @@ async function startServer({ connection } = {}) {
 }
 
 async function sandbox(options = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-term-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-term-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({
     current: 'hk',
@@ -511,7 +511,7 @@ test('ssh 连不上（退出码 255）：把原因翻译给用户', async () => 
 test('xterm.js 静态文件：GET 可取，类型正确；DSH 登录校验不过就拒绝', async () => {
   const box = await sandbox()
   try {
-    const base = `http://127.0.0.1:${box.srv.port}/api-vps/assets`
+    const base = `http://127.0.0.1:${box.srv.port}/api-vpssh/assets`
     const js = await fetch(`${base}/xterm.mjs?v=6.0.0`)
     assert.equal(js.status, 200)
     assert.match(js.headers.get('content-type'), /text\/javascript/)
@@ -528,7 +528,7 @@ test('xterm.js 静态文件：GET 可取，类型正确；DSH 登录校验不过
 
   const locked = await sandbox({ connection: { requestRejection: () => 401 } })
   try {
-    const res = await fetch(`http://127.0.0.1:${locked.srv.port}/api-vps/assets/xterm.mjs`)
+    const res = await fetch(`http://127.0.0.1:${locked.srv.port}/api-vpssh/assets/xterm.mjs`)
     assert.equal(res.status, 401)
   } finally {
     await locked.cleanup()

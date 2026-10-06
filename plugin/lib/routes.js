@@ -1,8 +1,8 @@
-// lib/routes.js — 设置页路由 /api-vps/*（设计第三节「界面 ↔ host 通信」）
+// lib/routes.js — 设置页路由 /api-vpssh/*（设计第三节「界面 ↔ host 通信」）
 //
 // 界面没有 Session 绑定，调 host 只能走 HTTP。而 dsh-host-webserver 本身没有任何
 // 鉴权代码，且允许绑定 0.0.0.0 —— 所以这里必须自己做三件事：
-//   1. 每次启动生成随机 token，经 tapIndex 注入页面；所有路由校验 x-dsh-vps-token
+//   1. 每次启动生成随机 token，经 tapIndex 注入页面；所有路由校验 x-vpssh-token
 //      （跨站网页读不到它）
 //   2. 只收 application/json（强制浏览器预检）+ 同源校验（Origin 的 host 必须等于
 //      请求的 Host）
@@ -87,7 +87,7 @@ export function checkRequest(req, token, { needToken = true } = {}) {
   // 只收 JSON：跨站页面要发 JSON 得先过浏览器的预检，预检在这里过不去
   if (!ctype.includes('application/json')) return { ok: false, code: 415, error: L('只接受 application/json', 'Only application/json is accepted') }
   if (!sameOrigin(req)) return { ok: false, code: 403, error: L('跨站请求被拒绝', 'Cross-site request refused') }
-  if (needToken && String(req.headers['x-dsh-vps-token'] ?? '') !== token) return { ok: false, code: 403, error: L('token 不对', 'Wrong token') }
+  if (needToken && String(req.headers['x-vpssh-token'] ?? '') !== token) return { ok: false, code: 403, error: L('token 不对', 'Wrong token') }
   return { ok: true }
 }
 
@@ -132,7 +132,7 @@ export function registerRoutes(ctx, deps = {}) {
   const route = (path, handler, { write = false } = {}) => {
     register(() => ws.register({
       kind: 'exact',
-      path: `/api-vps/${path}`,
+      path: `/api-vpssh/${path}`,
       // 界面带来的语言：这个请求里的报错、提示都照它说（见 i18n.js）
       handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
         const check = checkRequest(req, token)
@@ -177,13 +177,13 @@ export function registerRoutes(ctx, deps = {}) {
     }
   })
 
-  // 姊妹插件 dsh-vps（把 DSH 部署到 VPS 上）装没装：设置页据此决定是介绍它，还是指去「VPS 部署」。
+  // 姊妹插件 vpssh（把 DSH 部署到 VPS 上）装没装：设置页据此决定是介绍它，还是指去「VPS 部署」。
   // 只读 DSH 插件管理器的清单；没有插件管理器（老版本 DSH）就是不知道（null）
   function sisterInstalled() {
     try {
       const list = deps.pluginManager?.listBundles?.()
       if (!Array.isArray(list)) return null
-      return list.some((b) => b?.name === 'dsh-vps' && b.enabled !== false && b.installed !== false)
+      return list.some((b) => b?.name === 'vpssh' && b.enabled !== false && b.installed !== false)
     } catch {
       return null
     }
@@ -582,7 +582,7 @@ export function registerRoutes(ctx, deps = {}) {
     const ticket = randomBytes(24).toString('hex')
     tickets.set(ticket, { alias, ...info, expires: Date.now() + 120_000 })
     const name = info.type === 'dir' ? `${info.name}.tar.gz` : info.name
-    return { url: `/api-vps/files/fetch?t=${ticket}`, name, type: info.type, size: info.size }
+    return { url: `/api-vpssh/files/fetch?t=${ticket}`, name, type: info.type, size: info.size }
   })
 
   const connection = () => {
@@ -599,7 +599,7 @@ export function registerRoutes(ctx, deps = {}) {
 
   register(() => ws.register({
     kind: 'exact',
-    path: '/api-vps/files/fetch',
+    path: '/api-vpssh/files/fetch',
     handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
       const rejection = connection()?.requestRejection?.(req)
       if (rejection !== undefined) return plain(res, rejection, '')
@@ -638,14 +638,14 @@ export function registerRoutes(ctx, deps = {}) {
   // 上传：请求体就是文件本身（不是 JSON）。和其他路由一样校验 token 与同源，外加本机限制和写开关
   register(() => ws.register({
     kind: 'exact',
-    path: '/api-vps/files/upload',
+    path: '/api-vpssh/files/upload',
     handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
       if (req.method !== 'POST') return json(res, 405, { ok: false, error: L('只接受 POST', 'Only POST is accepted') })
       if (!String(req.headers['content-type'] ?? '').includes('application/octet-stream')) {
         return json(res, 415, { ok: false, error: L('只接受 application/octet-stream', 'Only application/octet-stream is accepted') })
       }
       if (!sameOrigin(req)) return json(res, 403, { ok: false, error: L('跨站请求被拒绝', 'Cross-site request refused') })
-      if (String(req.headers['x-dsh-vps-token'] ?? '') !== token) return json(res, 403, { ok: false, error: L('token 不对', 'Wrong token') })
+      if (String(req.headers['x-vpssh-token'] ?? '') !== token) return json(res, 403, { ok: false, error: L('token 不对', 'Wrong token') })
       try {
         await assertLocal(req)
         if (!(await writeAllowed())) throw new Error(L('DSH 的 Web 服务绑定在 0.0.0.0（局域网可见），会改东西的面板操作已默认关闭。要打开请到设置页勾选。', 'DSH\'s web server is bound to 0.0.0.0 (visible on the local network), so panel actions that change things are off by default. Turn them on in the settings page.'))
@@ -742,7 +742,7 @@ export function registerRoutes(ctx, deps = {}) {
   // （跨站页面发不过来，也读不到回应），并且和其他接口一样先过 DSH 自己的登录校验
   register(() => ws.register({
     kind: 'exact',
-    path: '/api-vps/token',
+    path: '/api-vpssh/token',
     handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
       const check = checkRequest(req, token, { needToken: false })
       if (!check.ok) return json(res, check.code, { ok: false, error: check.error })
@@ -755,12 +755,12 @@ export function registerRoutes(ctx, deps = {}) {
   // - tapIndex 的 HTML 转换：老版本 DSH 只有这条；网页版两条都会生效，写的是同一个值
   if (typeof ctx.on === 'function') {
     register(() => ctx.on('webserver/index-inject', (table) => {
-      if (Array.isArray(table)) table.push({ kind: 'global', name: '__DSH_VPS_TOKEN__', value: token })
+      if (Array.isArray(table)) table.push({ kind: 'global', name: '__VPSSH_TOKEN__', value: token })
     }))
   }
   if (typeof ws.tapIndex === 'function') {
     register(() => ws.tapIndex((html) =>
-      html.replace('</head>', `<script>window.__DSH_VPS_TOKEN__=${JSON.stringify(token)}</script></head>`)))
+      html.replace('</head>', `<script>window.__VPSSH_TOKEN__=${JSON.stringify(token)}</script></head>`)))
   }
 
   return {

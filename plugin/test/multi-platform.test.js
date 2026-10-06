@@ -51,22 +51,22 @@ test('Windows 的家目录按 USERPROFILE（ssh 只认它），其他系统按 H
 })
 
 test('ssh 配置里的路径：Windows 反斜杠换成正斜杠，有空格加引号', () => {
-  assert.equal(sshConfigPath('C:\\Users\\10047\\.ssh\\dsh_vps_ed25519'), 'C:/Users/10047/.ssh/dsh_vps_ed25519')
+  assert.equal(sshConfigPath('C:\\Users\\10047\\.ssh\\vpssh_ed25519'), 'C:/Users/10047/.ssh/vpssh_ed25519')
   assert.equal(sshConfigPath('C:\\Users\\John Smith\\.ssh\\k'), '"C:/Users/John Smith/.ssh/k"')
-  assert.equal(sshConfigPath('/Users/wf/.ssh/dsh_vps_ed25519'), '/Users/wf/.ssh/dsh_vps_ed25519')
+  assert.equal(sshConfigPath('/Users/wf/.ssh/vpssh_ed25519'), '/Users/wf/.ssh/vpssh_ed25519')
   assert.equal(sshConfigPath('/home/a b/.ssh/k'), '"/home/a b/.ssh/k"')
 })
 
 test('写进连接配置的钥匙路径用 ssh 认得的写法', async () => {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-mp-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-mp-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
-  await upsertDropinHost({ alias: 'hk', hostname: '1.2.3.4', port: 22, user: 'root', identityFile: 'C:\\Users\\10047\\.ssh\\dsh_vps_ed25519' }, env)
+  await upsertDropinHost({ alias: 'hk', hostname: '1.2.3.4', port: 22, user: 'root', identityFile: 'C:\\Users\\10047\\.ssh\\vpssh_ed25519' }, env)
   const conf = await readFile(paths(env).sshDropin, 'utf8')
-  assert.match(conf, /IdentityFile C:\/Users\/10047\/\.ssh\/dsh_vps_ed25519\n/)
+  assert.match(conf, /IdentityFile C:\/Users\/10047\/\.ssh\/vpssh_ed25519\n/)
 })
 
 test('指纹从 known_hosts 读（Windows 的 ssh-keyscan 取不到）：整理成界面认的写法，哈希过的也认', async () => {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-kh-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-kh-'))
   const key = join(dir, 'hostkey')
   await runProcess('ssh-keygen', ['-q', '-t', 'ed25519', '-N', '', '-f', key])
   const pub = (await readFile(`${key}.pub`, 'utf8')).trim().split(' ').slice(0, 2).join(' ')
@@ -85,7 +85,7 @@ test('钥匙权限太宽：单独说清楚，不当成「公钥没放上去」',
   const stderr = [
     '@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@',
     '@         WARNING: UNPROTECTED PRIVATE KEY FILE!          @',
-    'Load key "C:\\\\Users\\\\x\\\\.ssh\\\\dsh_vps_ed25519": bad permissions',
+    'Load key "C:\\\\Users\\\\x\\\\.ssh\\\\vpssh_ed25519": bad permissions',
     'root@1.2.3.4: Permission denied (publickey).',
   ].join('\n')
   const r = classifySshFailure(stderr, 255)
@@ -100,11 +100,11 @@ test('本机没装 ssh：Windows 告诉用户去「可选功能」装 OpenSSH �
 })
 
 test('只有密码时自己在终端里放公钥：Windows 没有 ssh-copy-id，换成 type | ssh', () => {
-  const win = sshCopyIdCommand({ identityFile: 'C:\\Users\\10047\\.ssh\\dsh_vps_ed25519', user: 'root', hostname: '1.2.3.4', port: 2222, platform: 'win32' })
-  assert.equal(win, 'type "C:\\Users\\10047\\.ssh\\dsh_vps_ed25519.pub" | ssh -p 2222 root@1.2.3.4 "umask 077; mkdir -p ~/.ssh && tr -d \'\\r\' >> ~/.ssh/authorized_keys"')
+  const win = sshCopyIdCommand({ identityFile: 'C:\\Users\\10047\\.ssh\\vpssh_ed25519', user: 'root', hostname: '1.2.3.4', port: 2222, platform: 'win32' })
+  assert.equal(win, 'type "C:\\Users\\10047\\.ssh\\vpssh_ed25519.pub" | ssh -p 2222 root@1.2.3.4 "umask 077; mkdir -p ~/.ssh && tr -d \'\\r\' >> ~/.ssh/authorized_keys"')
   assert.ok(!win.includes('$'), 'PowerShell 会展开双引号里的 $')
-  const mac = sshCopyIdCommand({ identityFile: '/Users/wf/.ssh/dsh_vps_ed25519', user: 'root', hostname: '1.2.3.4', platform: 'darwin' })
-  assert.equal(mac, 'ssh-copy-id -i /Users/wf/.ssh/dsh_vps_ed25519.pub root@1.2.3.4')
+  const mac = sshCopyIdCommand({ identityFile: '/Users/wf/.ssh/vpssh_ed25519', user: 'root', hostname: '1.2.3.4', platform: 'darwin' })
+  assert.equal(mac, 'ssh-copy-id -i /Users/wf/.ssh/vpssh_ed25519.pub root@1.2.3.4')
 })
 
 test('ssh 参数里别名前面照样有 --（Windows 上也不能被当成选项）', () => {
@@ -115,14 +115,14 @@ test('ssh 参数里别名前面照样有 --（Windows 上也不能被当成选�
 // —— 几台电脑管同一台服务器 ——
 
 test('公钥备注带上电脑名，服务器上一眼分得清是哪台电脑放的', () => {
-  assert.equal(keyComment('DESKTOP-AB12CD'), 'dsh-vps-manager@DESKTOP-AB12CD')
-  assert.equal(keyComment('wf的MacBook Pro.local'), 'dsh-vps-manager@wf-MacBook-Pro')
-  assert.equal(keyComment(''), 'dsh-vps-manager')
+  assert.equal(keyComment('DESKTOP-AB12CD'), 'vpssh@DESKTOP-AB12CD')
+  assert.equal(keyComment('wf的MacBook Pro.local'), 'vpssh@wf-MacBook-Pro')
+  assert.equal(keyComment(''), 'vpssh')
   assert.equal(deviceName('a/b\\c d'), 'a-b-c-d')
 })
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-mp-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-mp-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   const runner = (_alias, payload, opts = {}) => runProcess('sh', ['-s'], {
     input: payload, env: { ...process.env, HOME: home }, signal: opts.signal, timeoutMs: opts.timeoutMs, onStdout: opts.onStdout,
@@ -141,17 +141,17 @@ test('另一台电脑的改动任务还在跑：排队提示里写明是哪台�
   assert.match(second.hint, /另一台电脑/)
 })
 
-test('卸载时服务器上还有别的电脑的插件钥匙：共用的 ~/.cache/dsh-vps 保留，只撤销自己那一行', async () => {
+test('卸载时服务器上还有别的电脑的插件钥匙：共用的 ~/.cache/vpssh 保留，只撤销自己那一行', async () => {
   const { home, env, runner } = await sandbox()
   const p = paths(env)
   await writeHosts({ current: 'hk', hosts: { hk: {} } }, env)
   const MINE = 'AAAAC3NzaC1lZDI1NTE5AAAAIMineMineMineMineMineMineMineMineMineMineMine1'
-  const WIN = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIWinWinWinWinWinWinWinWinWinWinWinWinWin dsh-vps-manager@DESKTOP-AB12CD'
+  const WIN = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIWinWinWinWinWinWinWinWinWinWinWinWinWin vpssh@DESKTOP-AB12CD'
   await mkdir(p.sshDir, { recursive: true })
-  await writeFile(`${p.defaultKey}.pub`, `ssh-ed25519 ${MINE} dsh-vps-manager@mac\n`)
+  await writeFile(`${p.defaultKey}.pub`, `ssh-ed25519 ${MINE} vpssh@mac\n`)
   const ak = join(home, '.ssh', 'authorized_keys')
-  await writeFile(ak, `${WIN}\nssh-ed25519 ${MINE} dsh-vps-manager@mac\n`)
-  const cache = join(home, '.cache', 'dsh-vps', 'trash')
+  await writeFile(ak, `${WIN}\nssh-ed25519 ${MINE} vpssh@mac\n`)
+  const cache = join(home, '.cache', 'vpssh', 'trash')
   await mkdir(cache, { recursive: true })
 
   const res = await runUninstall({ env, runner, choices: { remoteCache: true, revokeKey: true } })
@@ -165,9 +165,9 @@ test('卸载时服务器上还有别的电脑的插件钥匙：共用的 ~/.cach
   await writeHosts({ current: 'hk', hosts: { hk: {} } }, alone.env)
   const ap = paths(alone.env)
   await mkdir(ap.sshDir, { recursive: true })
-  await writeFile(`${ap.defaultKey}.pub`, `ssh-ed25519 ${MINE} dsh-vps-manager@mac\n`)
-  await writeFile(join(alone.home, '.ssh', 'authorized_keys'), `ssh-ed25519 ${MINE} dsh-vps-manager@mac\nssh-rsa AAAAB3Nzaother me@laptop\n`)
-  await mkdir(join(alone.home, '.cache', 'dsh-vps', 'tasks'), { recursive: true })
+  await writeFile(`${ap.defaultKey}.pub`, `ssh-ed25519 ${MINE} vpssh@mac\n`)
+  await writeFile(join(alone.home, '.ssh', 'authorized_keys'), `ssh-ed25519 ${MINE} vpssh@mac\nssh-rsa AAAAB3Nzaother me@laptop\n`)
+  await mkdir(join(alone.home, '.cache', 'vpssh', 'tasks'), { recursive: true })
   const cleaned = await runUninstall({ env: alone.env, runner: alone.runner, choices: { remoteCache: true } })
-  assert.match(cleaned.steps[0].text, /已删除 ~\/\.cache\/dsh-vps/)
+  assert.match(cleaned.steps[0].text, /已删除 ~\/\.cache\/vpssh/)
 })

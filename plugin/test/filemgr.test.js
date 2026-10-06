@@ -14,7 +14,7 @@ import {
 } from '../lib/filemgr.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-files-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-files-'))
   const spawnSsh = (_alias, script) => spawn('sh', ['-c', script], {
     env: { ...process.env, HOME: home },
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -200,7 +200,7 @@ test('上传覆盖：原文件先备份，新文件沿用原来的权限；目�
   await chmod(target, 0o600)
   const body = Buffer.from('new content')
   const res = await uploadFile({ alias: s.alias, path: target, size: body.length, stream: Readable.from([body]), spawnSsh: s.spawnSsh })
-  assert.ok(res.backupPath?.includes('/.cache/dsh-vps/backups/'))
+  assert.ok(res.backupPath?.includes('/.cache/vpssh/backups/'))
   assert.equal(await readFile(res.backupPath, 'utf8'), 'old')
   assert.equal(await readFile(target, 'utf8'), 'new content')
   assert.equal(await modeOf(target), 0o600, '覆盖不能改掉原来的权限')

@@ -88,7 +88,7 @@ export function sshArgs(alias, options = {}) {
 const FAILURES = [
   // 放最前：这种情况 ssh 后面还会跟一句 Permission denied (publickey)，不能被当成「公钥没放上去」
   [/UNPROTECTED PRIVATE KEY FILE|bad permissions/i, 'key_permissions',
-    () => L('钥匙文件的权限太宽，ssh 拒绝使用它。macOS / Linux：chmod 600 ~/.ssh/dsh_vps_ed25519；Windows：在 PowerShell 里执行 icacls $env:USERPROFILE\\.ssh\\dsh_vps_ed25519 /inheritance:r /grant:r "$($env:USERNAME):F"', 'The key file\'s permissions are too open, so ssh refuses to use it. macOS / Linux: chmod 600 ~/.ssh/dsh_vps_ed25519; Windows: in PowerShell run icacls $env:USERPROFILE\\.ssh\\dsh_vps_ed25519 /inheritance:r /grant:r "$($env:USERNAME):F"')],
+    () => L('钥匙文件的权限太宽，ssh 拒绝使用它。macOS / Linux：chmod 600 ~/.ssh/vpssh_ed25519；Windows：在 PowerShell 里执行 icacls $env:USERPROFILE\\.ssh\\vpssh_ed25519 /inheritance:r /grant:r "$($env:USERNAME):F"', 'The key file\'s permissions are too open, so ssh refuses to use it. macOS / Linux: chmod 600 ~/.ssh/vpssh_ed25519; Windows: in PowerShell run icacls $env:USERPROFILE\\.ssh\\vpssh_ed25519 /inheritance:r /grant:r "$($env:USERNAME):F"')],
   [/REMOTE HOST IDENTIFICATION HAS CHANGED|Host key verification failed/i, 'host_key_changed',
     () => L('服务器指纹变了：可能是重装了系统，也可能是连接被劫持。确认刚重装过的话，在机器设置页点「重置指纹」', 'The server fingerprint changed: the OS may have been reinstalled, or the connection may be hijacked. If you just reinstalled it, click "Reset fingerprint" on the machine\'s settings page')],
   [/Permission denied \(publickey|Too many authentication failures|no mutual signature/i, 'auth_failed',
@@ -115,7 +115,7 @@ export function classifySshFailure(stderr = '', exitCode = null) {
   if (unresolved && ALIAS_RE.test(unresolved) && !unresolved.includes('.')) {
     return {
       reason: 'alias_missing',
-      hint: L(`SSH 配置里找不到「${unresolved}」这台机器（~/.ssh/config.d/dsh-vps.conf 或 ~/.ssh/config 顶部的 Include 行不见了，常见于卸载后重装）。重启 DSH 会自动从备份恢复；恢复不了就到 设置 → VPS 管理 删除这台再重新添加`, `The SSH configuration has no entry for "${unresolved}" (~/.ssh/config.d/dsh-vps.conf or the Include line at the top of ~/.ssh/config is gone, common after uninstalling and reinstalling). Restarting DSH restores it from the backup; if that does not work, delete the machine under Settings → VPS Manager and add it again`),
+      hint: L(`SSH 配置里找不到「${unresolved}」这台机器（~/.ssh/config.d/vpssh.conf 或 ~/.ssh/config 顶部的 Include 行不见了，常见于卸载后重装）。重启 DSH 会自动从备份恢复；恢复不了就到 设置 → VPS 管理 删除这台再重新添加`, `The SSH configuration has no entry for "${unresolved}" (~/.ssh/config.d/vpssh.conf or the Include line at the top of ~/.ssh/config is gone, common after uninstalling and reinstalling). Restarting DSH restores it from the backup; if that does not work, delete the machine under Settings → VPS Manager and add it again`),
     }
   }
   for (const [re, reason, hint] of FAILURES) {

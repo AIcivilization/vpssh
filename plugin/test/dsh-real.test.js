@@ -23,7 +23,7 @@ const DSH_TOOLS = process.env.DSH_TOOLS_LIB ?? `${APP}/dsh-tools/lib/index.js`
 const skip = existsSync(DSH_TOOLS) ? false : `没找到 DSH 的 dsh-tools（${DSH_TOOLS}）`
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-real-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-real-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: '', hosts: { hk: { note: '香港' } } }, env)
   const sshConfig = join(home, 'ssh_config')
@@ -143,7 +143,7 @@ test('真实会话格式：我们插入的说明能被宿主收下（用错形�
     assert.throws(
       () => sessionFormatCatalog.encodeCurrentEvent({
         ...event,
-        data: { ...event.data, source: { kind: 'plugin', plugin: 'vps-manager', form: 'snapshot', sections: [{ name: 'vps-mode', text: UNBOUND_TEXT }] } },
+        data: { ...event.data, source: { kind: 'plugin', plugin: 'vpssh', form: 'snapshot', sections: [{ name: 'vps-mode', text: UNBOUND_TEXT }] } },
       }, 1),
       /producer-owned source kind/,
     )

@@ -9,7 +9,7 @@
 
 import { L } from './i18n.js'
 
-export const CWD_MARK = '__DSH_VPS_CWD__='
+export const CWD_MARK = '__VPSSH_CWD__='
 
 const EDITORS = new Set(['vi', 'vim', 'nvim', 'nano', 'emacs', 'mcedit', 'joe', 'micro'])
 const PAGERS = new Set(['less', 'more', 'most'])

@@ -14,17 +14,17 @@ const OTHER_KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOtherOtherOtherOtherOthe
 const exists = (f) => stat(f).then(() => true, () => false)
 
 async function sandbox({ userConfig = 'Host github.com\n  User git\n' } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-uninstall-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-uninstall-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await ensureDirs(env)
   await writeHosts({ current: 'hk', hosts: { hk: {} } }, env)
   const p = paths(env)
   await mkdir(join(home, '.ssh', 'config.d'), { recursive: true })
   // 插件加 Include 的真实样子：注释 + Include + 空行 + 用户原来的内容
-  await writeFile(p.sshConfig, `# Added by dsh-vps-manager\nInclude config.d/dsh-vps.conf\n\n${userConfig}`)
+  await writeFile(p.sshConfig, `# Added by vpssh\nInclude config.d/vpssh.conf\n\n${userConfig}`)
   await writeFile(p.sshDropin, 'Host hk\n  HostName 1.2.3.4\n')
   await writeFile(p.defaultKey, 'PRIVATE')
-  await writeFile(`${p.defaultKey}.pub`, `ssh-ed25519 ${KEY_BODY} dsh-vps`)
+  await writeFile(`${p.defaultKey}.pub`, `ssh-ed25519 ${KEY_BODY} vpssh`)
   const runner = (alias, payload, opts = {}) => runProcess('sh', ['-s'], {
     input: payload, env: { ...process.env, HOME: home }, signal: opts.signal, timeoutMs: opts.timeoutMs,
     onStdout: opts.onStdout, onStderr: opts.onStderr,
@@ -39,7 +39,7 @@ test('预览：只列真的存在的东西，并说明能不能直接移除、�
   assert.deepEqual(pv.hosts, ['hk'])
   assert.deepEqual(pv.present, { sshConfig: true, key: true, data: true })
   assert.deepEqual(pv.desktop, { canRemove: false, canRestart: false })
-  assert.equal(pv.removeCommand, 'dsh plugin remove dsh-vps-manager')
+  assert.equal(pv.removeCommand, 'dsh plugin remove vpssh')
 
   const withDesktop = await uninstallPreview({ env, desktop: { pnpm: {}, profileDir: '/p', actions: {} } })
   assert.deepEqual(withDesktop.desktop, { canRemove: true, canRestart: true })
@@ -51,13 +51,13 @@ test('本机清理：只去掉插件加的 Include，用户自己的配置一字
   assert.equal(res.ok, true, JSON.stringify(res.steps))
 
   assert.equal(await readFile(p.sshConfig, 'utf8'), 'Host github.com\n  User git\n', '用户原来的内容必须原样保留')
-  assert.match(await readFile(`${p.sshConfig}.dsh-uninstall-bak`, 'utf8'), /Include config\.d\/dsh-vps\.conf/)
+  assert.match(await readFile(`${p.sshConfig}.dsh-uninstall-bak`, 'utf8'), /Include config\.d\/vpssh\.conf/)
   assert.equal(await exists(p.sshDropin), false)
   assert.equal(await exists(`${p.sshDropin}.uninstall-bak`), true, 'drop-in 改名留作备份，不是直接删')
   assert.equal(await exists(p.defaultKey), false)
   assert.equal(await exists(`${p.defaultKey}.pub`), false)
   assert.equal(await exists(p.base), false)
-  assert.equal(await exists(join(env.DSH_HOME)), true, '只删 vps-manager，不能动整个 DSH 目录')
+  assert.equal(await exists(join(env.DSH_HOME)), true, '只删 vpssh，不能动整个 DSH 目录')
 })
 
 test('不勾的项一律不动', async () => {
@@ -70,11 +70,11 @@ test('不勾的项一律不动', async () => {
 
 test('服务器上：清插件目录；有任务在跑就跳过', async () => {
   const { env, home, runner } = await sandbox()
-  const cache = join(home, '.cache', 'dsh-vps')
+  const cache = join(home, '.cache', 'vpssh')
   await mkdir(join(cache, 'tasks', 't1'), { recursive: true })
   const cleaned = await runUninstall({ env, runner, choices: { remoteCache: true } })
   assert.equal(cleaned.steps[0].ok, true, cleaned.steps[0].text)
-  assert.match(cleaned.steps[0].text, /^hk：已删除 ~\/\.cache\/dsh-vps/)
+  assert.match(cleaned.steps[0].text, /^hk：已删除 ~\/\.cache\/vpssh/)
   assert.equal(await exists(join(cache, 'tasks')), false)
 
   // 用本进程的 pid 冒充一个还活着的改动任务
@@ -89,12 +89,12 @@ test('服务器上：清插件目录；有任务在跑就跳过', async () => {
 test('服务器上：只撤销插件钥匙那一行，别的钥匙保留，改前备份', async () => {
   const { env, home, runner, p } = await sandbox()
   const ak = join(home, '.ssh', 'authorized_keys')
-  await writeFile(ak, `${OTHER_KEY}\nssh-ed25519 ${KEY_BODY} dsh-vps\n`)
+  await writeFile(ak, `${OTHER_KEY}\nssh-ed25519 ${KEY_BODY} vpssh\n`)
   const res = await runUninstall({ env, runner, choices: { revokeKey: true } })
   assert.equal(res.steps[0].ok, true, res.steps[0].text)
   assert.match(res.steps[0].text, /已从 authorized_keys 删掉插件钥匙/)
   assert.equal(await readFile(ak, 'utf8'), `${OTHER_KEY}\n`)
-  assert.match(await readFile(`${ak}.dsh-vps-bak`, 'utf8'), new RegExp(KEY_BODY))
+  assert.match(await readFile(`${ak}.vpssh-bak`, 'utf8'), new RegExp(KEY_BODY))
 
   // 本机公钥已经没了：没法判断是哪一行，宁可不撤销
   await writeFile(`${p.defaultKey}.pub`, '')
@@ -116,7 +116,7 @@ test('顺序：服务器上的先做，本机连接配置和钥匙后删，插�
     choices: { data: true, key: true, sshConfig: true, plugin: true, revokeKey: true, remoteCache: true },
   })
   assert.deepEqual(res.steps.map((s) => s.id), ['remoteCache', 'revokeKey', 'sshConfig', 'key', 'data', 'plugin'])
-  assert.deepEqual(calls, [{ args: ['remove', 'dsh-vps-manager'], dir: '/profiles/desktop' }])
+  assert.deepEqual(calls, [{ args: ['remove', 'vpssh'], dir: '/profiles/desktop' }])
   assert.equal(res.canRestart, true)
 })
 
@@ -142,7 +142,7 @@ test('移除插件：DSH Desktop 走宿主服务；失败说清原因；普通 d
 
   const plain = await runUninstall({ env, choices: { plugin: true } })
   assert.equal(plain.steps[0].ok, false)
-  assert.match(plain.steps[0].text, /dsh plugin remove dsh-vps-manager/)
+  assert.match(plain.steps[0].text, /dsh plugin remove vpssh/)
   assert.equal(plain.canRestart, false)
 })
 
@@ -170,7 +170,7 @@ test('插件管理器不让移除：把原因说成人话，并给出可以自�
   const refuse = (code) => ({ removeBundle: async () => ({ application: 'failed', error: { code } }) })
   const stop = await removePluginViaManager({ pluginManager: refuse('stop-profile') })
   assert.equal(stop.ok, false)
-  assert.match(stop.text, /完全退出 DSH 后在终端执行 dsh plugin remove dsh-vps-manager/)
+  assert.match(stop.text, /完全退出 DSH 后在终端执行 dsh plugin remove vpssh/)
   assert.match((await removePluginViaManager({ pluginManager: refuse('bundle-in-use') })).text, /再到这里卸载一次/)
   assert.match((await removePluginViaManager({ pluginManager: refuse('weird') })).text, /移除插件失败（weird）/)
   assert.match((await removePluginViaManager({ pluginManager: { removeBundle: async () => { throw new Error('lock busy') } } })).text, /lock busy/)

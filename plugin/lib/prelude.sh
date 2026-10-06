@@ -1,4 +1,4 @@
-# dsh-vps 前导脚本（设计 8.5）
+# vpssh 前导脚本（设计 8.5）
 # 由插件在每次远端执行前注入到脚本最前面。POSIX sh，不用 bash 专有语法。
 # 提供：OS_ID / OS_LIKE / OS_VER / OS_FAMILY / PKG / INIT / SUDO 与一组辅助函数。
 
@@ -55,7 +55,7 @@ fi
 # 需要 root 的地方先调它：没有权限就以 96 退出，插件据此返回 no_privilege
 need_root() {
   if [ "$SUDO" = "__NO_PRIV__" ]; then
-    echo "dsh-vps: 需要 root 权限，但当前用户不是 root，也没有免密 sudo" >&2
+    echo "vpssh: 需要 root 权限，但当前用户不是 root，也没有免密 sudo" >&2
     exit 96
   fi
   return 0
@@ -63,7 +63,7 @@ need_root() {
 
 # 不适用当前系统时以 95 退出，插件据此返回 requires_unmet
 not_supported() {
-  echo "dsh-vps: ${1:-当前系统不受支持} (os=$OS_ID $OS_VER, pkg=$PKG, init=$INIT)" >&2
+  echo "vpssh: ${1:-当前系统不受支持} (os=$OS_ID $OS_VER, pkg=$PKG, init=$INIT)" >&2
   exit 95
 }
 

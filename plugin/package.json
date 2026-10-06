@@ -1,41 +1,26 @@
 {
-  "name": "dsh-vps-manager",
-  "version": "0.6.5",
-  "description": "Manage your VPS from DeepSeek Harness over SSH: zero-token commands, an in-conversation terminal, AI tools with risk-tiered confirmation, and a recipe library. · 在 DSH 里通过 SSH 管理 VPS：不花 token 的命令、对话里的终端、按风险分级确认的 AI 工具、菜谱库。",
+  "name": "vpssh",
+  "version": "0.0.1",
+  "description": "AI-driven VPS management and SSH tool for every platform. · 全平台 AI 驱动的 VPS 管理及 SSH 工具。",
   "keywords": [
-    "dsh-plugin",
-    "deepseek-harness",
-    "deepseek-harness-plugin",
-    "dsh",
-    "dsh-plugins",
-    "deepseek",
-    "cordis",
     "vps",
     "ssh",
+    "ai",
     "server-management",
-    "sysadmin",
-    "devops",
     "self-hosted",
-    "linux",
-    "terminal",
     "web-terminal",
-    "xterm",
-    "ssh-terminal",
-    "aiops",
-    "ai-agent",
-    "llm-tools",
-    "remote-server",
-    "server-admin"
+    "sysadmin"
   ],
   "license": "MIT",
   "author": "AIcivilization",
-  "homepage": "https://github.com/AIcivilization/dsh-vps-manager#readme",
+  "homepage": "https://github.com/AIcivilization/vpssh#readme",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AIcivilization/dsh-vps-manager.git"
+    "url": "git+https://github.com/AIcivilization/vpssh.git",
+    "directory": "plugin"
   },
   "bugs": {
-    "url": "https://github.com/AIcivilization/dsh-vps-manager/issues"
+    "url": "https://github.com/AIcivilization/vpssh/issues"
   },
   "type": "module",
   "main": "./lib/index.js",
@@ -52,8 +37,6 @@
     "lib/**",
     "recipes/**",
     "cordis.patch.yml",
-    "README.md",
-    "README.zh-CN.md",
     "LICENSE"
   ],
   "dsh": {
@@ -91,5 +74,6 @@
   "devDependencies": {
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
-  }
+  },
+  "private": true
 }

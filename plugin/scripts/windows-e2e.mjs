@@ -34,7 +34,7 @@ const ALIAS = 'e2e'
 const SESSION = 'sess-e2e'
 
 // 插件数据放临时目录；ssh 配置和钥匙照真实情况写到用户目录（ssh 只认那里）
-const env = { ...process.env, DSH_HOME: await mkdtemp(join(tmpdir(), 'dsh-vps-e2e-')) }
+const env = { ...process.env, DSH_HOME: await mkdtemp(join(tmpdir(), 'vpssh-e2e-')) }
 
 const { registerRoutes } = await import('../lib/routes.js')
 const { bindSession, paths } = await import('../lib/config.js')
@@ -61,10 +61,10 @@ const LOCAL = { remoteAddress: '127.0.0.1' }
 async function api(path, body = {}) {
   const req = Readable.from([Buffer.from(JSON.stringify(body))])
   req.method = 'POST'
-  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
   req.socket = LOCAL
   const out = {}
-  await routes.get(`/api-vps/${path}`)(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = t ? JSON.parse(t) : null } })
+  await routes.get(`/api-vpssh/${path}`)(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = t ? JSON.parse(t) : null } })
   return out.body
 }
 const files = (path, body = {}) => api(`files/${path}`, { sessionId: SESSION, ...body })
@@ -157,11 +157,11 @@ await step('文件页：上传二进制文件（原样到达）', async () => {
   const target = `${home}/e2e 目录/blob.bin`
   const req = Readable.from([blob])
   req.method = 'POST'
-  req.url = `/api-vps/files/upload?sessionId=${SESSION}&path=${encodeURIComponent(target)}&size=${blob.length}`
-  req.headers = { host: '127.0.0.1:3000', 'content-type': 'application/octet-stream', 'x-dsh-vps-token': reg.token }
+  req.url = `/api-vpssh/files/upload?sessionId=${SESSION}&path=${encodeURIComponent(target)}&size=${blob.length}`
+  req.headers = { host: '127.0.0.1:3000', 'content-type': 'application/octet-stream', 'x-vpssh-token': reg.token }
   req.socket = LOCAL
   const out = {}
-  await routes.get('/api-vps/files/upload')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
+  await routes.get('/api-vpssh/files/upload')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
   assert.equal(out.body?.ok, true, out.body?.error)
   const res = await runRemote({ alias: ALIAS, body: `wc -c < "$HOME/e2e 目录/blob.bin"; sha256sum "$HOME/e2e 目录/blob.bin"`, env })
   assert.match(res.stdout, new RegExp(`^\\s*${blob.length}\\s*$`, 'm'))
@@ -180,7 +180,7 @@ await step('文件页：下载（字节一致）', async () => {
   req.url = ticket.url
   req.headers = { host: '127.0.0.1:3000' }
   req.socket = LOCAL
-  await routes.get('/api-vps/files/fetch')(req, res)
+  await routes.get('/api-vpssh/files/fetch')(req, res)
   await new Promise((r) => (res.writableFinished ? r() : res.on('finish', r)))
   assert.equal(res.code, 200)
   assert.ok(Buffer.concat(chunks).equals(blob), `下载到 ${Buffer.concat(chunks).length} 字节，应为 ${blob.length}`)

@@ -1,11 +1,11 @@
 // lib/i18n.js — 服务端说什么语言：跟着 DSH 界面走
 //
 // DSH 的语言设置只交给浏览器那一层，插件的服务端读不到。所以由界面在每个请求里带上当前语言
-// （请求头 x-dsh-vps-lang，终端连接是网址里的 lang），服务端在处理这个请求期间照它回话：
+// （请求头 x-vpssh-lang，终端连接是网址里的 lang），服务端在处理这个请求期间照它回话：
 // 报错、提示、卸载每一步的结果都用这个语言。
 //
 // 没有请求可依的场合（/vps- 命令的输出、审批弹窗、后台任务）用最近一次请求带来的语言；
-// 一次都没有过，看环境变量 DSH_VPS_LANG（测试固定成中文用），再看电脑的系统语言。
+// 一次都没有过，看环境变量 VPSSH_LANG（测试固定成中文用），再看电脑的系统语言。
 //
 // 只分中文、英文两种：DSH 自带的就是这两种，别的语言包最终都退回其中一种（界面那一层算好再发过来）。
 // 写法：L('中文', 'English')，两种文字挨着写，改一处时另一处就在眼前。
@@ -13,7 +13,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 
 /** 界面在每个请求里带当前语言用的请求头 */
-export const LANG_HEADER = 'x-dsh-vps-lang'
+export const LANG_HEADER = 'x-vpssh-lang'
 
 const store = new AsyncLocalStorage()
 let lastLang = ''
@@ -38,7 +38,7 @@ export function systemLang(env = process.env) {
 
 /** 现在该说哪种语言 */
 export function currentLang() {
-  return store.getStore() || lastLang || normalizeLang(process.env.DSH_VPS_LANG) || systemLang()
+  return store.getStore() || lastLang || normalizeLang(process.env.VPSSH_LANG) || systemLang()
 }
 
 /**

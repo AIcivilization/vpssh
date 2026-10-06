@@ -9,10 +9,10 @@ import { classifyScript } from '../lib/risk.js'
 import { RecipeError, loadRecipes, runRecipe, validateRecipe } from '../lib/recipes.js'
 import { runProcess } from '../lib/spawn.js'
 
-const emptyEnv = { HOME: '/nonexistent-dsh-vps', DSH_HOME: '/nonexistent-dsh-vps/.dsh' }
+const emptyEnv = { HOME: '/nonexistent-vpssh', DSH_HOME: '/nonexistent-vpssh/.dsh' }
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-rec-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-rec-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await mkdir(paths(env).recipesDir, { recursive: true })
   const runner = (alias, payload, opts = {}) =>

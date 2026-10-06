@@ -48,7 +48,7 @@ function fakeWebServer({ host = '127.0.0.1' } = {}) {
 }
 
 async function sandbox({ lan = false, terminals, reachRun } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-routes-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-routes-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: 'hk', hosts: { hk: { note: '香港', group: '生产' } } }, env)
   const runner = (alias, payload, opts = {}) =>
@@ -56,10 +56,10 @@ async function sandbox({ lan = false, terminals, reachRun } = {}) {
   const ws = fakeWebServer({ host: lan ? '0.0.0.0' : '127.0.0.1' })
   const reg = registerRoutes({ webServer: ws }, { env, runner, terminals, reachRun })
   const call = async (path, body, headers = {}) => {
-    const handler = ws.routes.get(`/api-vps/${path}`)
+    const handler = ws.routes.get(`/api-vpssh/${path}`)
     assert.ok(handler, `没有注册路由 ${path}`)
     const res = makeRes()
-    await handler(makeReq({ body, headers: { 'x-dsh-vps-token': reg.token, ...headers } }), res)
+    await handler(makeReq({ body, headers: { 'x-vpssh-token': reg.token, ...headers } }), res)
     return res.out
   }
   return { home, env, ws, reg, call }
@@ -68,9 +68,9 @@ async function sandbox({ lan = false, terminals, reachRun } = {}) {
 test('token 注入页面，没有 token 的请求一律拒绝', async () => {
   const { ws, reg, call } = await sandbox()
   const html = ws.taps[0]('<html><head></head><body></body></html>')
-  assert.match(html, /window\.__DSH_VPS_TOKEN__="[a-f0-9]{48}"/)
+  assert.match(html, /window\.__VPSSH_TOKEN__="[a-f0-9]{48}"/)
 
-  const handler = ws.routes.get('/api-vps/overview')
+  const handler = ws.routes.get('/api-vpssh/overview')
   const res = makeRes()
   await handler(makeReq({ body: {} }), res) // 不带 token
   assert.equal(res.out.code, 403)
@@ -83,24 +83,24 @@ test('token 注入页面，没有 token 的请求一律拒绝', async () => {
 
 test('跨站请求、GET、非 JSON 都拒绝', async () => {
   const { ws, reg } = await sandbox()
-  const handler = ws.routes.get('/api-vps/overview')
+  const handler = ws.routes.get('/api-vpssh/overview')
 
   const cross = makeRes()
-  await handler(makeReq({ headers: { 'x-dsh-vps-token': reg.token, origin: 'https://evil.example' } }), cross)
+  await handler(makeReq({ headers: { 'x-vpssh-token': reg.token, origin: 'https://evil.example' } }), cross)
   assert.equal(cross.out.code, 403)
   assert.match(cross.out.body.error, /跨站/)
 
   const get = makeRes()
-  await handler(makeReq({ method: 'GET', headers: { 'x-dsh-vps-token': reg.token } }), get)
+  await handler(makeReq({ method: 'GET', headers: { 'x-vpssh-token': reg.token } }), get)
   assert.equal(get.out.code, 405)
 
   const form = makeRes()
-  await handler(makeReq({ headers: { 'x-dsh-vps-token': reg.token, 'content-type': 'text/plain' } }), form)
+  await handler(makeReq({ headers: { 'x-vpssh-token': reg.token, 'content-type': 'text/plain' } }), form)
   assert.equal(form.out.code, 415)
 
   // 同源的 Origin 放行
   const same = makeRes()
-  await handler(makeReq({ headers: { 'x-dsh-vps-token': reg.token, origin: 'http://127.0.0.1:3000' } }), same)
+  await handler(makeReq({ headers: { 'x-vpssh-token': reg.token, origin: 'http://127.0.0.1:3000' } }), same)
   assert.equal(same.out.code, 200)
 })
 

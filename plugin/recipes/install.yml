@@ -90,7 +90,7 @@ recipes:
     desc_en: "Enable BBR + fq for better throughput on high-latency links"
     plan_en: |
       1. Check that the kernel supports bbr (4.9 and later do)
-      2. Write /etc/sysctl.d/99-dsh-vps-bbr.conf
+      2. Write /etc/sysctl.d/99-vpssh-bbr.conf
       3. Apply it with sysctl and check the active congestion control algorithm again
     tags: [网络, 常用]
     shell: sh
@@ -104,7 +104,7 @@ recipes:
       [ "$cur" = bbr ]
     plan: |
       1. 检查内核是否支持 bbr（4.9 以上都支持）
-      2. 写入 /etc/sysctl.d/99-dsh-vps-bbr.conf
+      2. 写入 /etc/sysctl.d/99-vpssh-bbr.conf
       3. sysctl 生效并复查当前拥塞控制算法
     run: |
       need_root
@@ -114,8 +114,8 @@ recipes:
       $SUDO sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr \
         || not_supported "这个内核不支持 BBR（需要 4.9 以上）"
       printf 'net.core.default_qdisc=fq\nnet.ipv4.tcp_congestion_control=bbr\n' \
-        | $SUDO tee /etc/sysctl.d/99-dsh-vps-bbr.conf >/dev/null
-      $SUDO sysctl --system >/dev/null 2>&1 || $SUDO sysctl -p /etc/sysctl.d/99-dsh-vps-bbr.conf >/dev/null
+        | $SUDO tee /etc/sysctl.d/99-vpssh-bbr.conf >/dev/null
+      $SUDO sysctl --system >/dev/null 2>&1 || $SUDO sysctl -p /etc/sysctl.d/99-vpssh-bbr.conf >/dev/null
     verify: |
       cur=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
       qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)

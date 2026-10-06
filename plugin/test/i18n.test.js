@@ -62,13 +62,13 @@ test('SSH 报错原因按当时的语言说（表是启动时建的，文字要�
 })
 
 async function sandbox() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-i18n-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-i18n-'))
   const env = { HOME: dir, DSH_HOME: join(dir, '.dsh') }
   await writeHosts({ current: '', hosts: {} }, env)
   return { dir, env }
 }
 
-test('设置页接口：请求头 x-dsh-vps-lang 是什么语言，报错就是什么语言', async () => {
+test('设置页接口：请求头 x-vpssh-lang 是什么语言，报错就是什么语言', async () => {
   const { env } = await sandbox()
   const routes = new Map()
   const ws = { config: { host: '127.0.0.1', port: 3000 }, register({ path, handler }) { routes.set(path, handler); return () => {} }, tapIndex() { return () => {} } }
@@ -76,10 +76,10 @@ test('设置页接口：请求头 x-dsh-vps-lang 是什么语言，报错就是�
   const call = async (lang) => {
     const req = Readable.from([Buffer.from(JSON.stringify({ sessionId: 'nobody' }))])
     req.method = 'POST'
-    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token, 'x-dsh-vps-lang': lang }
+    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token, 'x-vpssh-lang': lang }
     req.socket = { remoteAddress: '127.0.0.1' }
     const out = {}
-    await routes.get('/api-vps/files/places')(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
+    await routes.get('/api-vpssh/files/places')(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
     return out.body
   }
   assert.equal((await call('en')).error, 'This conversation has not turned on the VPS switch yet')
@@ -123,7 +123,7 @@ async function loadClient({ pageLang } = {}) {
   let spec = null
   globalThis.window = {
     __ModuleLoader__: { load: (s) => { spec = s } },
-    __DSH_VPS_TOKEN__: 'test-token-123',
+    __VPSSH_TOKEN__: 'test-token-123',
     confirm: () => true,
     innerHeight: 800,
     location: { origin: 'http://127.0.0.1:3000' },
@@ -191,7 +191,7 @@ test('界面：跟 DSH 的语言服务走，语言包按它声明的退回链落
   snap = { ...snap, active: 'en' }
   notify()
   await api('overview', {})
-  assert.equal(calls.at(-1).init.headers['x-dsh-vps-lang'], 'en', '请求里带上当前语言，服务端照它说')
+  assert.equal(calls.at(-1).init.headers['x-vpssh-lang'], 'en', '请求里带上当前语言，服务端照它说')
 })
 
 /** 从 `const NAME = {` 或 `[` 开始，取到配对的右括号为止（跳过字符串里的括号） */

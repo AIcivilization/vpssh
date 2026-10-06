@@ -44,7 +44,7 @@ test('runProcess 接取消信号', async () => {
 })
 
 test('runProcess 区分“本机没有这个命令”', async () => {
-  await assert.rejects(runProcess('dsh-vps-no-such-cmd', []), (e) => {
+  await assert.rejects(runProcess('vpssh-no-such-cmd', []), (e) => {
     assert.ok(e instanceof ProcessError)
     assert.equal(e.code, 'not_found')
     return true

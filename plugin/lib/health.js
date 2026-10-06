@@ -23,7 +23,7 @@ const VERIFIED = require('./verified-dsh.json')
 // 跑着的还是老代码：两者不一样就提示重启（见 diagnostics 的 restartNeeded）
 const LOADED_VERSION = require('../package.json').version
 
-export const REPO_URL = 'https://github.com/AIcivilization/dsh-vps-manager'
+export const REPO_URL = 'https://github.com/AIcivilization/vpssh'
 const KEEP_MONTHS = 3
 const MAX_ERRORS_PER_BOOT = 50
 

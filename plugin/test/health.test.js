@@ -10,7 +10,7 @@ import {
 } from '../lib/health.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-health-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-health-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: 'hk', hosts: { hk: { note: '香港' } } }, env)
   return { home, env }
@@ -35,10 +35,10 @@ test('错误记录：打码后存本地，新的在前', async () => {
   assert.equal(errors.length, 2)
   assert.equal(errors[0].source, 'load', '新的在前')
   assert.doesNotMatch(errors[1].message, /hunter2|abcdef123456/, '密码和令牌先打码再落盘')
-  const files = await readdir(join(home, '.dsh/vps-manager/logs'))
+  const files = await readdir(join(home, '.dsh/vpssh/logs'))
   assert.equal(files.length, 1)
   assert.match(files[0], /^errors-\d{4}-\d{2}\.jsonl$/)
-  const raw = await readFile(join(home, '.dsh/vps-manager/logs', files[0]), 'utf8')
+  const raw = await readFile(join(home, '.dsh/vpssh/logs', files[0]), 'utf8')
   assert.doesNotMatch(raw, /hunter2/)
 })
 
@@ -59,7 +59,7 @@ test('诊断汇总与反馈链接：带版本和注册情况，不带机器地�
   assert.doesNotMatch(text, /hk|香港/, '机器名和备注不进问题单')
 
   const url = new URL(feedbackUrl(diag))
-  assert.equal(url.origin + url.pathname, 'https://github.com/AIcivilization/dsh-vps-manager/issues/new')
+  assert.equal(url.origin + url.pathname, 'https://github.com/AIcivilization/vpssh/issues/new')
   assert.equal(url.searchParams.get('template'), 'bug_report.yml')
   assert.equal(url.searchParams.get('plugin-version'), diag.plugin)
   assert.match(url.searchParams.get('diagnostics'), /命令注册失败/)

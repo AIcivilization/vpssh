@@ -16,7 +16,7 @@ const AUTO_RESTART = new Set(['always', 'unless-stopped'])
 
 // 脚本用 String.raw：里面的 \n 要原样交给远端 tr，不能被 JS 提前换成换行
 export const SCRIPTS = {
-  check: String.raw`# dsh-vps:reboot-check
+  check: String.raw`# vpssh:reboot-check
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 echo "kernel=$(uname -r)"
 echo "latest_kernel=$(ls /boot/vmlinuz-* 2>/dev/null | sed 's#.*/vmlinuz-##' | sort -V | tail -1)"
@@ -30,7 +30,7 @@ echo "required=$req"
 # unattended-upgrade-shutdown 只是常驻等关机信号，不算在装
 busy=$(ps -eo pid=,args= 2>/dev/null | grep -E '(^|[ /])(apt|apt-get|aptitude|dpkg|unattended-upgrade|dnf|yum|zypper|pacman|apk)( |$)' | grep -v -e unattended-upgrade-shutdown -e 'grep -E' | head -2 | tr '\n' ';')
 echo "pkg_busy=$busy"
-L="$HOME/.cache/dsh-vps/lock"
+L="$HOME/.cache/vpssh/lock"
 if [ -d "$L" ]; then
   p=$(cat "$L/pid" 2>/dev/null)
   if [ -n "$p" ] && kill -0 "$p" 2>/dev/null; then
@@ -45,7 +45,7 @@ if has_cmd docker && [ "$SUDO" != "__NO_PRIV__" ]; then
 fi
 `,
 
-  trigger: String.raw`# dsh-vps:reboot-trigger
+  trigger: String.raw`# vpssh:reboot-trigger
 need_root
 if has_cmd setsid; then LAUNCH=setsid; else LAUNCH=nohup; fi
 if [ "$INIT" = systemd ]; then CMD="systemctl reboot"; else CMD="reboot"; fi
@@ -54,11 +54,11 @@ echo "boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 echo "scheduled=1"
 `,
 
-  probe: String.raw`# dsh-vps:reboot-probe
+  probe: String.raw`# vpssh:reboot-probe
 echo "boot_id=$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
 `,
 
-  after: String.raw`# dsh-vps:reboot-after
+  after: String.raw`# vpssh:reboot-after
 echo "kernel=$(uname -r)"
 echo "uptime=$(uptime -p 2>/dev/null | sed 's/^up //')"
 [ -f /var/run/reboot-required ] && echo required=1 || echo required=0

@@ -46,7 +46,7 @@ function fakeCtx() {
 }
 
 async function sandboxEnv() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-token-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-token-'))
   const env = { HOME: dir, DSH_HOME: join(dir, '.dsh') }
   await writeHosts({ current: '', hosts: {} }, env)
   return env
@@ -66,25 +66,25 @@ test('官方桌面版：令牌也作为结构化注入行交出去（页面从�
   const { ctx, taps, listeners } = fakeCtx()
   const reg = registerRoutes(ctx, { env: await sandboxEnv(), token: 'abc123abc123abc123abc123' })
   const rows = ctx.webServer.collectIndexInjections()
-  assert.deepEqual(rows, [{ kind: 'global', name: '__DSH_VPS_TOKEN__', value: 'abc123abc123abc123abc123' }])
+  assert.deepEqual(rows, [{ kind: 'global', name: '__VPSSH_TOKEN__', value: 'abc123abc123abc123abc123' }])
   assert.equal(taps.size, 1, '老版本 DSH 只有 tapIndex')
   reg.dispose()
   assert.equal(listeners.get('webserver/index-inject').size, 0, '卸载时一并撤掉')
   assert.equal(taps.size, 0)
 })
 
-test('/api-vps/token：同源、JSON 才给当前令牌；跨站、非 JSON、GET 都不给', async () => {
+test('/api-vpssh/token：同源、JSON 才给当前令牌；跨站、非 JSON、GET 都不给', async () => {
   const { ctx, exact } = fakeCtx()
   const reg = registerRoutes(ctx, { env: await sandboxEnv() })
-  const ok = await call(exact, '/api-vps/token')
+  const ok = await call(exact, '/api-vpssh/token')
   assert.equal(ok.code, 200)
   assert.equal(ok.body.token, reg.token, '不需要带令牌就能取（正是令牌对不上时用的）')
-  assert.equal((await call(exact, '/api-vps/token', { headers: { origin: 'https://evil.example' } })).code, 403)
-  assert.equal((await call(exact, '/api-vps/token', { headers: { 'content-type': 'text/plain' } })).code, 415)
-  assert.equal((await call(exact, '/api-vps/token', { method: 'GET' })).code, 405)
+  assert.equal((await call(exact, '/api-vpssh/token', { headers: { origin: 'https://evil.example' } })).code, 403)
+  assert.equal((await call(exact, '/api-vpssh/token', { headers: { 'content-type': 'text/plain' } })).code, 415)
+  assert.equal((await call(exact, '/api-vpssh/token', { method: 'GET' })).code, 405)
   // 别的接口仍然要令牌
-  assert.equal((await call(exact, '/api-vps/overview')).code, 403)
-  assert.equal((await call(exact, '/api-vps/overview', { headers: { 'x-dsh-vps-token': reg.token } })).code, 200)
+  assert.equal((await call(exact, '/api-vpssh/overview')).code, 403)
+  assert.equal((await call(exact, '/api-vpssh/overview', { headers: { 'x-vpssh-token': reg.token } })).code, 200)
 })
 
 // —— 界面 ——
@@ -93,7 +93,7 @@ async function loadClient({ token = 'test-token-123', fetchImpl, transport } = {
   let spec = null
   globalThis.window = {
     __ModuleLoader__: { load: (s) => { spec = s } },
-    __DSH_VPS_TOKEN__: token,
+    __VPSSH_TOKEN__: token,
     location: { origin: 'dsh-app://app' },
     addEventListener() {},
     removeEventListener() {},
@@ -112,14 +112,14 @@ test('页面里根本没有令牌（官方桌面版、注入行没赶上）：�
     token: '',
     fetchImpl: async (url, init) => {
       calls.push(url)
-      if (url === '/api-vps/token') return { status: 200, json: async () => ({ ok: true, token: 'fresh-token-0123456789' }) }
-      if (init?.headers?.['x-dsh-vps-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true, hosts: ['la'] }) }
+      if (url === '/api-vpssh/token') return { status: 200, json: async () => ({ ok: true, token: 'fresh-token-0123456789' }) }
+      if (init?.headers?.['x-vpssh-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true, hosts: ['la'] }) }
       return { status: 403, json: async () => ({ ok: false, error: 'token 不对' }) }
     },
   })
   const data = await exported.__test.api('overview')
   assert.deepEqual(data.hosts, ['la'])
-  assert.deepEqual(calls, ['/api-vps/token', '/api-vps/overview'])
+  assert.deepEqual(calls, ['/api-vpssh/token', '/api-vpssh/overview'])
 })
 
 test('令牌对不上（DSH 重启过、插件热更新过）：悄悄换新的再试一次，用户看不到任何提示', async () => {
@@ -128,15 +128,15 @@ test('令牌对不上（DSH 重启过、插件热更新过）：悄悄换新的�
     token: 'stale-token-0000000000',
     fetchImpl: async (url, init) => {
       calls.push(url)
-      if (url === '/api-vps/token') return { status: 200, json: async () => ({ ok: true, token: 'fresh-token-0123456789' }) }
-      if (init?.headers?.['x-dsh-vps-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true, hosts: ['la'] }) }
+      if (url === '/api-vpssh/token') return { status: 200, json: async () => ({ ok: true, token: 'fresh-token-0123456789' }) }
+      if (init?.headers?.['x-vpssh-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true, hosts: ['la'] }) }
       return { status: 403, json: async () => ({ ok: false, error: 'token 不对' }) }
     },
   })
   const data = await exported.__test.api('overview')
   assert.deepEqual(data.hosts, ['la'])
-  assert.deepEqual(calls, ['/api-vps/overview', '/api-vps/token', '/api-vps/overview'])
-  assert.equal(globalThis.window.__DSH_VPS_TOKEN__, 'fresh-token-0123456789')
+  assert.deepEqual(calls, ['/api-vpssh/overview', '/api-vpssh/token', '/api-vpssh/overview'])
+  assert.equal(globalThis.window.__VPSSH_TOKEN__, 'fresh-token-0123456789')
 })
 
 test('好几个请求同时发现令牌不对：只换一次', async () => {
@@ -144,12 +144,12 @@ test('好几个请求同时发现令牌不对：只换一次', async () => {
   const exported = await loadClient({
     token: 'stale-token-0000000000',
     fetchImpl: async (url, init) => {
-      if (url === '/api-vps/token') {
+      if (url === '/api-vpssh/token') {
         tokenCalls += 1
         await new Promise((r) => setTimeout(r, 10))
         return { status: 200, json: async () => ({ ok: true, token: 'fresh-token-0123456789' }) }
       }
-      if (init?.headers?.['x-dsh-vps-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true }) }
+      if (init?.headers?.['x-vpssh-token'] === 'fresh-token-0123456789') return { status: 200, json: async () => ({ ok: true }) }
       return { status: 403, json: async () => ({ ok: false, error: 'token 不对' }) }
     },
   })
@@ -160,7 +160,7 @@ test('好几个请求同时发现令牌不对：只换一次', async () => {
 test('终端连哪里：官方桌面版用 DSH 给的实时连接地址（127.0.0.1），其他情况用页面自己的地址', async () => {
   const desktop = await loadClient({ fetchImpl: async () => ({}), transport: { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:51234' } })
   assert.equal(desktop.__test.streamOrigin(), 'http://127.0.0.1:51234')
-  assert.match(desktop.__test.terminalUrl(desktop.__test.streamOrigin(), 's1', 80, 24), /^ws:\/\/127\.0\.0\.1:51234\/api-vps\/ws\/terminal\?/)
+  assert.match(desktop.__test.terminalUrl(desktop.__test.streamOrigin(), 's1', 80, 24), /^ws:\/\/127\.0\.0\.1:51234\/api-vpssh\/ws\/terminal\?/)
   const web = await loadClient({ fetchImpl: async () => ({}) })
   assert.equal(web.__test.streamOrigin(), 'dsh-app://app')
   delete globalThis.__DSH_TRANSPORT__

@@ -13,14 +13,12 @@ AI 用你自己填的模型 key，没有我们的服务器，免费开源（MIT�
 
 ## 组成
 
-vpssh 不复制、不修改 DeepSeek Harness，而是把几个现成的部分按测过的版本组合起来（见 [manifest.json](manifest.json)）：
-
-| 部分 | 作用 |
+| 目录 | 作用 |
 |---|---|
-| [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) | AI 对话、确认、多模型、插件系统 |
-| [dsh-vps](https://github.com/AIcivilization/dsh-vps) | 安装、登录网关、自动 HTTPS、一键升级 |
-| [dsh-vps-manager](https://github.com/AIcivilization/dsh-vps-manager) | 机器、终端、文件、状态、AI 工具 |
-| 本仓库 | vpssh 的品牌、默认布局、安装入口 |
+| `plugin/` | vpssh 的全部功能：机器、终端、文件、状态、AI 工具、品牌与布局 |
+| `server/` | 安装、登录网关、自动 HTTPS、升级、救援命令 |
+
+AI 对话、确认、多模型、会话由 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) 提供：从 npm 原样安装，不复制、不修改它的代码，用哪个版本见 [manifest.json](manifest.json)。
 
 基于 DeepSeek Harness 构建。vpssh 不是 DeepSeek 官方产品，也未获其授权或背书。
 

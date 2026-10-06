@@ -23,7 +23,7 @@ import {
 } from '../lib/config.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-cfg-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-cfg-'))
   await mkdir(join(home, '.ssh'), { recursive: true })
   return { HOME: home, DSH_HOME: join(home, '.dsh') }
 }
@@ -48,7 +48,7 @@ test('hosts.yml 读写往返，未知机器给出可读报错', async () => {
   assert.throws(() => getHost(doc, '-oProxyCommand=x'), (e) => e.code === 'invalid_alias')
 
   const text = await readFile(paths(env).hostsFile, 'utf8')
-  assert.match(text, /# dsh-vps-manager/)
+  assert.match(text, /# vpssh/)
 })
 
 test('确认档位优先级：机器 > 组 > 全局', async () => {
@@ -130,7 +130,7 @@ test('插件写自己的 drop-in，并在 ~/.ssh/config 顶部加 Include（先�
   const p = paths(env)
   await writeFile(p.sshConfig, 'Host old\n  HostName 1.1.1.1\n')
 
-  await upsertDropinHost({ alias: 'hk', hostname: '1.2.3.4', port: 2222, user: 'root', identityFile: '~/.ssh/dsh_vps_ed25519' }, env)
+  await upsertDropinHost({ alias: 'hk', hostname: '1.2.3.4', port: 2222, user: 'root', identityFile: '~/.ssh/vpssh_ed25519' }, env)
 
   const dropin = await readFile(p.sshDropin, 'utf8')
   assert.match(dropin, /Host hk/)
@@ -140,8 +140,8 @@ test('插件写自己的 drop-in，并在 ~/.ssh/config 顶部加 Include（先�
 
   const config = await readFile(p.sshConfig, 'utf8')
   const lines = config.split('\n').filter(Boolean)
-  assert.match(lines[0], /^# Added by dsh-vps-manager/)
-  assert.equal(lines[1], 'Include config.d/dsh-vps.conf', 'Include 必须在第一个 Host 之前')
+  assert.match(lines[0], /^# Added by vpssh/)
+  assert.equal(lines[1], 'Include config.d/vpssh.conf', 'Include 必须在第一个 Host 之前')
   assert.match(config, /Host old/, '用户原有内容不能丢')
   assert.match(await readFile(`${p.sshConfig}.dsh-bak`, 'utf8'), /Host old/)
 
@@ -176,14 +176,14 @@ test('终端设置规范化：三种颜色方案、字号 11–20、保留时长
 })
 
 async function uninstalledHome({ managed = true, backupHosts = 'vps-dsh' } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-repair-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-repair-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: 'vps-dsh', hosts: { 'vps-dsh': { note: '洛杉矶', managed } } }, env)
   await mkdir(join(home, '.ssh', 'config.d'), { recursive: true })
   const userConfig = 'Host vps\n    HostName 1.2.3.4\n    User root\n'
   await writeFile(join(home, '.ssh', 'config'), userConfig)
-  await writeFile(join(home, '.ssh', 'config.d', 'dsh-vps.conf.uninstall-bak'),
-    `# 由 dsh-vps-manager 维护\n\nHost ${backupHosts}\n  HostName 1.2.3.4\n  User root\n`)
+  await writeFile(join(home, '.ssh', 'config.d', 'vpssh.conf.uninstall-bak'),
+    `# 由 vpssh 维护\n\nHost ${backupHosts}\n  HostName 1.2.3.4\n  User root\n`)
   return { home, env, userConfig }
 }
 
@@ -191,10 +191,10 @@ test('卸载时移走了 SSH 配置、之后重装：启动时从备份恢复并
   const { home, env, userConfig } = await uninstalledHome()
   const res = await repairSshSetup(env)
   assert.equal(res.repaired.length, 2, res.repaired.join(' | '))
-  const dropin = await readFile(join(home, '.ssh', 'config.d', 'dsh-vps.conf'), 'utf8')
+  const dropin = await readFile(join(home, '.ssh', 'config.d', 'vpssh.conf'), 'utf8')
   assert.match(dropin, /Host vps-dsh/)
   const config = await readFile(join(home, '.ssh', 'config'), 'utf8')
-  assert.match(config, /^# Added by dsh-vps-manager\nInclude config\.d\/dsh-vps\.conf\n/)
+  assert.match(config, /^# Added by vpssh\nInclude config\.d\/vpssh\.conf\n/)
   assert.ok(config.endsWith(userConfig), '用户自己写的内容一字不动')
   assert.deepEqual((await repairSshSetup(env)).repaired, [], '修好之后再跑什么都不做')
 })
@@ -207,6 +207,6 @@ test('不该动的时候不动：机器是导入的（不归插件管）、或�
   const other = await uninstalledHome({ backupHosts: 'someone-else' })
   assert.deepEqual((await repairSshSetup(other.env)).repaired, [])
 
-  const empty = await mkdtemp(join(tmpdir(), 'dsh-vps-repair-'))
+  const empty = await mkdtemp(join(tmpdir(), 'vpssh-repair-'))
   assert.deepEqual((await repairSshSetup({ HOME: empty, DSH_HOME: join(empty, '.dsh') })).repaired, [], '一台机器都没有')
 })

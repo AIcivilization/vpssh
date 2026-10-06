@@ -109,7 +109,7 @@ export async function saveUserRecipe({ ctx, recipe: draft, agent, callId, signal
     ],
   })
   const header = [
-    '# 由 dsh-vps-manager 保存的自定义菜谱',
+    '# 由 vpssh 保存的自定义菜谱',
     `# 来源：${source}　保存时间：${new Date().toISOString()}`,
     '# 自定义菜谱：没经过多系统实测，改坏了自己负责',
     '',

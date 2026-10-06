@@ -1,10 +1,6 @@
 {
-  "//": "vpssh 每个版本固定一组组件版本，测过才发。installer 只认这里写的版本。",
+  "//": "vpssh 每个版本固定用哪个 DSH，测过才发。安装和升级只认这里写的版本。",
   "vpssh": "0.0.1",
-  "components": {
-    "@deepseek-ai/dsh": "0.1.7-rc.1",
-    "dsh-vps": "1.14.0",
-    "dsh-vps-manager": "0.6.5"
-  },
+  "dsh": "0.1.7-rc.1",
   "verified_at": null
 }

@@ -41,7 +41,7 @@ function fakeServer() {
 }
 
 async function env() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-dup-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-dup-'))
   const e = { HOME: dir, DSH_HOME: join(dir, '.dsh') }
   await writeHosts({ current: '', hosts: {} }, e)
   return e
@@ -65,7 +65,7 @@ test('第二份注册接口失败：不留下自己的令牌，页面里只有�
 test('终端注册到一半失败：已经注册的实时连接也撤掉', async () => {
   const ws = fakeServer()
   const e = await env()
-  ws.register({ path: '/api-vps/assets/xterm.mjs', handler: () => {} }) // 另一份占着这个文件路径
+  ws.register({ path: '/api-vpssh/assets/xterm.mjs', handler: () => {} }) // 另一份占着这个文件路径
   assert.throws(() => registerTerminal({ webServer: ws }, { env: e, token: 't' }), /duplicate exact route/)
   assert.equal(ws.upgrades.size, 0, '不能留下半截的终端连接入口')
 })
@@ -76,10 +76,10 @@ test('卸载有一步没成功：回复本身仍是成功，界面拿得到每�
   const reg = registerRoutes({ webServer: ws }, { env: e })
   const req = Readable.from([Buffer.from(JSON.stringify({ choices: { plugin: true } }))])
   req.method = 'POST'
-  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
   req.socket = { remoteAddress: '127.0.0.1' }
   const out = {}
-  await ws.exact.get('/api-vps/uninstall/run')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
+  await ws.exact.get('/api-vpssh/uninstall/run')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
   assert.equal(out.body.ok, true)
   assert.equal(out.body.allOk, false, '普通 dsh 下没法直接移除插件：这一步算没成功')
   assert.equal(out.body.steps[0].id, 'plugin')

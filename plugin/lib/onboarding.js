@@ -9,7 +9,7 @@
 //     之后一律用钥匙。密码只进那一次 ssh 子进程的环境变量，经 SSH_ASKPASS 小脚本交给 ssh：
 //     不写盘、不进日志、不保存，用完就丢
 //
-// 插件自己用专用钥匙 ~/.ssh/dsh_vps_ed25519，不动用户原有的钥匙。
+// 插件自己用专用钥匙 ~/.ssh/vpssh_ed25519，不动用户原有的钥匙。
 // 同一台服务器可以被好几台电脑上的插件同时管理（Windows、Mac、Linux 各装一份）：每台电脑
 // 各有一把钥匙，公钥备注带上电脑名，在 authorized_keys 里一眼分得清；卸载时只撤销自己那一行。
 
@@ -29,12 +29,12 @@ import { L } from './i18n.js'
 const exists = (f) => access(f, constants.F_OK).then(() => true, () => false)
 
 /**
- * 公钥备注：dsh-vps-manager@电脑名。服务器上的 authorized_keys 里看得出是哪台电脑放的。
- * 老版本生成的钥匙备注只有 dsh-vps-manager，照样认
+ * 公钥备注：vpssh@电脑名。服务器上的 authorized_keys 里看得出是哪台电脑放的。
+ * 老版本生成的钥匙备注只有 vpssh，照样认
  */
 export function keyComment(name) {
   const host = deviceName(name)
-  return host ? `dsh-vps-manager@${host}` : 'dsh-vps-manager'
+  return host ? `vpssh@${host}` : 'vpssh'
 }
 
 /** 检查（必要时生成）插件专用钥匙 */
@@ -92,7 +92,7 @@ export function sshCopyIdCommand({ identityFile, user, hostname, port = 22, plat
  */
 export async function openInTerminal({ command, platform = process.platform }) {
   if (platform === 'darwin') {
-    const file = join(tmpdir(), `dsh-vps-${Date.now()}.command`)
+    const file = join(tmpdir(), `vpssh-${Date.now()}.command`)
     await writeFile(file, L(`#!/bin/sh\necho "把公钥放到服务器上（需要输入服务器密码）"\n${command}\necho\necho "完成后可以关闭这个窗口"\n`, `#!/bin/sh\necho "Putting the public key on the server (you will be asked for the server password)"\n${command}\necho\necho "When it is done you can close this window"\n`), { mode: 0o700 })
     const res = await runProcess('open', ['-a', 'Terminal', file], { timeoutMs: 10_000 }).catch((e) => ({ exitCode: 1, stderr: e.message }))
     setTimeout(() => unlink(file).catch(() => {}), 120_000)
@@ -100,7 +100,7 @@ export async function openInTerminal({ command, platform = process.platform }) {
   }
   if (platform === 'win32') {
     // 写成 .cmd 再用 start 打开一个新的命令行窗口；chcp 65001 让中文提示不乱码
-    const file = join(tmpdir(), `dsh-vps-${Date.now()}.cmd`)
+    const file = join(tmpdir(), `vpssh-${Date.now()}.cmd`)
     const body = ['@echo off', 'chcp 65001 >nul', L('echo 把公钥放到服务器上（需要输入服务器密码）', 'echo Putting the public key on the server (you will be asked for the server password)'), 'echo.', command, 'echo.', L('echo 完成后可以关闭这个窗口', 'echo When it is done you can close this window'), 'pause']
     await writeFile(file, `${body.join('\r\n')}\r\n`)
     const opened = await new Promise((resolve) => {
@@ -179,14 +179,14 @@ export async function installKeyWithPassword({
   if (!password) throw new Error(L('没有填密码', 'No password entered'))
   const target = validateConnection({ hostname, port, user })
   const script = authorizeScript(pubkey)
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-askpass-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-askpass-'))
   const helper = join(dir, platform === 'win32' ? 'askpass.cmd' : 'askpass.sh')
   try {
     if (platform === 'win32') {
       // Windows 的 ssh 也认 SSH_ASKPASS；批处理的 echo 会吃掉特殊字符，所以让 Node（DSH 自己带的）来输出
-      await writeFile(helper, `@set ELECTRON_RUN_AS_NODE=1\r\n@"${process.execPath}" -e "process.stdout.write(process.env.DSH_VPS_PW+'\\n')"\r\n`)
+      await writeFile(helper, `@set ELECTRON_RUN_AS_NODE=1\r\n@"${process.execPath}" -e "process.stdout.write(process.env.VPSSH_PW+'\\n')"\r\n`)
     } else {
-      await writeFile(helper, '#!/bin/sh\nprintf \'%s\\n\' "$DSH_VPS_PW"\n', { mode: 0o700 })
+      await writeFile(helper, '#!/bin/sh\nprintf \'%s\\n\' "$VPSSH_PW"\n', { mode: 0o700 })
     }
     const args = [
       '-T',
@@ -203,7 +203,7 @@ export async function installKeyWithPassword({
       `sh -c ${shellQuote(script)}`,
     ]
     const res = await run('ssh', args, {
-      env: { ...env, SSH_ASKPASS: helper, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: env.DISPLAY || ':0', DSH_VPS_PW: String(password) },
+      env: { ...env, SSH_ASKPASS: helper, SSH_ASKPASS_REQUIRE: 'force', DISPLAY: env.DISPLAY || ':0', VPSSH_PW: String(password) },
       timeoutMs: 40_000,
     })
     if (res.exitCode === 0 && String(res.stdout).includes('DSHVPS_KEY_OK')) return { ok: true }
@@ -254,7 +254,7 @@ export async function scanFingerprint({ hostname, port = 22, signal, preferKnown
     if (known.length) return { ok: true, fingerprints: known, source: 'known_hosts' }
     return { ok: false, fingerprints: [], hint: L('没能取到服务器指纹（可能端口不通）', 'Could not get the server fingerprint (the port may be unreachable)') }
   }
-  const tmp = join(tmpdir(), `dsh-vps-keyscan-${Date.now()}`)
+  const tmp = join(tmpdir(), `vpssh-keyscan-${Date.now()}`)
   await writeFile(tmp, res.stdout)
   const fp = await runProcess('ssh-keygen', ['-lf', tmp], { timeoutMs: 10_000 }).catch(() => null)
   await unlink(tmp).catch(() => {})

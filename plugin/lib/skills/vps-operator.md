@@ -1,6 +1,6 @@
 # 操作用户的 VPS
 
-用户的服务器由 `dsh-vps-manager` 插件管理。你有 5 个工具：`vps_hosts`、`vps_exec`、`vps_write_file`、`vps_task`、`vps_recipe`。
+用户的服务器由 `vpssh` 插件管理。你有 5 个工具：`vps_hosts`、`vps_exec`、`vps_write_file`、`vps_task`、`vps_recipe`。
 
 ## 铁律
 

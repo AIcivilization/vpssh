@@ -10,13 +10,13 @@
 // 曾经还有左边栏图标 + 主视区面板（机器 / 应用商店 / 系统维护 / 任务），实测后整个删掉：
 // 机器管理搬进设置页，其余（浏览菜谱、装、看任务）命令和 AI 都能做，而且更快更省。
 //
-// 界面只通过 /api-vps/* 路由调 host：它没有 Session 绑定，不能直接执行命令。
+// 界面只通过 /api-vpssh/* 路由调 host：它没有 Session 绑定，不能直接执行命令。
 // 请求头带的 token 由 host 侧经 index tap 注入页面，跨站网页读不到。
 //
 // 硬约束：客户端崩了不能影响命令与 AI 工具，所以注册一律包在 try/catch 里。
 
 window.__ModuleLoader__.load({
-  id: 'dsh-vps-manager',
+  id: 'vpssh',
   factory: (require) => {
     const module = { exports: {} }
     const React = require('react')
@@ -86,7 +86,7 @@ window.__ModuleLoader__.load({
 
     /**
      * 页面里没有令牌或令牌对不上（DSH 重启过、插件热更新过、DSH 官方桌面版的首页不经过插件）：
-     * 悄悄换一个新的，用户什么都不用做。先问插件自己的 /api-vps/token（同源、过 DSH 登录校验才给），
+     * 悄悄换一个新的，用户什么都不用做。先问插件自己的 /api-vpssh/token（同源、过 DSH 登录校验才给），
      * 老一点的插件没有这个接口就退回从首页读。都取不到才返回 false
      */
     let tokenFetch = null
@@ -94,10 +94,10 @@ window.__ModuleLoader__.load({
       // 好几个请求同时发现令牌不对：只去换一次
       tokenFetch ??= (async () => {
         try {
-          const res = await fetch('/api-vps/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', credentials: 'same-origin', cache: 'no-store' })
+          const res = await fetch('/api-vpssh/token', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', credentials: 'same-origin', cache: 'no-store' })
           const data = await res.json().catch(() => null)
           if (data?.ok && typeof data.token === 'string' && data.token) {
-            window.__DSH_VPS_TOKEN__ = data.token
+            window.__VPSSH_TOKEN__ = data.token
             return true
           }
         } catch {
@@ -105,9 +105,9 @@ window.__ModuleLoader__.load({
         }
         try {
           const res = await fetch(`${window.location.origin}/`, { credentials: 'same-origin', cache: 'no-store' })
-          const m = /__DSH_VPS_TOKEN__=("[a-f0-9]{16,}")/.exec(await res.text())
+          const m = /__VPSSH_TOKEN__=("[a-f0-9]{16,}")/.exec(await res.text())
           if (!m) return false
-          window.__DSH_VPS_TOKEN__ = JSON.parse(m[1])
+          window.__VPSSH_TOKEN__ = JSON.parse(m[1])
           return true
         } catch {
           return false
@@ -119,15 +119,15 @@ window.__ModuleLoader__.load({
     }
 
     async function api(path, body = {}, { timeoutMs = API_TIMEOUT, retried = false } = {}) {
-      if (!window.__DSH_VPS_TOKEN__ && !retried) await refreshToken()
+      if (!window.__VPSSH_TOKEN__ && !retried) await refreshToken()
       let res
       try {
-        res = await fetch(`/api-vps/${path}`, {
+        res = await fetch(`/api-vpssh/${path}`, {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
-            'x-dsh-vps-token': window.__DSH_VPS_TOKEN__ || '',
-            'x-dsh-vps-lang': lang(), // 服务端的报错、提示照界面的语言说
+            'x-vpssh-token': window.__VPSSH_TOKEN__ || '',
+            'x-vpssh-lang': lang(), // 服务端的报错、提示照界面的语言说
           },
           body: JSON.stringify(body),
           signal: AbortSignal.timeout(timeoutMs),
@@ -918,8 +918,8 @@ window.__ModuleLoader__.load({
               h('div', { style: hint }, L('首次连接时记录。以后指纹变了会拒绝连接，防止有人冒充你的服务器。', 'Recorded on first contact. If it ever changes, connections are refused, so nobody can pose as your server.'))) : null,
             h('div', { style: { marginTop: 10, ...S.muted, fontSize: 12 } },
               result.keyInstalled
-                ? L(`已把插件的专用钥匙放到服务器上，之后免密登录。密码没有保存。钥匙在 ${result.keyPath ?? '~/.ssh/dsh_vps_ed25519'}`, `The plugin's dedicated key is on the server; logins need no password from now on. The password was not stored. The key is at ${result.keyPath ?? '~/.ssh/dsh_vps_ed25519'}`)
-                : L(`用插件的专用钥匙登录（${result.keyPath ?? '~/.ssh/dsh_vps_ed25519'}）`, `Logs in with the plugin's dedicated key (${result.keyPath ?? '~/.ssh/dsh_vps_ed25519'})`))),
+                ? L(`已把插件的专用钥匙放到服务器上，之后免密登录。密码没有保存。钥匙在 ${result.keyPath ?? '~/.ssh/vpssh_ed25519'}`, `The plugin's dedicated key is on the server; logins need no password from now on. The password was not stored. The key is at ${result.keyPath ?? '~/.ssh/vpssh_ed25519'}`)
+                : L(`用插件的专用钥匙登录（${result.keyPath ?? '~/.ssh/vpssh_ed25519'}）`, `Logs in with the plugin's dedicated key (${result.keyPath ?? '~/.ssh/vpssh_ed25519'})`))),
           h('div', { style: { ...S.row, marginTop: 12 } }, h(Btn, { kind: 'primary', onClick: onCancel }, L('完成', 'Done'))))
       }
 
@@ -1016,7 +1016,7 @@ window.__ModuleLoader__.load({
       },
       remoteCache: {
         get label() { return L('清理服务器上的插件目录', 'Clean up the plugin folder on the servers') },
-        detail: (pv) => L(`每台已登记的机器（${pv.hosts.join('、')}）上的 ~/.cache/dsh-vps：任务日志、改文件前的备份、回收站。有任务在跑的机器会跳过；别的电脑上的插件也在管的机器，这个目录是共用的，也会保留`, `~/.cache/dsh-vps on every registered machine (${pv.hosts.join(', ')}): task logs, backups taken before edits, the trash. Machines with a running task are skipped; on machines the plugin on another computer also manages, the folder is shared and is kept too`),
+        detail: (pv) => L(`每台已登记的机器（${pv.hosts.join('、')}）上的 ~/.cache/vpssh：任务日志、改文件前的备份、回收站。有任务在跑的机器会跳过；别的电脑上的插件也在管的机器，这个目录是共用的，也会保留`, `~/.cache/vpssh on every registered machine (${pv.hosts.join(', ')}): task logs, backups taken before edits, the trash. Machines with a running task are skipped; on machines the plugin on another computer also manages, the folder is shared and is kept too`),
       },
       revokeKey: {
         get label() { return L('撤销插件钥匙在服务器上的登录权限', 'Revoke the plugin key\'s login access on the servers') },
@@ -1054,10 +1054,10 @@ window.__ModuleLoader__.load({
       return true
     }
 
-    // —— 姊妹产品 dsh-vps：把 DSH 装进 VPS，手机、平板用浏览器就能用。最多两行 ——
-    const SISTER_URL = 'https://github.com/AIcivilization/dsh-vps'
+    // —— 姊妹产品 vpssh：把 DSH 装进 VPS，手机、平板用浏览器就能用。最多两行 ——
+    const SISTER_URL = 'https://github.com/AIcivilization/vpssh'
     function SisterCard({ installed }) {
-      const link = h('a', { href: SISTER_URL, target: '_blank', rel: 'noreferrer', style: { color: T.accent, fontWeight: 500 } }, 'GitHub：dsh-vps ↗')
+      const link = h('a', { href: SISTER_URL, target: '_blank', rel: 'noreferrer', style: { color: T.accent, fontWeight: 500 } }, 'GitHub：vpssh ↗')
       return h('div', { style: { ...S.card, display: 'flex', gap: 12, alignItems: 'flex-start' } },
         // 手机 + 平板的小图
         h('span', { 'aria-hidden': 'true', style: { flex: '0 0 auto', width: 30, height: 30, borderRadius: 8, background: T.layer, color: T.accent, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 } },
@@ -1067,18 +1067,18 @@ window.__ModuleLoader__.load({
           h('div', null,
             h('span', { style: { fontWeight: 600 } }, L('在手机、平板上也用 DSH', 'Use DSH on your phone or tablet too')),
             h('span', { style: S.muted }, installed
-              ? L(' · 你已经装了 dsh-vps', ' · you already have dsh-vps')
-              : L(' · 用 dsh-vps 把 DSH 装进你的 VPS，自带登录页和 HTTPS，打开浏览器就能用', ' · dsh-vps installs DSH on your VPS with a login page and HTTPS, so any browser can open it'))),
+              ? L(' · 你已经装了 vpssh', ' · you already have vpssh')
+              : L(' · 用 vpssh 把 DSH 装进你的 VPS，自带登录页和 HTTPS，打开浏览器就能用', ' · vpssh installs DSH on your VPS with a login page and HTTPS, so any browser can open it'))),
           h('div', { style: { ...S.muted, fontSize: 12.5 } },
             installed
               ? L('在设置左侧「VPS 部署」里把 DSH 部署到服务器 · ', 'Deploy DSH to a server from "VPS Deploy" in the settings sidebar · ')
               : null,
             link,
-            installed ? null : L(' · 或在插件市场搜索「dsh-vps」', ' · or search for "dsh-vps" in the plugin market'))))
+            installed ? null : L(' · 或在插件市场搜索「vpssh」', ' · or search for "vpssh" in the plugin market'))))
     }
 
     // —— 设置页里可折叠的卡片（「界面」「怎么用」）：默认收起，点标题行展开；开没开记在本机 ——
-    const foldKey = (id) => `dsh-vps.settings.open.${id}`
+    const foldKey = (id) => `vpssh.settings.open.${id}`
     function readFold(id) {
       try {
         return window.localStorage?.getItem(foldKey(id)) === '1'
@@ -1297,7 +1297,7 @@ window.__ModuleLoader__.load({
           const result = await api('update/run', { version }, { timeoutMs: 15 * 60_000 })
           setState((s) => ({ ...s, phase: result.updated ? 'done' : 'failed', result }))
         } catch (e) {
-          setState((s) => ({ ...s, phase: 'failed', result: { updated: false, code: 'failed', detail: e.message, command: `dsh plugin add dsh-vps-manager@${version}` } }))
+          setState((s) => ({ ...s, phase: 'failed', result: { updated: false, code: 'failed', detail: e.message, command: `dsh plugin add vpssh@${version}` } }))
         }
       }
       return { ...state, elapsed, check, run }
@@ -1559,7 +1559,7 @@ window.__ModuleLoader__.load({
     // 用户定的：自动摆出一堆报错记录，看起来像产品有很多问题；这些只在反馈问题时才用得上。
     // 诊断照样在后台读好，「反馈问题」的链接要带上它（预填进问题单，用户在 GitHub 上看过再提交，
     // 不会自动上传任何东西；内容已打码、不含机器地址）
-    const ISSUE_URL = 'https://github.com/AIcivilization/dsh-vps-manager/issues/new'
+    const ISSUE_URL = 'https://github.com/AIcivilization/vpssh/issues/new'
     function FeedbackCard() {
       const diag = useAsync(() => api('diag/status', {}), [])
       const [open, setOpen] = useState(false)
@@ -1609,12 +1609,12 @@ window.__ModuleLoader__.load({
     // 所以另一个窗口切机器不会影响这里；host 侧从 agent.session 认出是哪个会话，
     // 于是命令和 AI 工具都能省掉 -h。
 
-    const BIND_EVENT = 'dsh-vps:binding'
+    const BIND_EVENT = 'vpssh:binding'
 
     function readBinding(sessionId) {
       if (!sessionId) return ''
       try {
-        return window.localStorage?.getItem(`dsh-vps:bind:${sessionId}`) ?? ''
+        return window.localStorage?.getItem(`vpssh:bind:${sessionId}`) ?? ''
       } catch {
         return ''
       }
@@ -1623,8 +1623,8 @@ window.__ModuleLoader__.load({
     function writeBinding(sessionId, alias) {
       if (!sessionId) return
       try {
-        if (alias) window.localStorage?.setItem(`dsh-vps:bind:${sessionId}`, alias)
-        else window.localStorage?.removeItem(`dsh-vps:bind:${sessionId}`)
+        if (alias) window.localStorage?.setItem(`vpssh:bind:${sessionId}`, alias)
+        else window.localStorage?.removeItem(`vpssh:bind:${sessionId}`)
       } catch {
         // 隐私模式写不了，只影响刷新后开关的显示，host 侧的绑定仍在
       }
@@ -1695,7 +1695,7 @@ window.__ModuleLoader__.load({
     //
     // 机器清单缓存在 localStorage，所以**挂载时依然零请求**——大多数对话跟 VPS 无关。
 
-    const HOSTS_CACHE_KEY = 'dsh-vps:hosts'
+    const HOSTS_CACHE_KEY = 'vpssh:hosts'
 
     function readCachedHosts() {
       try {
@@ -1963,7 +1963,7 @@ window.__ModuleLoader__.load({
     // 打开开关、打开这个对话、切回 DSH 窗口时现测（服务器 30 秒内测过就用上次的）；
     // 命令、AI 工具、终端每次连服务器的成败，服务器也会记下，这里每 30 秒读一次。
 
-    const REACH_EVENT = 'dsh-vps:reach'
+    const REACH_EVENT = 'vpssh:reach'
     const reachStore = new Map() // 别名 → { state: 'checking' | 'ok' | 'fail', hint, at }
 
     function setReach(alias, patch) {
@@ -2129,12 +2129,12 @@ window.__ModuleLoader__.load({
     // 接上，从断开处补发输出。xterm.js 三百多 KB，第一次打开终端时才加载。
 
     const XTERM_VERSION = '6.0.0'
-    const TERMINAL_PROTOCOL = 'dsh-vps-terminal'
-    const TERM_EVENT = 'dsh-vps:terminal'
-    const TERM_HEIGHT_KEY = 'dsh-vps:terminal-height'
-    const TERM_PREFS_KEY = 'dsh-vps:terminal-prefs'
-    const TERM_PREFS_EVENT = 'dsh-vps:terminal-prefs'
-    const TERM_RESUME_PREFIX = 'dsh-vps:term:'
+    const TERMINAL_PROTOCOL = 'vpssh-terminal'
+    const TERM_EVENT = 'vpssh:terminal'
+    const TERM_HEIGHT_KEY = 'vpssh:terminal-height'
+    const TERM_PREFS_KEY = 'vpssh:terminal-prefs'
+    const TERM_PREFS_EVENT = 'vpssh:terminal-prefs'
+    const TERM_RESUME_PREFIX = 'vpssh:term:'
     const TERM_THEMES = [
       { value: 'system', get label() { return L('跟随系统', 'Follow system') } },
       { value: 'dark', get label() { return L('暗色', 'Dark') } },
@@ -2151,7 +2151,7 @@ window.__ModuleLoader__.load({
 
     /** 连接地址：跟着页面走，http→ws，https→wss */
     function terminalUrl(origin, sessionId, cols, rows, extra = {}) {
-      const url = new URL('/api-vps/ws/terminal', origin)
+      const url = new URL('/api-vpssh/ws/terminal', origin)
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:'
       const q = new URLSearchParams({ sessionId, cols: String(cols), rows: String(rows) })
       for (const [k, v] of Object.entries(extra)) if (v !== undefined && v !== null && v !== '') q.set(k, String(v))
@@ -2164,18 +2164,18 @@ window.__ModuleLoader__.load({
 
     function loadXterm() {
       if (xtermLoading) return xtermLoading
-      const asset = (file) => `${window.location.origin}/api-vps/assets/${file}?v=${XTERM_VERSION}`
+      const asset = (file) => `${window.location.origin}/api-vpssh/assets/${file}?v=${XTERM_VERSION}`
       // 必须等样式表加载完再建终端（实测）：样式没到时量出来的字符宽度不对，
       // 终端会按一两列打开，服务器那头的 shell 也按这个宽度折行
       const css = new Promise((resolve) => {
         try {
-          if (document.querySelector('link[data-dsh-vps-xterm][data-loaded]')) return resolve()
-          let link = document.querySelector('link[data-dsh-vps-xterm]')
+          if (document.querySelector('link[data-vpssh-xterm][data-loaded]')) return resolve()
+          let link = document.querySelector('link[data-vpssh-xterm]')
           if (!link) {
             link = document.createElement('link')
             link.rel = 'stylesheet'
             link.href = asset('xterm.css')
-            link.setAttribute('data-dsh-vps-xterm', '')
+            link.setAttribute('data-vpssh-xterm', '')
             document.head.appendChild(link)
           }
           const done = () => {
@@ -2429,7 +2429,7 @@ window.__ModuleLoader__.load({
     function termHolder() {
       if (termHolderEl?.isConnected) return termHolderEl
       termHolderEl = document.createElement('div')
-      termHolderEl.setAttribute('data-dsh-vps-terminal-holder', '')
+      termHolderEl.setAttribute('data-vpssh-terminal-holder', '')
       Object.assign(termHolderEl.style, {
         position: 'fixed', left: '-10000px', top: '0', width: '900px', height: '320px',
         overflow: 'hidden', visibility: 'hidden', pointerEvents: 'none',
@@ -2606,7 +2606,7 @@ window.__ModuleLoader__.load({
     }
 
     function connectTerm(entry, resume, tokenTried = false) {
-      const token = window.__DSH_VPS_TOKEN__ || ''
+      const token = window.__VPSSH_TOKEN__ || ''
       if (!token) {
         if (!tokenTried) {
           // 页面里还没有令牌：悄悄取一个再连
@@ -2696,10 +2696,10 @@ window.__ModuleLoader__.load({
         entry.socket = null
         // 还没连上就被拒：多半是令牌对不上（DSH 重启过、插件热更新过）。悄悄换个新令牌再连一次
         if (!opened && !finished && !tokenTried) {
-          const stale = window.__DSH_VPS_TOKEN__
+          const stale = window.__VPSSH_TOKEN__
           refreshToken().then((ok) => {
             if (entry.disposed) return
-            if (ok && window.__DSH_VPS_TOKEN__ !== stale) connectTerm(entry, resume, true)
+            if (ok && window.__VPSSH_TOKEN__ !== stale) connectTerm(entry, resume, true)
             else {
               tokenTried = true
               socket.onclose?.()
@@ -2880,7 +2880,7 @@ window.__ModuleLoader__.load({
           try {
             openStatusSidebar()
           } catch (error) {
-            console.warn('[dsh-vps-manager] 打不开右侧栏', error)
+            console.warn('[vpssh] 打不开右侧栏', error)
           }
         },
         onDoubleClick: (e) => e.stopPropagation(),
@@ -3102,7 +3102,7 @@ window.__ModuleLoader__.load({
 
     // ——————————————————————— 「状态」页签 ———————————————————————
     // 这台机器现在怎么样、哪些要紧：插件一次 SSH 看一遍，规则判出「需注意」（零 token），
-    // 点「让 AI 解读」才调模型。设计见 工作流/dsh-vps-manager-状态页签设计.md。
+    // 点「让 AI 解读」才调模型。设计见 工作流/vpssh-状态页签设计.md。
     // 页签第一次打开后一直挂着（隐藏不卸载）；状态挂在 entry.statusState 上，最小化再恢复也还在。
     // 图标路径取自 Lucide（ISC 许可），只用到几个，内联，不引图标库。
 
@@ -3246,8 +3246,8 @@ window.__ModuleLoader__.load({
 
     // 「状态」页里用户收起了哪些分区（AI 解读、需注意、各张卡片）：存本机，所有机器、
     // 底部面板和右侧栏都按这一份来，一边收起另一边跟着收
-    const COLLAPSE_KEY = 'dsh-vps.status.collapsed'
-    const COLLAPSE_EVENT = 'dsh-vps-manager:collapse'
+    const COLLAPSE_KEY = 'vpssh.status.collapsed'
+    const COLLAPSE_EVENT = 'vpssh:collapse'
     function readCollapsed() {
       try {
         const list = JSON.parse(window.localStorage?.getItem(COLLAPSE_KEY) ?? '[]')
@@ -3326,7 +3326,7 @@ window.__ModuleLoader__.load({
     // 哪边刷新了两边一起变
     const statusStore = new Map()
     const statusSubs = new Map()
-    const STATUS_EVENT = 'dsh-vps-manager:status'
+    const STATUS_EVENT = 'vpssh:status'
     function statusStateOf(alias, seed) {
       if (seed && statusStore.get(alias) !== seed) statusStore.set(alias, seed)
       if (!statusStore.has(alias)) statusStore.set(alias, { view: null, loading: false, error: '', expanded: false, interpreting: false, interpError: '' })
@@ -3920,7 +3920,7 @@ window.__ModuleLoader__.load({
           ['fail2ban', data.fail2ban ? L('在跑', 'Running') : L('没有', 'Off'), data.fail2ban ? 'ok' : 'na'],
         ], 2) }))
       // 插件自己在服务器上的东西 + 正在跑的改动任务
-      cards.push(card('plugin', { icon: 'archive', title: L('插件占用', 'Plugin data'), right: '~/.cache/dsh-vps',
+      cards.push(card('plugin', { icon: 'archive', title: L('插件占用', 'Plugin data'), right: '~/.cache/vpssh',
         body: h('div', null,
           line(L('回收站', 'Trash'), h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
             h('span', { style: { ...NUM, color: c.tertiary } }, data.plugin.trash !== null ? fmtBytes(data.plugin.trash) : '0 B'),
@@ -3941,15 +3941,15 @@ window.__ModuleLoader__.load({
     // 用 DSH 自己的右侧栏（文件、文档预览、计划用的那一栏）：每个对话一份，开着就一直在，和对话并排。
     // 顶上一排编号方块选看哪台；选别的只是「看」，不改这个对话操作的机器
 
-    const SIDEBAR_TAB_ID = 'dsh-vps-manager/status'
-    const SIDEBAR_KIND = 'vps-manager-status'
+    const SIDEBAR_TAB_ID = 'vpssh/status'
+    const SIDEBAR_KIND = 'vpssh-status'
     let sidebarRightApi = null
     function openStatusSidebar() {
       if (!sidebarRightApi?.openTab) throw new Error(L('这个版本的 DSH 没有右侧栏', 'This DSH version has no right sidebar'))
       sidebarRightApi.openTab(SIDEBAR_KIND)
     }
     // 没绑机器的对话：记住上次在右侧栏看的是哪台
-    const sidebarViewKey = (sessionId) => `dsh-vps.sidebar-view.${sessionId}`
+    const sidebarViewKey = (sessionId) => `vpssh.sidebar-view.${sessionId}`
     function readSidebarView(sessionId) {
       try {
         return window.localStorage?.getItem(sidebarViewKey(sessionId)) || ''
@@ -4206,10 +4206,10 @@ window.__ModuleLoader__.load({
         const xhr = new window.XMLHttpRequest()
         abortRef.current = () => xhr.abort()
         const q = new URLSearchParams({ sessionId, path, size: String(file.size) })
-        xhr.open('POST', `/api-vps/files/upload?${q}`)
+        xhr.open('POST', `/api-vpssh/files/upload?${q}`)
         xhr.setRequestHeader('content-type', 'application/octet-stream')
-        xhr.setRequestHeader('x-dsh-vps-token', window.__DSH_VPS_TOKEN__ || '')
-        xhr.setRequestHeader('x-dsh-vps-lang', lang())
+        xhr.setRequestHeader('x-vpssh-token', window.__VPSSH_TOKEN__ || '')
+        xhr.setRequestHeader('x-vpssh-lang', lang())
         xhr.upload.onprogress = (e) => {
           if (e.lengthComputable) onProgress(e.loaded)
         }
@@ -4463,7 +4463,7 @@ window.__ModuleLoader__.load({
         const update = (patch) => setUploads((u) => u.map((x) => (x.id === id ? { ...x, ...patch } : x)))
         setUploads((u) => [...u, { id, kind: 'download', name: res.name, total, loaded: 0, status: 'running', abortRef }])
         try {
-          const r = await fetch(res.url, { credentials: 'same-origin', signal: abort.signal, headers: { 'x-dsh-vps-lang': lang() } })
+          const r = await fetch(res.url, { credentials: 'same-origin', signal: abort.signal, headers: { 'x-vpssh-lang': lang() } })
           if (!r.ok) throw new Error((await r.text().catch(() => '')).trim() || L(`服务返回 HTTP ${r.status}`, `The server answered HTTP ${r.status}`))
           const chunks = []
           let got = 0
@@ -4624,7 +4624,7 @@ window.__ModuleLoader__.load({
         if (clash.length) {
           const ok = await ask({
             title: L(`覆盖 ${clash.length} 个同名文件？`, `Overwrite ${clash.length} files with the same name?`),
-            message: L(`${clash.slice(0, 3).map((f) => f.name).join('、')}${clash.length > 3 ? ' 等' : ''} 已经在这个文件夹里了。覆盖前会先把原文件备份到服务器的 ~/.cache/dsh-vps/backups/，权限和属主保持不变。`, `${clash.slice(0, 3).map((f) => f.name).join(', ')}${clash.length > 3 ? ' and more' : ''} already exist in this folder. Before overwriting, the originals are backed up to ~/.cache/dsh-vps/backups/ on the server, keeping their mode and owner.`),
+            message: L(`${clash.slice(0, 3).map((f) => f.name).join('、')}${clash.length > 3 ? ' 等' : ''} 已经在这个文件夹里了。覆盖前会先把原文件备份到服务器的 ~/.cache/vpssh/backups/，权限和属主保持不变。`, `${clash.slice(0, 3).map((f) => f.name).join(', ')}${clash.length > 3 ? ' and more' : ''} already exist in this folder. Before overwriting, the originals are backed up to ~/.cache/vpssh/backups/ on the server, keeping their mode and owner.`),
             confirm: L('覆盖', 'Overwrite'),
           })
           if (!ok) return
@@ -4884,7 +4884,7 @@ window.__ModuleLoader__.load({
         ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 4, padding: '0 10px', height: 38, borderBottom: `0.5px solid ${c.divider}` } },
           btn('‹', goUp, { title: L('回到家目录', 'Back to home') }),
           h('span', { style: { fontWeight: 500, fontSize: 12, marginLeft: 4 } }, L('回收站', 'Trash')),
-          h('span', { style: { color: c.tertiary, fontSize: 12 } }, L('· 删掉的东西都在这里，服务器上的 ~/.cache/dsh-vps/trash', '· everything deleted is here, ~/.cache/dsh-vps/trash on the server')),
+          h('span', { style: { color: c.tertiary, fontSize: 12 } }, L('· 删掉的东西都在这里，服务器上的 ~/.cache/vpssh/trash', '· everything deleted is here, ~/.cache/vpssh/trash on the server')),
           h('span', { style: { flex: 1 } }),
           btn('↻', refresh, { title: L('刷新', 'Refresh') }),
           btn(L('还原', 'Restore'), () => restore(selectedItems), { disabled: !selectedItems.length }),
@@ -4933,7 +4933,7 @@ window.__ModuleLoader__.load({
         placeRow(L('日志 /var/log', 'Logs /var/log'), '/var/log', !inTrash && st.cwd === '/var/log', () => openDir('/var/log')),
         placeRow(L('根目录 /', 'Root /'), '/', !inTrash && st.cwd === '/', () => openDir('/')),
         h('div', { style: { height: 1, background: c.divider, margin: '6px 8px' } }),
-        placeRow(L('回收站', 'Trash'), '~/.cache/dsh-vps/trash', inTrash, openTrash, places?.trash ? String(places.trash) : ''))
+        placeRow(L('回收站', 'Trash'), '~/.cache/vpssh/trash', inTrash, openTrash, places?.trash ? String(places.trash) : ''))
 
       const th = (label, key, width, align = 'left') => h('div', {
         role: 'button',
@@ -5296,16 +5296,34 @@ window.__ModuleLoader__.load({
           L('终端等于服务器的完整操作权限。默认只能在运行 DSH 的这台电脑上打开；用局域网地址或反向代理访问 DSH 时才需要勾选', 'The terminal is full control of the server. By default it only opens on the computer running DSH; tick this only when you reach DSH through a LAN address or a reverse proxy')))
     }
 
+    // ——————————————————————— 品牌 ———————————————————————
+    //
+    // 侧栏顶部换成 vpssh（sidebar.brand.mark / sidebar.brand.name）。DSH 品牌规范要求别的产品
+    // 不冒充官方；标志是自己画的，不用 DSH 的素材
+
+    function BrandMark({ size = 24 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', 'aria-hidden': true },
+        h('rect', { x: 1, y: 1, width: 22, height: 22, rx: 6, fill: 'currentColor', opacity: 0.12 }),
+        h('path', { d: 'M6.5 8.5 10 12l-3.5 3.5', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round', strokeLinejoin: 'round' }),
+        h('path', { d: 'M12 16h5.5', fill: 'none', stroke: 'currentColor', strokeWidth: 2, strokeLinecap: 'round' }))
+    }
+
+    function BrandName() {
+      return h('span', { title: L('全平台 AI 驱动的 VPS 管理及 SSH 工具', 'AI-driven VPS management and SSH tool for every platform') }, 'vpssh')
+    }
+
+    let layoutOpened = false
+
     // ——————————————————————— 注册 ———————————————————————
 
-    const name = 'vps-manager-client'
+    const name = 'vpssh-client'
     const inject = ['slots']
 
     function injectStyles() {
       try {
-        if (document.getElementById('dsh-vps-styles')) return
+        if (document.getElementById('vpssh-styles')) return
         const style = document.createElement('style')
-        style.id = 'dsh-vps-styles'
+        style.id = 'vpssh-styles'
         style.textContent = [
           '@keyframes dshVpsPulse{0%,100%{opacity:1}50%{opacity:.4}}',
           '@keyframes dshVpsSpin{to{transform:rotate(360deg)}}',
@@ -5381,11 +5399,11 @@ window.__ModuleLoader__.load({
               langChanged()
             }
           }
-          if (typeof scope.effect === 'function') scope.effect(setup, 'vps-manager: locale')
+          if (typeof scope.effect === 'function') scope.effect(setup, 'vpssh: locale')
           else setup()
         })
       } catch (error) {
-        console.warn('[dsh-vps-manager] 拿不到 DSH 的语言服务，按网页语言显示', error)
+        console.warn('[vpssh] 拿不到 DSH 的语言服务，按网页语言显示', error)
       }
       try {
         if (typeof MutationObserver === 'function' && typeof document !== 'undefined') {
@@ -5406,10 +5424,10 @@ window.__ModuleLoader__.load({
           composerOf = reader
           scope.effect?.(() => () => {
             if (composerOf === reader) composerOf = null
-          }, 'vps-manager: composer')
+          }, 'vpssh: composer')
         })
       } catch (error) {
-        console.warn('[dsh-vps-manager] 拿不到对话输入框', error)
+        console.warn('[vpssh] 拿不到对话输入框', error)
       }
       try {
         // DSH 的右侧栏（0.2 起）：「VPS 状态」作为右侧栏的一种页签；没有这个服务就不显示「在右侧栏打开」
@@ -5431,40 +5449,59 @@ window.__ModuleLoader__.load({
               description: () => L('服务器的状态，一直开着，边聊边看', 'Your server\'s status, kept open beside the chat'),
               icon: SidebarGuideIcon,
             }],
-          }), 'vps-manager: sidebar type')
+          }), 'vpssh: sidebar type')
           const slots = scope.slots ?? ctx.slots
           const body = () => slots.register({ name: 'sidebar.right.pane.tab', key: SIDEBAR_TAB_ID }, VpsStatusSidebar)
-          effect(() => (slots.inject ? slots.inject('sidebar.right.pane.tab', body) : body()), 'vps-manager: sidebar body')
+          effect(() => (slots.inject ? slots.inject('sidebar.right.pane.tab', body) : body()), 'vpssh: sidebar body')
           sidebarRightApi = right
           effect(() => () => {
             if (sidebarRightApi === right) sidebarRightApi = null
-          }, 'vps-manager: sidebar api')
+          }, 'vpssh: sidebar api')
+          // 默认布局：DSH 刷新后会重置布局，每次加载打开一次「VPS 状态」（DSH 打开右栏时会自动收起左栏）。
+          // 只开这一次，之后用户怎么摆都不管
+          if (!layoutOpened) {
+            layoutOpened = true
+            setTimeout(() => {
+              try {
+                right.openTab(SIDEBAR_KIND)
+              } catch (error) {
+                console.warn('[vpssh] 打开 VPS 状态失败', error)
+              }
+            }, 0)
+          }
         })
       } catch (error) {
-        console.warn('[dsh-vps-manager] 拿不到右侧栏', error)
+        console.warn('[vpssh] 拿不到右侧栏', error)
       }
       // 插槽注册失败只降级：命令与 AI 工具不依赖界面
       try {
+        ctx.slots.inject('sidebar.brand.mark', () => ctx.slots.register({ name: 'sidebar.brand.mark' }, BrandMark))
+        ctx.slots.inject('sidebar.brand.name', () => ctx.slots.register({ name: 'sidebar.brand.name' }, BrandName))
+      } catch (error) {
+        console.warn('[vpssh] 品牌注册失败，沿用 DSH 默认', error)
+        reportClientError('品牌注册失败', error)
+      }
+      try {
         // 对话头部：VPS 开关（打开 = 这个对话在操作这台机器）
         ctx.slots.inject('conversation.session.header.actions', () =>
-          ctx.slots.register({ name: 'conversation.session.header.actions', id: 'vps-manager', order: 40 }, VpsToggle))
+          ctx.slots.register({ name: 'conversation.session.header.actions', id: 'vpssh', order: 40 }, VpsToggle))
       } catch (error) {
-        console.warn('[dsh-vps-manager] 对话头部开关注册失败', error)
+        console.warn('[vpssh] 对话头部开关注册失败', error)
         reportClientError('对话头部开关注册失败', error)
       }
       try {
         // 输入框下方：平时不渲染，只有「不说你不知道」的事才冒一行；点开终端时放终端
         ctx.slots.inject('conversation.composer.dock', () =>
-          ctx.slots.register({ name: 'conversation.composer.dock', id: 'vps-manager', order: 40 }, VpsDock))
+          ctx.slots.register({ name: 'conversation.composer.dock', id: 'vpssh', order: 40 }, VpsDock))
       } catch (error) {
-        console.warn('[dsh-vps-manager] 输入框状态条注册失败', error)
+        console.warn('[vpssh] 输入框状态条注册失败', error)
         reportClientError('输入框状态条注册失败', error)
       }
       try {
         ctx.slots.inject('settings.section', () =>
-          ctx.slots.register({ name: 'settings.section', id: 'vps-manager', order: 30, label: () => L('VPS 管理', 'VPS Manager') }, SettingsSection))
+          ctx.slots.register({ name: 'settings.section', id: 'vpssh', order: 30, label: () => L('VPS 管理', 'VPS Manager') }, SettingsSection))
       } catch (error) {
-        console.warn('[dsh-vps-manager] 设置页注册失败', error)
+        console.warn('[vpssh] 设置页注册失败', error)
         reportClientError('设置页注册失败', error)
       }
     }

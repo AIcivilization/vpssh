@@ -47,7 +47,7 @@ function run(args, env, { timeoutMs = 180_000 } = {}) {
 async function main() {
   const dshVersion = JSON.parse(await readFile(join(modulesDir, '@deepseek-ai/dsh/package.json'), 'utf8')).version
   const pluginVersion = pluginTgz.match(/-(\d+\.\d+\.\d+[^/]*)\.tgz$/)?.[1] ?? '?'
-  console.log(`DSH ${dshVersion} · dsh-vps-manager ${pluginVersion}`)
+  console.log(`DSH ${dshVersion} · vpssh ${pluginVersion}`)
 
   const home = await mkdtemp(join(tmpdir(), 'dsh-compat-'))
   // SSH_CONNECTION：让「选择工作区」走网页内的目录浏览，不在 CI 机器上弹系统对话框
@@ -82,24 +82,24 @@ async function main() {
     const cookie = (login.headers.getSetCookie?.() ?? [login.headers.get('set-cookie') ?? '']).map((c) => c.split(';')[0]).join('; ')
     check('启动令牌能换到登录 Cookie', login.status === 303 && cookie, `HTTP ${login.status}`)
     const index = await (await fetch(`${base}/`, { headers: { cookie } })).text()
-    const token = /__DSH_VPS_TOKEN__="([a-f0-9]+)"/.exec(index)?.[1] ?? ''
+    const token = /__VPSSH_TOKEN__="([a-f0-9]+)"/.exec(index)?.[1] ?? ''
     check('插件服务端已加载（首页里有插件令牌）', token)
-    const clientRef = /dsh-vps-manager\/client\.js&(?:amp;)?rev=[\w-]+/.exec(index)?.[0]?.replace('&amp;', '&') ?? ''
+    const clientRef = /vpssh\/client\.js&(?:amp;)?rev=[\w-]+/.exec(index)?.[0]?.replace('&amp;', '&') ?? ''
     check('插件界面代码在加载清单里', clientRef)
 
     // 4. 界面代码能取到，而且是我们的
     if (clientRef) {
       const res = await fetch(`${base}/plugins/??${clientRef}`, { headers: { cookie } })
       const body = await res.text()
-      check('插件界面代码能取到', res.status === 200 && body.includes("id: 'dsh-vps-manager'"), `HTTP ${res.status}`)
+      check('插件界面代码能取到', res.status === 200 && body.includes("id: 'vpssh'"), `HTTP ${res.status}`)
     }
 
     // 5. 设置页接口
     // 界面每个请求都带当前语言，服务端照它回话；这里默认按中文问（下面的检查对的是中文提示）
     const api = async (path, body = {}, lang = 'zh') => {
-      const res = await fetch(`${base}/api-vps/${path}`, {
+      const res = await fetch(`${base}/api-vpssh/${path}`, {
         method: 'POST',
-        headers: { cookie, 'content-type': 'application/json', 'x-dsh-vps-token': token, origin: base, 'x-dsh-vps-lang': lang },
+        headers: { cookie, 'content-type': 'application/json', 'x-vpssh-token': token, origin: base, 'x-vpssh-lang': lang },
         body: JSON.stringify(body),
       })
       return res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }))
@@ -125,18 +125,18 @@ async function main() {
     check('文件管理接口能用（未绑定机器时给出提示）', filesPlaces.ok === false && /还没打开 VPS 开关/.test(filesPlaces.error ?? ''), filesPlaces.error ?? JSON.stringify(filesPlaces).slice(0, 120))
     const filesEn = await api('files/places', { sessionId: 'compat-check' }, 'en')
     check('英文界面：服务端的提示是英文', filesEn.error === 'This conversation has not turned on the VPS switch yet', filesEn.error ?? '')
-    const fetchBad = await fetch(`${base}/api-vps/files/fetch?t=nope`, { headers: { cookie } })
+    const fetchBad = await fetch(`${base}/api-vpssh/files/fetch?t=nope`, { headers: { cookie } })
     check('文件下载路由已注册（无效票据被拒）', fetchBad.status === 403, `HTTP ${fetchBad.status}`)
 
     // 6. xterm.js 静态文件
-    const xterm = await fetch(`${base}/api-vps/assets/xterm.mjs?v=6.0.0`, { headers: { cookie } })
+    const xterm = await fetch(`${base}/api-vpssh/assets/xterm.mjs?v=6.0.0`, { headers: { cookie } })
     check('终端组件文件能取到', xterm.status === 200 && /javascript/.test(xterm.headers.get('content-type') ?? ''), `HTTP ${xterm.status}`)
 
     // 7. 终端的实时连接：没绑定机器的对话应该收到明确的提示（说明升级路由和鉴权都通）
     const wsFrames = (lang) => new Promise((resolveWs) => {
-      const wsUrl = `${base.replace('http', 'ws')}/api-vps/ws/terminal?sessionId=compat-check&cols=80&rows=24&lang=${lang}`
+      const wsUrl = `${base.replace('http', 'ws')}/api-vpssh/ws/terminal?sessionId=compat-check&cols=80&rows=24&lang=${lang}`
       const got = []
-      const ws = new WebSocket(wsUrl, ['dsh-vps-terminal', token], { headers: { cookie }, origin: base })
+      const ws = new WebSocket(wsUrl, ['vpssh-terminal', token], { headers: { cookie }, origin: base })
       const done = () => resolveWs(got)
       ws.on('message', (d, isBinary) => { if (!isBinary) got.push(String(d)) })
       ws.on('close', done)
@@ -151,9 +151,9 @@ async function main() {
 
     // 8. 日志里不能有插件自己报的注册失败
     await new Promise((r) => setTimeout(r, 500))
-    const pluginWarnings = log.split('\n').filter((l) => /\[dsh-vps-manager\]/.test(l) && /失败|failed|Error/i.test(l))
-    const loaderFailure = /failed to (apply|import) loader entry vps-manager/.test(log)
-    check('日志里没有插件的注册失败', !pluginWarnings.length && !loaderFailure, [...pluginWarnings, loaderFailure ? 'loader entry vps-manager 加载失败' : ''].join(' | '))
+    const pluginWarnings = log.split('\n').filter((l) => /\[vpssh\]/.test(l) && /失败|failed|Error/i.test(l))
+    const loaderFailure = /failed to (apply|import) loader entry vpssh/.test(log)
+    check('日志里没有插件的注册失败', !pluginWarnings.length && !loaderFailure, [...pluginWarnings, loaderFailure ? 'loader entry vpssh 加载失败' : ''].join(' | '))
   } catch (error) {
     check('检查过程没有意外出错', false, error.stack ?? error.message)
   } finally {

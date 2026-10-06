@@ -3,7 +3,7 @@
 // 分工：~/.ssh/config 管「怎么连」，hosts.yml 管「是什么、怎么管」，
 // state.json 管「探测到了什么」（插件自管，删了会重新探测）。
 //
-// 插件写的机器放在 ~/.ssh/config.d/dsh-vps.conf，只在用户的 ~/.ssh/config 最顶部
+// 插件写的机器放在 ~/.ssh/config.d/vpssh.conf，只在用户的 ~/.ssh/config 最顶部
 // 加一行 Include（必须在第一个 Host / Match 之前，否则就变成条件包含）。
 
 import { createHash } from 'node:crypto'
@@ -21,8 +21,8 @@ export const DEFAULT_SAFETY_NET_SECONDS = 120
 const ALIAS_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 const HOSTNAME_RE = /^[A-Za-z0-9._:-]{1,253}$/
 const USER_RE = /^[a-z_][a-z0-9_.-]{0,31}$/
-const INCLUDE_LINE = 'Include config.d/dsh-vps.conf'
-const INCLUDE_COMMENT = '# Added by dsh-vps-manager'
+const INCLUDE_LINE = 'Include config.d/vpssh.conf'
+const INCLUDE_COMMENT = '# Added by vpssh'
 
 export class ConfigError extends Error {
   constructor(code, message) {
@@ -59,7 +59,7 @@ export function homeDir(env = process.env, platform = process.platform) {
 
 export function paths(env = process.env) {
   const home = homeDir(env)
-  const base = join(dshHome(env), 'vps-manager')
+  const base = join(dshHome(env), 'vpssh')
   return {
     home,
     base,
@@ -72,8 +72,8 @@ export function paths(env = process.env) {
     sshDir: join(home, '.ssh'),
     sshConfig: join(home, '.ssh', 'config'),
     sshDropinDir: join(home, '.ssh', 'config.d'),
-    sshDropin: join(home, '.ssh', 'config.d', 'dsh-vps.conf'),
-    defaultKey: join(home, '.ssh', 'dsh_vps_ed25519'),
+    sshDropin: join(home, '.ssh', 'config.d', 'vpssh.conf'),
+    defaultKey: join(home, '.ssh', 'vpssh_ed25519'),
   }
 }
 
@@ -185,7 +185,7 @@ export async function writeHosts(doc, env = process.env) {
     hosts: normalized.hosts,
   })
   const header = [
-    '# dsh-vps-manager 的机器清单（可以手工编辑）',
+    '# vpssh 的机器清单（可以手工编辑）',
     '# confirm: careful 谨慎 | relaxed 放手 | auto 全自动；优先级 机器 > 组 > 全局',
     '',
   ].join('\n')
@@ -492,7 +492,7 @@ export async function upsertDropinHost(entry, env = process.env) {
   if (existing) await copyFile(p.sshDropin, `${p.sshDropin}.bak`).catch(() => {})
   const blocks = splitBlocks(existing)
   blocks.set(entry.alias, hostBlock(entry))
-  const header = '# 由 dsh-vps-manager 维护，手工改动可能被覆盖\n\n'
+  const header = '# 由 vpssh 维护，手工改动可能被覆盖\n\n'
   await atomicWrite(p.sshDropin, header + [...blocks.values()].join('\n'), 0o600)
   await ensureInclude(env)
   return p.sshDropin
@@ -504,7 +504,7 @@ export async function removeDropinHost(alias, env = process.env) {
   if (!existing) return false
   const blocks = splitBlocks(existing)
   if (!blocks.delete(alias)) return false
-  const header = '# 由 dsh-vps-manager 维护，手工改动可能被覆盖\n\n'
+  const header = '# 由 vpssh 维护，手工改动可能被覆盖\n\n'
   await atomicWrite(p.sshDropin, header + [...blocks.values()].join('\n'), 0o600)
   return true
 }

@@ -13,7 +13,7 @@ import { checkUpdate, compareVersions, runUpdate } from '../lib/update.js'
 const require = createRequire(import.meta.url)
 
 async function sandboxEnv() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-update-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-update-'))
   const env = { HOME: dir, DSH_HOME: join(dir, '.dsh') }
   await writeHosts({ current: '', hosts: {} }, env)
   return env
@@ -49,7 +49,7 @@ test('检查更新：GitHub 和 npm 都有新版 → 可以更新到 npm 上那�
   assert.equal(info.installable, '0.6.3')
   assert.equal(info.latest, '0.6.3')
   assert.match(info.github.url, /releases\/tag\/v0\.6\.3/)
-  assert.equal(info.command, 'dsh plugin add dsh-vps-manager@0.6.3')
+  assert.equal(info.command, 'dsh plugin add vpssh@0.6.3')
 })
 
 test('检查更新：GitHub 先发了、npm 还没同步 → 提示有新版，但先不让装', async () => {
@@ -87,14 +87,14 @@ test('检查更新：6 小时内用存着的结果，不重复问网络；force 
   assert.equal(offline.latest, '0.6.9', '连不上时沿用上次查到的')
 })
 
-test('更新：交给 DSH 的插件管理器装 dsh-vps-manager@新版本；成功要重启；失败给原因和手动命令', async () => {
+test('更新：交给 DSH 的插件管理器装 vpssh@新版本；成功要重启；失败给原因和手动命令', async () => {
   const calls = []
   const ok = await runUpdate({
     running: '0.6.2',
     version: '0.6.3',
     pluginManager: { installBundle: async (spec, options) => { calls.push([spec, options]); return { application: 'restart-required', changed: true } } },
   })
-  assert.deepEqual(calls, [['dsh-vps-manager@0.6.3', { enabled: true }]])
+  assert.deepEqual(calls, [['vpssh@0.6.3', { enabled: true }]])
   assert.deepEqual(ok, { ok: true, version: '0.6.3', restart: true })
 
   const bad = await runUpdate({
@@ -104,7 +104,7 @@ test('更新：交给 DSH 的插件管理器装 dsh-vps-manager@新版本；成�
   })
   assert.equal(bad.ok, false)
   assert.equal(bad.code, 'incompatible-version')
-  assert.equal(bad.command, 'dsh plugin add dsh-vps-manager@0.6.3')
+  assert.equal(bad.command, 'dsh plugin add vpssh@0.6.3')
 
   const none = await runUpdate({ running: '0.6.2', version: '0.6.3', pluginManager: undefined })
   assert.equal(none.code, 'no-manager', '老版本 DSH 没有插件管理器：给出命令让用户自己运行')
@@ -128,10 +128,10 @@ test('接口：update/check 带上能不能在这里装；update/run 要令牌�
   const call = async (path, body, token = reg.token) => {
     const req = Readable.from([Buffer.from(JSON.stringify(body))])
     req.method = 'POST'
-    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': token }
+    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': token }
     req.socket = { remoteAddress: '127.0.0.1' }
     const out = {}
-    await exact.get(`/api-vps/${path}`)(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
+    await exact.get(`/api-vpssh/${path}`)(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
     return out
   }
   const check = await call('update/check', { force: true })
@@ -141,14 +141,14 @@ test('接口：update/check 带上能不能在这里装；update/run 要令牌�
   const run = await call('update/run', { version: next })
   assert.equal(run.body.ok, true)
   assert.equal(run.body.updated, true)
-  assert.deepEqual(installs, [`dsh-vps-manager@${next}`])
+  assert.deepEqual(installs, [`vpssh@${next}`])
   // 没装成：请求本身仍成功，原因和手动命令要交到界面上
   deps.pluginManager = { installBundle: async () => ({ application: 'failed', error: { code: 'incompatible-version' } }) }
   const failed = await call('update/run', { version: next })
   assert.equal(failed.body.ok, true)
   assert.equal(failed.body.updated, false)
   assert.equal(failed.body.code, 'incompatible-version')
-  assert.match(failed.body.command, /dsh plugin add dsh-vps-manager@/)
+  assert.match(failed.body.command, /dsh plugin add vpssh@/)
 })
 
 // —— 界面 ——
@@ -157,7 +157,7 @@ async function loadClient() {
   let spec = null
   globalThis.window = {
     __ModuleLoader__: { load: (s) => { spec = s } },
-    __DSH_VPS_TOKEN__: 't',
+    __VPSSH_TOKEN__: 't',
     location: { origin: 'http://127.0.0.1:3000' },
     addEventListener() {},
     removeEventListener() {},
@@ -192,17 +192,17 @@ test('接口：uninstall/remove-plugin 交给插件管理器，结果写在 remo
   const reg = registerRoutes({ webServer: ws }, deps)
   const req = Readable.from([Buffer.from('{}')])
   req.method = 'POST'
-  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
   req.socket = { remoteAddress: '127.0.0.1' }
   const out = {}
-  await exact.get('/api-vps/uninstall/remove-plugin')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
-  assert.deepEqual(removed, ['dsh-vps-manager'])
+  await exact.get('/api-vpssh/uninstall/remove-plugin')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
+  assert.deepEqual(removed, ['vpssh'])
   assert.equal(out.body.ok, true)
   assert.equal(out.body.removed, false)
-  assert.match(out.body.text, /dsh plugin remove dsh-vps-manager/)
+  assert.match(out.body.text, /dsh plugin remove vpssh/)
 })
 
-test('接口：overview 带上 dsh-vps 装没装（看 DSH 插件管理器的清单；没有插件管理器就是 null）', async () => {
+test('接口：overview 带上 vpssh 装没装（看 DSH 插件管理器的清单；没有插件管理器就是 null）', async () => {
   const env = await sandboxEnv()
   const make = (deps) => {
     const exact = new Map()
@@ -211,15 +211,15 @@ test('接口：overview 带上 dsh-vps 装没装（看 DSH 插件管理器的清
     return async () => {
       const req = Readable.from([Buffer.from('{}')])
       req.method = 'POST'
-      req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+      req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
       req.socket = { remoteAddress: '127.0.0.1' }
       const out = {}
-      await exact.get('/api-vps/overview')(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
+      await exact.get('/api-vpssh/overview')(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
       return out.body.sister
     }
   }
-  assert.deepEqual(await make({ pluginManager: { listBundles: () => [{ name: 'dsh-vps', enabled: true, installed: true }] } })(), { installed: true })
-  assert.deepEqual(await make({ pluginManager: { listBundles: () => [{ name: 'dsh-vps', enabled: false, installed: true }] } })(), { installed: false }, '装了但关着，算没装')
+  assert.deepEqual(await make({ pluginManager: { listBundles: () => [{ name: 'vpssh', enabled: true, installed: true }] } })(), { installed: true })
+  assert.deepEqual(await make({ pluginManager: { listBundles: () => [{ name: 'vpssh', enabled: false, installed: true }] } })(), { installed: false }, '装了但关着，算没装')
   assert.deepEqual(await make({ pluginManager: { listBundles: () => [] } })(), { installed: false })
   assert.deepEqual(await make({})(), { installed: null })
 })

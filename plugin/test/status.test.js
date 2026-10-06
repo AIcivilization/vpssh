@@ -107,7 +107,7 @@ test('采集脚本：「设了开机自启却没在跑」不把开机跑一次�
 })
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-status-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-status-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: 'la', hosts: { la: {} } }, env)
   await writeState({ hosts: { la: { facts: { os_id: 'ubuntu', services: 'old' } } } }, env)
@@ -181,10 +181,10 @@ test('接口：只看这个对话绑定的那台；get 先给本机缓存，coll
   const call = async (path, body) => {
     const req = Readable.from([Buffer.from(JSON.stringify(body))])
     req.method = 'POST'
-    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
     req.socket = { remoteAddress: '127.0.0.1' }
     const out = {}
-    await routes.get(`/api-vps/${path}`)(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
+    await routes.get(`/api-vpssh/${path}`)(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
     return out.body
   }
   assert.match((await call('status/get', { sessionId: 'other' })).error, /还没打开 VPS 开关/)
@@ -208,7 +208,7 @@ test('接口：只看这个对话绑定的那台；get 先给本机缓存，coll
 async function loadClient(pageLang) {
   let spec = null
   globalThis.window = {
-    __ModuleLoader__: { load: (s) => { spec = s } }, __DSH_VPS_TOKEN__: 't', confirm: () => true, innerHeight: 800,
+    __ModuleLoader__: { load: (s) => { spec = s } }, __VPSSH_TOKEN__: 't', confirm: () => true, innerHeight: 800,
     location: { origin: 'http://127.0.0.1:3000' }, addEventListener() {}, removeEventListener() {},
     localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
   }
@@ -333,10 +333,10 @@ async function routeCaller(env, runner) {
   return async (path, body) => {
     const req = Readable.from([Buffer.from(JSON.stringify(body))])
     req.method = 'POST'
-    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
     req.socket = { remoteAddress: '127.0.0.1' }
     const out = {}
-    await routes.get(`/api-vps/${path}`)(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
+    await routes.get(`/api-vpssh/${path}`)(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
     return out.body
   }
 }
@@ -373,7 +373,7 @@ test('右侧栏：DSH 有右侧栏时登记「VPS 状态」页签（开始页有
       cb({ get: (n) => (n === 'sidebarRight' ? { openTab: (kind) => { opened = kind } } : n === 'sidebarRightTabs' ? { register: (d) => { def = d; return () => {} } } : undefined), effect: (fn) => fn() })
     },
   })
-  assert.equal(def.kind, 'vps-manager-status')
+  assert.equal(def.kind, 'vpssh-status')
   assert.equal(def.keepMounted, true)
   assert.equal(def.title(), 'VPS 状态')
   assert.equal(def.guide.length, 1)
@@ -388,7 +388,7 @@ test('右侧栏：DSH 有右侧栏时登记「VPS 状态」页签（开始页有
 
 test('右侧栏：顶上一排编号；默认看本对话那台；没绑时看上次看的那台，并说明只是查看、可以改用', async () => {
   const exported = await loadClient(null)
-  const store = { 'dsh-vps:hosts': JSON.stringify([{ alias: 'la', note: '' }, { alias: 'hk', note: '香港' }]), 'dsh-vps:bind:s1': 'la', 'dsh-vps.sidebar-view.s2': 'hk' }
+  const store = { 'vpssh:hosts': JSON.stringify([{ alias: 'la', note: '' }, { alias: 'hk', note: '香港' }]), 'vpssh:bind:s1': 'la', 'vpssh.sidebar-view.s2': 'hk' }
   globalThis.window.localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v }, removeItem() {} }
   const { VpsStatusSidebar } = exported.__test
   const render = (sessionId) => renderToStaticMarkup(React.createElement(VpsStatusSidebar, { sessionId, useTabInfo: () => ({ tab: { visible: false } }) }))
@@ -447,7 +447,7 @@ test('界面：除了 CPU 那一排和磁盘，各分区右上角都有倒三角
   for (const t of ['CPU', '内存', 'Swap', '磁盘']) assert.doesNotMatch(open, new RegExp(`收起「${t}」`), `「${t}」不收起`)
   assert.match(open, /backup-sync/)
 
-  store['dsh-vps.status.collapsed'] = JSON.stringify(['attention', 'svc', 'ai'])
+  store['vpssh.status.collapsed'] = JSON.stringify(['attention', 'svc', 'ai'])
   const shut = render()
   assert.match(shut, /aria-label="展开「需注意」"/)
   assert.match(shut, /10 项（已收起）/, '收起后还看得到有几项')

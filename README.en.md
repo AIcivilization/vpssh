@@ -13,14 +13,12 @@ The AI runs on your own model key. There is no server of ours. Free and open sou
 
 ## What's inside
 
-vpssh does not copy or modify DeepSeek Harness. It combines existing parts at tested versions (see [manifest.json](manifest.json)):
-
-| Part | Role |
+| Directory | Role |
 |---|---|
-| [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) | AI chat, confirmations, multiple models, plugin system |
-| [dsh-vps](https://github.com/AIcivilization/dsh-vps) | Install, login gateway, automatic HTTPS, one-click upgrades |
-| [dsh-vps-manager](https://github.com/AIcivilization/dsh-vps-manager) | Machines, terminal, files, status, AI tools |
-| This repo | vpssh branding, default layout, install entry point |
+| `plugin/` | All of vpssh's features: machines, terminal, files, status, AI tools, branding and layout |
+| `server/` | Install, login gateway, automatic HTTPS, upgrades, rescue command |
+
+AI chat, confirmations, multiple models and sessions come from [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh), installed unmodified from npm; the pinned version is in [manifest.json](manifest.json).
 
 Built on DeepSeek Harness. vpssh is not an official DeepSeek product and is not endorsed or authorized by DeepSeek.
 

@@ -1,6 +1,6 @@
 // lib/task.js — 远端任务的查看与终止（设计 8.6）
 //
-// 任务目录 ~/.cache/dsh-vps/tasks/<id>/ 里有 script.sh / meta.json / pid / log / rc。
+// 任务目录 ~/.cache/vpssh/tasks/<id>/ 里有 script.sh / meta.json / pid / log / rc。
 // rc 存在 = 跑完了；pid 还活着 = 在跑；两样都没有 = 异常终止（可能被重启打断）。
 //
 // 终止用进程组（kill -TERM -<pgid>），这样连子进程一起收掉；以 sudo 起的子进程要用
@@ -10,7 +10,7 @@
 import { runRemote } from './engine.js'
 import { L } from './i18n.js'
 
-const DIR = 'D="$HOME/.cache/dsh-vps"'
+const DIR = 'D="$HOME/.cache/vpssh"'
 
 const TASK_LINE = [
   '  id=$(basename "$t")',

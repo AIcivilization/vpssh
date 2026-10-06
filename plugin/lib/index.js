@@ -17,15 +17,15 @@ import { registerTools } from './tools.js'
 import { localShellGuard, registerVpsMode } from './vps-mode.js'
 import { onLangChange } from './i18n.js'
 
-export const name = 'vps-manager'
+export const name = 'vpssh'
 
 // —— 同一个 DSH 进程里只运行一份 ——
 // 用户实测：插件市场 dshmarket 装插件时会「热挂载」一份（不用重启就能用），同时也按 DSH 的正规方式
-// 写进了 profile 的 bundles；重启后两处各加载一次（DSH 日志：package dsh-vps-manager resolves from
+// 写进了 profile 的 bundles；重启后两处各加载一次（DSH 日志：package vpssh resolves from
 // multiple active Loader sources … remove one entry）。第二份注册时撞上第一份，命令、工具、路由、终端
 // 全报「已经注册过」，诊断里还把第一份的「正常」覆盖成「失败」。所以第二份直接让路。
 // 第一份被卸载（市场里停用、热重载）时清掉标记，之后再加载的那份正常接班。
-const RUNNING = Symbol.for('dsh-vps-manager.running')
+const RUNNING = Symbol.for('vpssh.running')
 
 /** 测试用：清掉「已经有一份在运行」的标记 */
 export function _resetInstanceGuard() {
@@ -36,7 +36,7 @@ export const inject = ['tools']
 const SKILL_NAME = 'vps-operator'
 
 function warn(ctx, message, error) {
-  const text = `[dsh-vps-manager] ${message}${error ? `：${error.message ?? error}` : ''}`
+  const text = `[vpssh] ${message}${error ? `：${error.message ?? error}` : ''}`
   if (ctx?.logger?.warn) ctx.logger.warn(text)
   else console.warn(text)
 }
@@ -78,7 +78,7 @@ export function apply(ctx, config = {}) {
     instance.released = true
     if (globalThis[RUNNING] === instance) delete globalThis[RUNNING]
   }
-  track(ctx, release, 'vps-manager: single instance')
+  track(ctx, release, 'vpssh: single instance')
   try {
     ctx.on?.('dispose', release)
   } catch {
@@ -91,7 +91,7 @@ export function apply(ctx, config = {}) {
   deps.token = deps.token ?? randomBytes(24).toString('hex')
 
   // 插件体检：每一块注册的结果都记下来（/vps-doctor、设置页「反馈与建议」里的诊断信息、每天的兼容性检查都看）。
-  // 失败的同时写进本地错误记录 $DSH_HOME/vps-manager/logs/，反馈时附上（先打码）
+  // 失败的同时写进本地错误记录 $DSH_HOME/vpssh/logs/，反馈时附上（先打码）
   const note = (message, error) => {
     warn(ctx, message, error)
     recordError('load', `${message}${error ? `：${error.message ?? error}` : ''}`, deps.env)
@@ -112,7 +112,7 @@ export function apply(ctx, config = {}) {
   repairSshSetup(deps.env)
     .then(({ repaired }) => {
       if (repaired.length) {
-        const text = `[dsh-vps-manager] SSH 连接配置已自动修复：${repaired.join('；')}`
+        const text = `[vpssh] SSH 连接配置已自动修复：${repaired.join('；')}`
         if (ctx?.logger?.info) ctx.logger.info(text)
         else console.info(text)
       }
@@ -183,7 +183,7 @@ export function apply(ctx, config = {}) {
     track(cmdCtx, () => {
       off()
       current?.()
-    }, 'vps-manager: commands')
+    }, 'vpssh: commands')
   })
 
   // 「状态」页签的 AI 解读：插件直接调 DSH 的模型（llm 服务）和默认模型选择（agentDefaultModel）。
@@ -193,14 +193,14 @@ export function apply(ctx, config = {}) {
     deps.llm = llm
     track(llmCtx, () => {
       if (deps.llm === llm) deps.llm = undefined
-    }, 'vps-manager: llm')
+    }, 'vpssh: llm')
   })
   ctx.inject(['agentDefaultModel'], (modelCtx) => {
     const model = modelCtx.agentDefaultModel ?? modelCtx.get?.('agentDefaultModel')
     deps.defaultModel = model
     track(modelCtx, () => {
       if (deps.defaultModel === model) deps.defaultModel = undefined
-    }, 'vps-manager: default model')
+    }, 'vpssh: default model')
   })
 
   // DSH 自己的插件管理器（dsh-base 里带的；官方桌面版、dsh web 都有）：设置页「更新」用它装新版，
@@ -210,7 +210,7 @@ export function apply(ctx, config = {}) {
     deps.pluginManager = manager
     track(pmCtx, () => {
       if (deps.pluginManager === manager) deps.pluginManager = undefined
-    }, 'vps-manager: plugin manager')
+    }, 'vpssh: plugin manager')
   })
 
   // DSH Desktop 专有服务：desktopPnpm 执行 `dsh plugin remove`，desktopActions 负责重启。
@@ -235,7 +235,7 @@ export function apply(ctx, config = {}) {
       const { registerRoutes } = await import('./routes.js')
       if (!deps.desktop.actions) setForm('web') // DSH Desktop 的服务要是晚到，会改回 desktop
       const routes = registerRoutes(webCtx, deps)
-      track(webCtx, routes.dispose, 'vps-manager: settings routes')
+      track(webCtx, routes.dispose, 'vpssh: settings routes')
       ok('routes')
     } catch (error) {
       fail('routes', '设置页路由注册失败（设置页不可用，命令与工具不受影响）', error)
@@ -247,7 +247,7 @@ export function apply(ctx, config = {}) {
       track(webCtx, () => {
         if (deps.terminals === terminal) deps.terminals = undefined
         terminal.dispose()
-      }, 'vps-manager: terminal')
+      }, 'vpssh: terminal')
       ok('terminal')
     } catch (error) {
       fail('terminal', '终端连接注册失败（对话里的终端不可用，其他功能不受影响）', error)

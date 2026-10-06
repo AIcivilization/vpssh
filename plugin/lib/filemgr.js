@@ -7,8 +7,8 @@
 // 安全边界（和终端一样，路由那边再把一道关）：
 //   - 没有自由命令：只有列目录、读、存、新建文件夹、改名、移到回收站 / 还原 / 彻底删除、
 //     上传、下载。路径和名字逐个校验，拼进脚本时一律 shellQuote
-//   - 删除 = 移到服务器上的回收站（~/.cache/dsh-vps/trash），能还原；系统顶层目录直接拒绝
-//   - 覆盖已有文件先备份到 ~/.cache/dsh-vps/backups/（和 AI 改文件同一个地方），
+//   - 删除 = 移到服务器上的回收站（~/.cache/vpssh/trash），能还原；系统顶层目录直接拒绝
+//   - 覆盖已有文件先备份到 ~/.cache/vpssh/backups/（和 AI 改文件同一个地方），
 //     并保留原来的权限和属主
 //   - 新建的文件、文件夹按 644 / 755（umask 022）：网站文件要让 nginx 之类读得到。
 //     runRemote 的脚本是 umask 077，那是给插件自己的临时文件用的
@@ -25,7 +25,7 @@ import { L } from './i18n.js'
 export const LIST_LIMIT = 3000
 export const EDIT_LIMIT = 1024 * 1024 // 和 vps_write_file 的上限一致
 export const SHARE_LIMIT = 48 * 1024 // 交给 AI 的上限：大文件（日志）取最后这么多
-const TRASH = '$HOME/.cache/dsh-vps/trash'
+const TRASH = '$HOME/.cache/vpssh/trash'
 const MAX_BATCH = 200
 
 export class FileError extends Error {
@@ -320,11 +320,11 @@ export async function trashEntries({ alias, paths, env, spawnSsh }) {
   const script = [
     PRE,
     `R="${TRASH}"`,
-    'mkdir -p "$R" && chmod 700 "$HOME/.cache/dsh-vps" "$R" 2>/dev/null',
+    'mkdir -p "$R" && chmod 700 "$HOME/.cache/vpssh" "$R" 2>/dev/null',
     'STAMP=$(date +%Y%m%d-%H%M%S); NOW=$(date +%s); i=0',
     `for P in ${list.map(shellQuote).join(' ')}; do`,
     '  i=$((i+1))',
-    '  case "$P" in "$HOME"|"$HOME/.cache"|"$HOME/.cache/dsh-vps"|"$HOME/.cache/dsh-vps/"*|"$HOME/.ssh") printf \'DENY\\t%s\\n\' "$P"; continue;; esac',
+    '  case "$P" in "$HOME"|"$HOME/.cache"|"$HOME/.cache/vpssh"|"$HOME/.cache/vpssh/"*|"$HOME/.ssh") printf \'DENY\\t%s\\n\' "$P"; continue;; esac',
     '  if [ ! -e "$P" ] && [ ! -L "$P" ]; then printf \'MISS\\t%s\\n\' "$P"; continue; fi',
     '  ID="$STAMP-$$-$i"',
     '  if mkdir "$R/$ID" && printf \'%s\\n%s\\n\' "$P" "$NOW" > "$R/$ID/.dsh-trash-info" && mv -- "$P" "$R/$ID/" 2>"$R/$ID/.err"; then',
@@ -508,7 +508,7 @@ export function uploadScript({ path, size, taskId }) {
     'trap \'rm -f "$TMP"\' HUP INT TERM PIPE',
     'BK=""',
     'if [ -f "$T" ]; then',
-    '  BK="$HOME/.cache/dsh-vps/backups/$TASK$T"',
+    '  BK="$HOME/.cache/vpssh/backups/$TASK$T"',
     L('  mkdir -p "${BK%/*}" && cp -p "$T" "$BK" || { echo "备份原文件失败，没有覆盖" >&2; exit 4; }', '  mkdir -p "${BK%/*}" && cp -p "$T" "$BK" || { echo "Backing up the original failed, so nothing was overwritten" >&2; exit 4; }'),
     'fi',
     L('cat > "$TMP" || { rm -f "$TMP"; echo "写入失败" >&2; exit 5; }', 'cat > "$TMP" || { rm -f "$TMP"; echo "Writing failed" >&2; exit 5; }'),

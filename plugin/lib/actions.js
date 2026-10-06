@@ -153,9 +153,9 @@ export async function execAction({
           ? L(`cd ${shellQuote(cwd)} 2>/dev/null || { printf '（目录 %s 已经不存在，回到家目录）\\n' ${shellQuote(cwd)} >&2; cd; }`, `cd ${shellQuote(cwd)} 2>/dev/null || { printf '(folder %s no longer exists, back to home)\\n' ${shellQuote(cwd)} >&2; cd; }`)
           : 'cd',
         script,
-        '__dsh_vps_rc=$?',
+        '__vpssh_rc=$?',
         `printf '\\n${CWD_MARK}%s\\n' "$PWD"`,
-        'exit $__dsh_vps_rc',
+        'exit $__vpssh_rc',
       ].join('\n')
   const common = {
     alias,
@@ -264,7 +264,7 @@ export async function writeFileAction({
 
   // 改 SSH / 防火墙 / 网络配置：默认用「还原备份 + 重新生效」当恢复脚本
   const restore = safetyNet?.restore ?? (pathClass.lockout
-    ? `cp -p "$HOME/.cache/dsh-vps/backups/${taskId}${path}" ${path} 2>/dev/null; ${after ?? 'true'}`
+    ? `cp -p "$HOME/.cache/vpssh/backups/${taskId}${path}" ${path} 2>/dev/null; ${after ?? 'true'}`
     : null)
 
   const result = pathClass.lockout && restore

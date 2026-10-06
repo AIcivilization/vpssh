@@ -40,7 +40,7 @@ function runPayload(payload, home) {
   })
 }
 
-const fakeHome = () => mkdtemp(join(tmpdir(), 'dsh-vps-test-'))
+const fakeHome = () => mkdtemp(join(tmpdir(), 'vpssh-test-'))
 
 test('shellQuote 转义单引号', () => {
   assert.equal(shellQuote('a.com'), "'a.com'")
@@ -156,12 +156,12 @@ test('端到端：远端任务跑完能拿到日志和退出码', async () => {
   assert.equal(r.exitCode, 7)
   assert.match(r.output, /hello-task/)
   assert.equal(r.locked, false)
-  await access(join(home, '.cache/dsh-vps/tasks/test-task-1/rc'))
+  await access(join(home, '.cache/vpssh/tasks/test-task-1/rc'))
 })
 
 test('端到端：同机已有任务时拿到 locked 与持有者信息', async () => {
   const home = await fakeHome()
-  const lockDir = join(home, '.cache/dsh-vps/lock')
+  const lockDir = join(home, '.cache/vpssh/lock')
   await mkdir(lockDir, { recursive: true })
   await writeFile(join(lockDir, 'pid'), `${process.pid}\n`)
   await writeFile(join(lockDir, 'owner.json'), JSON.stringify({ taskId: 'busy-1', source: 'panel' }))
@@ -174,5 +174,5 @@ test('端到端：同机已有任务时拿到 locked 与持有者信息', async 
   assert.equal(r.started, true)
   assert.equal(r.locked, true)
   assert.equal(r.lockOwner?.taskId, 'busy-1')
-  await assert.rejects(access(join(home, '.cache/dsh-vps/tasks/test-task-2')), '被锁时不应创建任务目录')
+  await assert.rejects(access(join(home, '.cache/vpssh/tasks/test-task-2')), '被锁时不应创建任务目录')
 })

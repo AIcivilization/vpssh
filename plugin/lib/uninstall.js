@@ -1,9 +1,9 @@
 // lib/uninstall.js — 设置页「卸载」
 //
 // 插件在三个地方留过东西，用户逐项勾选要清哪些：
-//   服务器上：~/.cache/dsh-vps（任务目录、改文件前的备份、回收站）；authorized_keys 里插件专用钥匙的公钥
+//   服务器上：~/.cache/vpssh（任务目录、改文件前的备份、回收站）；authorized_keys 里插件专用钥匙的公钥
 //             同一台服务器可能还被别的电脑上的插件管着：只撤销本机钥匙那一行；还有别的插件钥匙就不删共用目录
-//   本机：~/.ssh/config 顶部的 Include 行 + ~/.ssh/config.d/dsh-vps.conf；专用钥匙；$DSH_HOME/vps-manager
+//   本机：~/.ssh/config 顶部的 Include 行 + ~/.ssh/config.d/vpssh.conf；专用钥匙；$DSH_HOME/vpssh
 //   插件本身：旧版 DSH Desktop 经宿主的 desktopPnpm 服务执行 `dsh plugin remove`；
 //   DSH 官方桌面版和带插件管理器的 DSH 交给 pluginManager.removeBundle（界面在其他各项做完后单独请求，
 //   因为它会当场把插件卸下、这个页面也随之消失）；都没有就给出命令让用户自己跑
@@ -18,9 +18,9 @@ import { runRemote } from './engine.js'
 import { sshCloseMaster } from './ssh.js'
 import { L } from './i18n.js'
 
-export const PACKAGE_NAME = 'dsh-vps-manager'
-const INCLUDE_LINE = 'include config.d/dsh-vps.conf'
-const INCLUDE_COMMENT = '# added by dsh-vps-manager'
+export const PACKAGE_NAME = 'vpssh'
+const INCLUDE_LINE = 'include config.d/vpssh.conf'
+const INCLUDE_COMMENT = '# added by vpssh'
 
 /** 卸载选项。default 只给能找回来的操作打勾 */
 export const OPTIONS = [
@@ -65,7 +65,7 @@ export async function uninstallPreview({ env = process.env, desktop, pluginManag
 }
 
 const REMOTE_CACHE_SCRIPT = [
-  'D="$HOME/.cache/dsh-vps"',
+  'D="$HOME/.cache/vpssh"',
   '[ -d "$D" ] || { echo "absent"; exit 0; }',
   // 有改动任务在跑就不删：删掉正在写日志的任务目录，任务结果就丢了
   'p=$(cat "$D/lock/pid" 2>/dev/null)',
@@ -74,7 +74,7 @@ const REMOTE_CACHE_SCRIPT = [
   // 回收站都是大家共用的，不删
   'F="$HOME/.ssh/authorized_keys"',
   'if [ -f "$F" ]; then',
-  '  n=$(grep -F " dsh-vps-manager" "$F" | grep -vF "${P_KEY:-__no_key__}" | wc -l | tr -d " ")',
+  '  n=$(grep -F " vpssh" "$F" | grep -vF "${P_KEY:-__no_key__}" | wc -l | tr -d " ")',
   '  if [ "${n:-0}" -gt 0 ]; then echo "shared"; exit 0; fi',
   'fi',
   'rm -rf "$D" && echo "removed"',
@@ -85,9 +85,9 @@ const REVOKE_SCRIPT = [
   '[ -f "$F" ] || { echo "absent"; exit 0; }',
   'grep -qF "$P_KEY" "$F" || { echo "absent"; exit 0; }',
   // 先备份；用 cat > 写回，保留原文件的属主和权限
-  'cp "$F" "$F.dsh-vps-bak" || exit 1',
-  'grep -vF "$P_KEY" "$F.dsh-vps-bak" > "$F.dsh-vps-tmp" || true',
-  'cat "$F.dsh-vps-tmp" > "$F" && rm -f "$F.dsh-vps-tmp" && echo "revoked"',
+  'cp "$F" "$F.vpssh-bak" || exit 1',
+  'grep -vF "$P_KEY" "$F.vpssh-bak" > "$F.vpssh-tmp" || true',
+  'cat "$F.vpssh-tmp" > "$F" && rm -f "$F.vpssh-tmp" && echo "revoked"',
 ].join('\n')
 
 async function remoteStep({ alias, body, params, specs, env, runner, signal }) {
@@ -121,10 +121,10 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
         alias, body: REMOTE_CACHE_SCRIPT, env, runner, signal, ...(hasKey ? { params: { key: keyBody }, specs } : {}),
       })
       if (!res.ok) step('remoteCache', false, L(`${alias}：连不上，没清（${res.hint ?? res.status}）`, `${alias}: unreachable, not cleaned up (${res.hint ?? res.status})`))
-      else if (word === 'busy') step('remoteCache', false, L(`${alias}：有任务正在跑，没清。等任务结束后可以手动删 ~/.cache/dsh-vps`, `${alias}: a task is running, not cleaned up. Once it finishes you can delete ~/.cache/dsh-vps yourself`))
-      else if (word === 'shared') step('remoteCache', true, L(`${alias}：别的电脑上的插件也在管这台服务器，~/.cache/dsh-vps 里的任务记录、备份和回收站是大家共用的，保留没删`, `${alias}: the plugin on another computer also manages this server, and the task records, backups and trash in ~/.cache/dsh-vps are shared, so it was kept`))
+      else if (word === 'busy') step('remoteCache', false, L(`${alias}：有任务正在跑，没清。等任务结束后可以手动删 ~/.cache/vpssh`, `${alias}: a task is running, not cleaned up. Once it finishes you can delete ~/.cache/vpssh yourself`))
+      else if (word === 'shared') step('remoteCache', true, L(`${alias}：别的电脑上的插件也在管这台服务器，~/.cache/vpssh 里的任务记录、备份和回收站是大家共用的，保留没删`, `${alias}: the plugin on another computer also manages this server, and the task records, backups and trash in ~/.cache/vpssh are shared, so it was kept`))
       else if (word === 'absent') step('remoteCache', true, L(`${alias}：服务器上没有插件目录`, `${alias}: no plugin folder on the server`))
-      else step('remoteCache', true, L(`${alias}：已删除 ~/.cache/dsh-vps`, `${alias}: deleted ~/.cache/dsh-vps`))
+      else step('remoteCache', true, L(`${alias}：已删除 ~/.cache/vpssh`, `${alias}: deleted ~/.cache/vpssh`))
     }
   }
   if (choices.revokeKey) {
@@ -135,7 +135,7 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
       for (const alias of aliases) {
         const { res, word } = await remoteStep({ alias, body: REVOKE_SCRIPT, params: { key: body }, specs, env, runner, signal })
         if (!res.ok) step('revokeKey', false, L(`${alias}：连不上，没撤销（${res.hint ?? res.status}）`, `${alias}: unreachable, not revoked (${res.hint ?? res.status})`))
-        else if (word === 'revoked') step('revokeKey', true, L(`${alias}：已从 authorized_keys 删掉插件钥匙（原文件备份为 authorized_keys.dsh-vps-bak）`, `${alias}: removed the plugin key from authorized_keys (original backed up as authorized_keys.dsh-vps-bak)`))
+        else if (word === 'revoked') step('revokeKey', true, L(`${alias}：已从 authorized_keys 删掉插件钥匙（原文件备份为 authorized_keys.vpssh-bak）`, `${alias}: removed the plugin key from authorized_keys (original backed up as authorized_keys.vpssh-bak)`))
         else step('revokeKey', true, L(`${alias}：服务器上没有登记这把钥匙`, `${alias}: this key is not registered on the server`))
       }
     }
@@ -165,7 +165,7 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
       }
       if (await exists(p.sshDropin)) {
         await rename(p.sshDropin, `${p.sshDropin}.uninstall-bak`)
-        done.push(L(`${p.sshDropin} 已改名为 dsh-vps.conf.uninstall-bak`, `Renamed ${p.sshDropin} to dsh-vps.conf.uninstall-bak`))
+        done.push(L(`${p.sshDropin} 已改名为 vpssh.conf.uninstall-bak`, `Renamed ${p.sshDropin} to vpssh.conf.uninstall-bak`))
       }
       step('sshConfig', true, done.join(L('；', '; ')) || L('没有找到插件加的 SSH 配置', 'No SSH configuration added by the plugin was found'))
     } catch (error) {
@@ -182,9 +182,9 @@ export async function runUninstall({ choices = {}, env = process.env, runner, si
     }
   }
   if (choices.data) {
-    // 只删插件自己的目录：路径必须正好是 $DSH_HOME/vps-manager
-    const expected = join(dshHome(env), 'vps-manager')
-    if (p.base !== expected || !p.base.endsWith(`${sep}vps-manager`)) {
+    // 只删插件自己的目录：路径必须正好是 $DSH_HOME/vpssh
+    const expected = join(dshHome(env), 'vpssh')
+    if (p.base !== expected || !p.base.endsWith(`${sep}vpssh`)) {
       step('data', false, L(`数据目录路径异常（${p.base}），为安全起见没删`, `Unexpected data folder path (${p.base}); not deleted, to be safe`))
     } else {
       try {

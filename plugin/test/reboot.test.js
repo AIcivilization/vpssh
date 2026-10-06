@@ -136,7 +136,7 @@ test('发之前再查一遍：计划页之后开始 apt 了，就不发重启', 
 
 test('没有 root：说清楚，不假装在等', async () => {
   const remote = fakeRemote({
-    trigger: { ok: false, status: STATUS.noPrivilege, exitCode: 96, stdout: '', stderr: 'dsh-vps: 需要 root 权限', hint: '需要 root 权限' },
+    trigger: { ok: false, status: STATUS.noPrivilege, exitCode: 96, stdout: '', stderr: 'vpssh: 需要 root 权限', hint: '需要 root 权限' },
   })
   const r = await rebootNow({ ...remote })
   assert.equal(r.phase, 'trigger')

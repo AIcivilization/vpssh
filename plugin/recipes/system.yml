@@ -260,7 +260,7 @@ recipes:
       $SUDO swapon /swapfile
       grep -q '^/swapfile' /etc/fstab 2>/dev/null \
         || printf '/swapfile none swap sw 0 0\n' | $SUDO tee -a /etc/fstab >/dev/null
-      printf 'vm.swappiness=%s\n' "$P_SWAPPINESS" | $SUDO tee /etc/sysctl.d/99-dsh-vps-swap.conf >/dev/null
+      printf 'vm.swappiness=%s\n' "$P_SWAPPINESS" | $SUDO tee /etc/sysctl.d/99-vpssh-swap.conf >/dev/null
       $SUDO sysctl -q -w "vm.swappiness=$P_SWAPPINESS" 2>/dev/null || true
     verify: |
       swapon --show 2>/dev/null | head -5
@@ -344,7 +344,7 @@ recipes:
       printf 'APT::Periodic::Update-Package-Lists "1";\nAPT::Periodic::Unattended-Upgrade "1";\nAPT::Periodic::AutocleanInterval "7";\n' \
         | $SUDO tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null
       printf 'Unattended-Upgrade::Automatic-Reboot "false";\n' \
-        | $SUDO tee /etc/apt/apt.conf.d/99-dsh-vps-no-reboot >/dev/null
+        | $SUDO tee /etc/apt/apt.conf.d/99-vpssh-no-reboot >/dev/null
       $SUDO systemctl enable --now unattended-upgrades 2>/dev/null || true
     verify: |
       cat /etc/apt/apt.conf.d/20auto-upgrades 2>/dev/null
@@ -360,7 +360,7 @@ recipes:
     desc_en: "Ban IPs that fail to log in again and again; close to essential on public machines"
     plan_en: |
       1. Install fail2ban
-      2. Write a separate config /etc/fail2ban/jail.d/dsh-vps.local (the distribution's own config is left alone)
+      2. Write a separate config /etc/fail2ban/jail.d/vpssh.local (the distribution's own config is left alone)
       3. Enable only the sshd jail, with local and private addresses allowlisted so you do not ban yourself
       4. Start it and enable it at boot, then check that the jail is really active
     tags: [安全, 常用]
@@ -383,7 +383,7 @@ recipes:
       has_cmd fail2ban-client && svc_active fail2ban
     plan: |
       1. 安装 fail2ban
-      2. 写入独立配置 /etc/fail2ban/jail.d/dsh-vps.local（不动发行版自带配置）
+      2. 写入独立配置 /etc/fail2ban/jail.d/vpssh.local（不动发行版自带配置）
       3. 只开 sshd 这一条规则，本机与内网地址加进白名单，避免误封自己
       4. 启动并设为开机自启，然后查询规则是否真的生效
     run: |
@@ -396,7 +396,7 @@ recipes:
       $SUDO mkdir -p /etc/fail2ban/jail.d
       printf '[DEFAULT]\nignoreip = 127.0.0.1/8 ::1 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16\nbantime = %s\nfindtime = 10m\nmaxretry = %s\n\n[sshd]\nenabled = true\nbackend = %s\nlogpath = %s\n' \
         "$P_BANTIME" "$P_MAXRETRY" "$backend" "$logpath" \
-        | $SUDO tee /etc/fail2ban/jail.d/dsh-vps.local >/dev/null
+        | $SUDO tee /etc/fail2ban/jail.d/vpssh.local >/dev/null
       svc_enable_start fail2ban
       sleep 2
     verify: |

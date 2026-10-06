@@ -10,7 +10,7 @@ import { runProcess } from '../lib/spawn.js'
 import { appendAudit, readAudit } from '../lib/audit.js'
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-eng-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-eng-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   const runner = (alias, payload, opts = {}) =>
     runProcess('sh', ['-s'], {
@@ -99,7 +99,7 @@ test('远端任务：跑完拿到退出码，任务目录留在远端', async ()
   assert.equal(res.status, STATUS.done)
   assert.match(res.stdout, /task-ok/)
   assert.ok(res.taskId)
-  await access(join(home, '.cache/dsh-vps/tasks', res.taskId, 'rc'))
+  await access(join(home, '.cache/vpssh/tasks', res.taskId, 'rc'))
 })
 
 test('远端任务：等不及就转后台，能列出、能接回、能终止', async () => {

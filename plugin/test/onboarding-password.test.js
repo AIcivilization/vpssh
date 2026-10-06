@@ -13,10 +13,10 @@ import {
 import { registerRoutes } from '../lib/routes.js'
 import { runProcess } from '../lib/spawn.js'
 
-const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHf0nWm3lG5c0xYk7cQbq2rZkq9h3u8p1mB8u2y3xYz0 dsh-vps-manager'
+const KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHf0nWm3lG5c0xYk7cQbq2rZkq9h3u8p1mB8u2y3xYz0 vpssh'
 
 async function home() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-onboard-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-onboard-'))
   const run = (script) => runProcess('sh', ['-c', script], { env: { ...process.env, HOME: dir } })
   return { dir, run }
 }
@@ -58,7 +58,7 @@ test('密码只进子进程的环境变量：不在命令行参数里；askpass 
   let seen = null
   const run = async (cmd, args, opts) => {
     // 这一刻小脚本还在：真的执行一下，确认它把环境变量里的密码交出来
-    const out = await runProcess('sh', [opts.env.SSH_ASKPASS], { env: { PATH: process.env.PATH, DSH_VPS_PW: opts.env.DSH_VPS_PW } })
+    const out = await runProcess('sh', [opts.env.SSH_ASKPASS], { env: { PATH: process.env.PATH, VPSSH_PW: opts.env.VPSSH_PW } })
     seen = { cmd, args, env: opts.env, helperOut: out.stdout, helperText: await readFile(opts.env.SSH_ASKPASS, 'utf8') }
     return { exitCode: 0, stdout: 'DSHVPS_KEY_OK\n', stderr: '' }
   }
@@ -70,7 +70,7 @@ test('密码只进子进程的环境变量：不在命令行参数里；askpass 
   assert.ok(seen.args.includes('2222'))
   assert.ok(seen.args.includes('PubkeyAuthentication=no'))
   assert.equal(seen.env.SSH_ASKPASS_REQUIRE, 'force')
-  assert.equal(seen.env.DSH_VPS_PW, "p@ss w'rd$1")
+  assert.equal(seen.env.VPSSH_PW, "p@ss w'rd$1")
   assert.equal(seen.helperOut, "p@ss w'rd$1\n", '特殊字符原样交给 ssh')
   assert.ok(!seen.helperText.includes('p@ss'), '小脚本里不写密码')
   await assert.rejects(access(seen.env.SSH_ASKPASS), '用完就删')
@@ -93,7 +93,7 @@ test('别名自动生成', () => {
 // —— 接口 ——
 
 async function sandbox() {
-  const dir = await mkdtemp(join(tmpdir(), 'dsh-vps-onboard-route-'))
+  const dir = await mkdtemp(join(tmpdir(), 'vpssh-onboard-route-'))
   const env = { HOME: dir, DSH_HOME: join(dir, '.dsh') }
   await writeHosts({ current: '', hosts: {} }, env)
   const routes = new Map()
@@ -112,10 +112,10 @@ async function sandbox() {
   const call = async (body, remote = false) => {
     const req = Readable.from([Buffer.from(JSON.stringify(body))])
     req.method = 'POST'
-    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-dsh-vps-token': reg.token }
+    req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
     req.socket = { remoteAddress: remote ? '192.168.1.9' : '127.0.0.1' }
     const out = {}
-    await routes.get('/api-vps/onboarding/connect')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
+    await routes.get('/api-vpssh/onboarding/connect')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
     return out.body
   }
   return { dir, env, installs, call }
@@ -137,17 +137,17 @@ test('接口：密码对 → 放公钥、保存机器、用钥匙体检；审计
   assert.equal(res.keyInstalled, true)
   assert.deepEqual(res.fingerprints, ['256 SHA256:abcdef 1.2.3.4 (ED25519)'])
   assert.equal(s.installs.length, 1)
-  assert.match(s.installs[0].pubkey, /^ssh-ed25519 \S+ dsh-vps-manager(@[A-Za-z0-9._-]+)?$/, '放的是插件专用钥匙的公钥（备注带上电脑名）')
+  assert.match(s.installs[0].pubkey, /^ssh-ed25519 \S+ vpssh(@[A-Za-z0-9._-]+)?$/, '放的是插件专用钥匙的公钥（备注带上电脑名）')
 
   const doc = await readHosts(s.env)
   assert.equal(doc.hosts['1-2-3-4'].note, '洛杉矶')
-  const conf = await readFile(join(s.dir, '.ssh', 'config.d', 'dsh-vps.conf'), 'utf8')
+  const conf = await readFile(join(s.dir, '.ssh', 'config.d', 'vpssh.conf'), 'utf8')
   assert.match(conf, /Host 1-2-3-4[\s\S]*HostName 1\.2\.3\.4[\s\S]*IdentityFile/)
   const audit = JSON.stringify(await readAudit({ env: s.env }))
   assert.ok(audit.includes('add_host'))
   assert.ok(!audit.includes('right'), '审计里不能有密码')
   for (const f of ['hosts.yml', 'state.json']) {
-    const text = await readFile(join(s.dir, '.dsh', 'vps-manager', f), 'utf8').catch(() => '')
+    const text = await readFile(join(s.dir, '.dsh', 'vpssh', f), 'utf8').catch(() => '')
     assert.ok(!text.includes('right'), `${f} 里不能有密码`)
   }
 })

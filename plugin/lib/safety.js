@@ -100,7 +100,7 @@ export async function armSafetyNet({ restore, seconds = 120, ...options }) {
   // 共用一个文件会读到对方的 pid —— 取消时杀错，自己那个到点照样把改动还原
   const id = randomBytes(4).toString('hex')
   const body = [
-    'D="$HOME/.cache/dsh-vps"',
+    'D="$HOME/.cache/vpssh"',
     'mkdir -p "$D"',
     'if command -v setsid >/dev/null 2>&1; then LAUNCH=setsid; else LAUNCH=""; fi',
     `$LAUNCH sh -c 'echo $$ > "$1/safetynet-$2.pid"; sleep ${Number(seconds) || 120}; { ${restore}; } >> "$1/safetynet.log" 2>&1; rm -f "$1/safetynet-$2.pid"' _ "$D" ${id} </dev/null >/dev/null 2>&1 &`,
@@ -115,7 +115,7 @@ export async function armSafetyNet({ restore, seconds = 120, ...options }) {
 export async function disarmSafetyNet({ pid, id = '', ...options }) {
   const file = /^[0-9a-f]{8}$/.test(id) ? `safetynet-${id}.pid` : 'safetynet.pid'
   const body = [
-    'D="$HOME/.cache/dsh-vps"',
+    'D="$HOME/.cache/vpssh"',
     `pid=${Number(pid) || 0}`,
     '[ "$pid" -gt 0 ] || { echo "no-pid"; exit 0; }',
     'kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true',

@@ -1,6 +1,6 @@
 // lib/status.js — 终端面板的「状态」页签：一次 SSH 把这台机器看一遍，规则判出「需注意」，点了才让 AI 解读
 //
-// 设计见 工作流/dsh-vps-manager-状态页签设计.md。三条硬约束：
+// 设计见 工作流/vpssh-状态页签设计.md。三条硬约束：
 //   1. 只读，一次 SSH 采完（Windows 不能复用连接，分次采会慢）。走引擎的只读通道，不弹审批
 //   2. 采集只输出「键=值」和记录行，不输出句子：句子由界面按语言拼（中英文跟 DSH 走）
 //   3. 采不到的只这一项「取不到」；没有 root 看不了的标出来，不当成异常
@@ -169,7 +169,7 @@ fi
 if has_cmd fail2ban-client && svc_active fail2ban; then printf 'f2b=1\n'; else printf 'f2b=0\n'; fi
 
 # —— 插件自己在服务器上的东西 ——
-D="$HOME/.cache/dsh-vps"
+D="$HOME/.cache/vpssh"
 [ -d "$D/trash" ] && printf 'plugin_trash=%s\n' "$(du -sk "$D/trash" 2>/dev/null | cut -f1)"
 [ -d "$D/backups" ] && printf 'plugin_backups=%s\n' "$(du -sk "$D/backups" 2>/dev/null | cut -f1)"
 if [ -d "$D/lock" ]; then
@@ -411,7 +411,7 @@ export function judge(s, now = Date.now()) {
 // —————————————————————— 采集、缓存 ——————————————————————
 
 function cacheFile(alias, env) {
-  return join(dshHome(env), 'vps-manager', 'status', `${alias}.json`)
+  return join(dshHome(env), 'vpssh', 'status', `${alias}.json`)
 }
 
 export async function readStatusCache(alias, env = process.env) {
@@ -425,7 +425,7 @@ export async function readStatusCache(alias, env = process.env) {
 async function writeStatusCache(alias, patch, env) {
   const prev = (await readStatusCache(alias, env)) ?? {}
   const next = { ...prev, ...patch }
-  await mkdir(join(dshHome(env), 'vps-manager', 'status'), { recursive: true })
+  await mkdir(join(dshHome(env), 'vpssh', 'status'), { recursive: true })
   await atomicWrite(cacheFile(alias, env), JSON.stringify(next, null, 2))
   return next
 }
@@ -552,7 +552,7 @@ export async function interpretStatus({ alias, env = process.env, llm, defaultMo
     model: route.model,
     system: systemPrompt(),
     // 和 DSH 的 createUserMessage 一样的形状；不直接引它的包，装好的插件不一定解析得到
-    messages: [{ role: 'user', id: randomUUID(), content: [{ type: 'text', text: brief }], source: { kind: 'plugin:vps-manager' } }],
+    messages: [{ role: 'user', id: randomUUID(), content: [{ type: 'text', text: brief }], source: { kind: 'plugin:vpssh' } }],
     maxTokens: 1200,
     purpose: 'vps-status',
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

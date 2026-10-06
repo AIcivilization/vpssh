@@ -40,7 +40,7 @@ function streamRes() {
 }
 
 async function sandbox() {
-  const home = await mkdtemp(join(tmpdir(), 'dsh-vps-files-routes-'))
+  const home = await mkdtemp(join(tmpdir(), 'vpssh-files-routes-'))
   const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
   await writeHosts({ current: '', hosts: { hk: { note: '香港' } } }, env)
   await bindSession('sess-1', 'hk', env)
@@ -57,7 +57,7 @@ async function sandbox() {
   const reg = registerRoutes({ webServer: ws }, { env, runner, spawnSsh })
   const call = async (path, body = {}, { socket = LOCAL, sessionId = 'sess-1' } = {}) => {
     const res = jsonRes()
-    await routes.get(`/api-vps/files/${path}`)(jsonReq({ body: { sessionId, ...body }, headers: { 'x-dsh-vps-token': reg.token }, socket }), res)
+    await routes.get(`/api-vpssh/files/${path}`)(jsonReq({ body: { sessionId, ...body }, headers: { 'x-vpssh-token': reg.token }, socket }), res)
     return res.out.body
   }
   return { home, env, site, routes, reg, call }
@@ -167,9 +167,9 @@ test('下载：票据 2 分钟内有效，期间可以重复用（下载工具�
   const ticket = await s.call('download', { path: join(s.site, '报告.txt') })
   assert.equal(ticket.ok, true)
   assert.equal(ticket.name, '报告.txt')
-  assert.match(ticket.url, /^\/api-vps\/files\/fetch\?t=[a-f0-9]{48}$/)
+  assert.match(ticket.url, /^\/api-vpssh\/files\/fetch\?t=[a-f0-9]{48}$/)
 
-  const fetch = s.routes.get('/api-vps/files/fetch')
+  const fetch = s.routes.get('/api-vpssh/files/fetch')
   const get = (url) => {
     const req = Readable.from([])
     req.method = 'GET'
@@ -193,7 +193,7 @@ test('下载：票据 2 分钟内有效，期间可以重复用（下载工具�
   assert.equal(again.body().toString(), '内容 123')
 
   const wrong = streamRes()
-  await fetch(get('/api-vps/files/fetch?t=' + 'ab'.repeat(24)), wrong)
+  await fetch(get('/api-vpssh/files/fetch?t=' + 'ab'.repeat(24)), wrong)
   assert.equal(wrong.code, 403, '没发过的票据不行')
 
   const realNow = Date.now
@@ -209,13 +209,13 @@ test('下载：票据 2 分钟内有效，期间可以重复用（下载工具�
 
 test('上传：请求体就是文件；要 token、要二进制类型；覆盖时先备份', async () => {
   const s = await sandbox()
-  const upload = s.routes.get('/api-vps/files/upload')
+  const upload = s.routes.get('/api-vpssh/files/upload')
   const target = join(s.site, 'logo.png')
   const send = async (buf, { token = s.reg.token, type = 'application/octet-stream', size = buf.length } = {}) => {
     const req = Readable.from([buf])
     req.method = 'POST'
-    req.url = `/api-vps/files/upload?sessionId=sess-1&path=${encodeURIComponent(target)}&size=${size}`
-    req.headers = { host: '127.0.0.1:3000', 'content-type': type, 'x-dsh-vps-token': token }
+    req.url = `/api-vpssh/files/upload?sessionId=sess-1&path=${encodeURIComponent(target)}&size=${size}`
+    req.headers = { host: '127.0.0.1:3000', 'content-type': type, 'x-vpssh-token': token }
     req.socket = LOCAL
     const res = jsonRes()
     await upload(req, res)

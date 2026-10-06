@@ -14,11 +14,11 @@ import { randomUUID } from 'node:crypto'
 import { cachedBinding, readHosts, readState, sessionBinding } from './config.js'
 import { sharedFilesText, takeSharedFiles, takeUnshared, terminalText } from './terminal.js'
 
-export const PLUGIN = 'vps-manager'
+export const PLUGIN = 'vpssh'
 
 // 消息来源的写法。DSH 的会话格式 v4（0.1.7-alpha 起）不再收 kind:'plugin'，
 // 要求「归属到生产者」：插件写成 plugin:<插件名>。v3 两种都收，而且 DSH 把老会话
-// 迁移到 v4 时正是把 {kind:'plugin', plugin:'vps-manager'} 改写成这个值，所以统一用它。
+// 迁移到 v4 时正是把 {kind:'plugin', plugin:'vpssh'} 改写成这个值，所以统一用它。
 // 用错形状的后果不是我们这条消息丢掉，而是整轮对话失败
 // （实测报错：format v4 message requires a producer-owned source kind）。
 export const SOURCE_KIND = `plugin:${PLUGIN}`
