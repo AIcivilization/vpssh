@@ -604,7 +604,8 @@ step10_verify() {
 		echo "             （未传 --domain，当前为自签证书过渡，浏览器会提示证书不受信任；域名可稍后在向导中填写）"
 	fi
 	echo " 服务/日志 : systemctl status vpssh | journalctl -u vpssh -f"
-	echo " 管理命令  : vpssh status | restart | upgrade | rollback | reset-admin | setup-url | backup"
+	echo " 管理命令  : vpssh status | repair | restart | upgrade | rollback | reset-admin | setup-url | backup"
+	echo " 网页打不开: sudo vpssh repair"
 	echo "------------------------------------------------------------"
 	echo " 下一步："
 	echo " 1. 若使用域名，请先将 A 记录解析到本机（Caddy 会自动签发证书）"

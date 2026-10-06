@@ -461,6 +461,84 @@ cmd_restart() {
 
 ## endregion
 
+## region: repair
+
+# 命令行文字跟系统语言：zh 开头用中文，否则英文。写法：M '中文' 'English'
+M() { case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in zh*) printf '%s' "$1" ;; *) printf '%s' "$2" ;; esac; }
+
+# 网页打不开时的救援：SSH 上来执行一条命令，把 vpssh 的入口恢复到能用。
+# 只做"让入口回来"的事，不动用户数据：
+#   1. 拉起 vpssh-keyd、本机 SSH、Caddy、vpssh 这几个服务（开机自启也补上）
+#   2. 按当前设置重写 Caddy 站点（--public：先关掉「仅我的设备」，重新对公网开放）
+#   3. 重新打上设置页补丁（ownsHost）
+#   4. ufw 开着时放行 80/443 和本机 SSH 端口
+#   5. 等健康检查，打印访问地址；还不行就给出该看哪几行日志
+cmd_repair() {
+	require_root
+	local public=0 arg
+	for arg in "$@"; do
+		case "$arg" in
+		--public) public=1 ;;
+		*) die "$(M "未知参数: $arg（可用：--public）" "Unknown option: $arg (available: --public)")" ;;
+		esac
+	done
+	log "$(M "vpssh 救援：恢复网页入口" "vpssh repair: restoring the web entrance")"
+
+	local svc ssh_svc="ssh" failed=()
+	if [[ $public -eq 1 && "$(vpn_env)" == "on" ]]; then
+		vpn_set_mode off
+		log "$(M "已关闭「仅我的设备可访问」，重新对公网开放（登录照样要账号密码）" "Turned off 'only my devices'; the site is public again (sign-in is still required)")"
+	elif [[ "$(vpn_env)" == "on" ]]; then
+		log "$(M "当前是「仅我的设备可访问」：没连 WireGuard 的设备打不开。要对公网开放：sudo vpssh repair --public" "Access is limited to your WireGuard devices. To open it to the internet again: sudo vpssh repair --public")"
+	fi
+	vpn_apply_site
+	log "$(M "Caddy 站点已按当前设置重写" "Rewrote the Caddy site from the current settings")"
+
+	systemctl list-unit-files ssh.service >/dev/null 2>&1 || ssh_svc="sshd"
+	# 先写站点再起 Caddy：站点文件缺了 Caddy 根本起不来
+	for svc in vpssh-keyd "$ssh_svc" caddy "$SERVICE"; do
+		systemctl enable "$svc" >/dev/null 2>&1 || true
+		if systemctl is-active --quiet "$svc"; then
+			[[ "$svc" == "$SERVICE" ]] || continue
+		fi
+		if systemctl restart "$svc" >/dev/null 2>&1 && systemctl is-active --quiet "$svc"; then
+			log "$(M "已启动 $svc" "Started $svc")"
+		else
+			failed+=("$svc")
+			warn "$(M "$svc 起不来：journalctl -u $svc -n 30" "$svc does not start: journalctl -u $svc -n 30")"
+		fi
+	done
+
+	cmd_ownshost on >/dev/null 2>&1 || warn "$(M "设置页补丁没打上：sudo vpssh ownshost on" "Could not re-apply the settings patch: sudo vpssh ownshost on")"
+
+	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
+		local port
+		port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
+		ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw allow "${port:-22}/tcp" >/dev/null
+		log "$(M "ufw 已放行 80、443、${port:-22}" "ufw now allows 80, 443 and ${port:-22}")"
+	fi
+
+	local i ok=0 body
+	for i in $(seq 1 45); do
+		body=$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null) || { sleep 2; continue; }
+		if printf '%s' "$body" | grep -q '"dshCookie":{"authority"'; then ok=1; break; fi
+		sleep 2
+	done
+	echo
+	if [[ $ok -eq 1 && ${#failed[@]} -eq 0 ]]; then
+		log "$(M "好了，浏览器打开：https://$(current_host)" "Done. Open in your browser: https://$(current_host)")"
+		[[ -f "$ROOT/state/setup.lock" ]] || log "$(M "初始设置还没完成，设置链接：sudo vpssh setup-url" "Setup is not finished yet; get the link with: sudo vpssh setup-url")"
+	else
+		warn "$(M "还没恢复。把下面几条的输出发给我们（反馈：https://github.com/AIcivilization/vpssh/issues）：" "Not restored yet. Send us the output of these (https://github.com/AIcivilization/vpssh/issues):")"
+		echo "  sudo vpssh status"
+		echo "  journalctl -u $SERVICE -n 80 --no-pager"
+		echo "  journalctl -u caddy -n 30 --no-pager"
+		exit 1
+	fi
+}
+
+## endregion
+
 ## region: ownshost
 
 # 公网域名下 DSH 前端按 location.hostname 判定 connection.isLoopback=false，
@@ -1052,6 +1130,7 @@ vpssh 管理命令
   setup-url          打印初始设置链接（含一次性令牌）
   backup              备份数据到 /opt/vpssh/backups/（保留 3 份）
   selfcheck           手动触发回归自检探针
+  repair [--public]   网页打不开时救援：拉起服务、重写站点、放行端口（--public 关掉「仅我的设备」）
 EOF
 }
 
@@ -1066,6 +1145,7 @@ reset-admin) shift; cmd_reset_admin "$@" ;;
 setup-url) cmd_setup_url ;;
 backup) cmd_backup ;;
 selfcheck) cmd_selfcheck ;;
+repair) shift; cmd_repair "$@" ;;
 install-units) cmd_install_units ;;
 upgrade-run) cmd_upgrade_run ;;
 vpn) shift; cmd_vpn "$@" ;;
