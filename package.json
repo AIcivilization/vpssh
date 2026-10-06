@@ -1,0 +1,26 @@
+{
+  "name": "vpssh",
+  "version": "0.0.1",
+  "private": true,
+  "description": "AI-driven VPS management and SSH tool for every platform. · 全平台 AI 驱动的 VPS 管理及 SSH 工具。",
+  "keywords": ["vps", "ssh", "ai", "server-management", "self-hosted", "dsh-plugin"],
+  "license": "MIT",
+  "author": "AIcivilization",
+  "homepage": "https://github.com/AIcivilization/vpssh#readme",
+  "repository": { "type": "git", "url": "git+https://github.com/AIcivilization/vpssh.git" },
+  "bugs": { "url": "https://github.com/AIcivilization/vpssh/issues" },
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": { "default": "./lib/index.js" },
+    "./client": { "default": "./lib/client.js" },
+    "./package.json": "./package.json"
+  },
+  "files": ["lib/**", "manifest.json", "cordis.patch.yml", "README.md", "README.en.md", "LICENSE"],
+  "dsh": {
+    "bundle": { "patch": "./cordis.patch.yml" },
+    "client": { "platform": "web" }
+  },
+  "engines": { "node": ">=22.13", "dsh": ">=0.1.7-rc.1 <0.3.0-0" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

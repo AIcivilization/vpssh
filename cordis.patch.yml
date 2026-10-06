@@ -1,0 +1,4 @@
+# vpssh 的品牌与默认布局（界面见 lib/client.js）
+- insert:
+    - id: vpssh
+      name: vpssh

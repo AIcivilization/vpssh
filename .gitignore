@@ -1,0 +1,7 @@
+# 设计文档不推到 GitHub
+*-设计.md
+.workbuddy/
+.workbuddy-ai/
+node_modules/
+.DS_Store
+*.tgz
