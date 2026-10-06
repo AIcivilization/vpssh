@@ -16,7 +16,7 @@ set -euo pipefail
 
 ## region: 常量与参数
 
-DSH_VERSION="0.1.7-rc.1" # 钉住版本（设计文档 §10 已验证版本表，勿随意改）
+DSH_VERSION="0.2.0-rc.2" # 钉住版本（设计文档 §10 已验证版本表，勿随意改）
 # 只钉顶层包版本是不够的：DSH 各子包的依赖是 ^0.1.5-rc.2 这类浮动范围，上游一发新的
 # 预发布波次，解析结果就整体漂上去。2026-09-22 上游发了 0.1.5-rc.3 波次，但漏发了
 # dsh-client-ui-sidebar-documentpreview，于是 ETARGET 装不上。用 --before 把解析冻结在
@@ -25,8 +25,10 @@ DSH_VERSION="0.1.7-rc.1" # 钉住版本（设计文档 §10 已验证版本表�
 # 与 rc.2 不兼容——web profile 启动即报 "user patch-layer watching requires the Cordis HMR service"。
 # 冻结点必须早于这一批，所以是 03:40 而不是 05:00。
 # 之后升到 0.1.7-rc.1（npm next 渠道），冻结点 2026-09-24T08:20Z——该时刻解析出的依赖树已逐包比对、实测通过。
+# vpssh 换到 0.2.0-rc.2（右侧栏从 0.2 起才有）。冻结点 2026-10-02T00:00Z：rc.2 发布（09-29）三天后、0.2.1-alpha 波次（10-03）之前。
 # 设为 none 可关闭冻结。
-DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-09-24T08:20:00Z}"
+DSH_RESOLVE_BEFORE_SET="${DSH_RESOLVE_BEFORE:+1}" # 用户显式指定过就不被 manifest 覆盖
+DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-10-02T00:00:00Z}"
 INSTALL_ROOT="/opt/vpssh"
 DSH_USER="vpssh"
 DSH_HOME_DIR="/home/vpssh/.dsh"
@@ -89,6 +91,17 @@ fetch_repo() {
 		|| die "下载 vpssh 失败：${REPO_TARBALL}"
 	[[ -f "$tmp/server/gate/server.js" && -f "$tmp/plugin/package.json" ]] || die "下载的 vpssh 不完整"
 	REPO_DIR="$tmp"
+}
+
+# DSH 版本与冻结点以仓库根目录的 manifest.json 为准（上面的常量只是读不到时的兜底）
+read_manifest() {
+	local m="$REPO_DIR/manifest.json" v rb
+	[[ -f "$m" ]] || return 0
+	v=$(sed -n 's/^ *"dsh": *"\([^"]*\)".*/\1/p' "$m" | head -1)
+	rb=$(sed -n 's/^ *"resolveBefore": *"\([^"]*\)".*/\1/p' "$m" | head -1)
+	[[ -n "$v" ]] && DSH_VERSION="$v"
+	[[ -n "$rb" && -z "${DSH_RESOLVE_BEFORE_SET:-}" ]] && DSH_RESOLVE_BEFORE="$rb"
+	return 0
 }
 
 # 取仓库文件（路径相对于 server/）
@@ -546,6 +559,7 @@ step10_verify() {
 ## endregion
 
 fetch_repo
+read_manifest
 step1_prechecks
 step2_node
 step3_dsh

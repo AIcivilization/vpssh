@@ -35,7 +35,7 @@ VERSIONS_URL="${VPSSH_VERSIONS_URL:-$RAW_BASE/versions.json}"
 # ——2026-09-22 上游漏发 rc.3 的 dsh-client-ui-sidebar-documentpreview 就导致过 ETARGET。
 # 同日 03:46 的 cordis 系列新版本同样与 rc.2 不兼容（HMR 服务缺失致启动崩溃），故取 03:40。
 # 升级 latest_verified 时必须同步推后这个值。
-DEFAULT_RESOLVE_BEFORE="${VPSSH_RESOLVE_BEFORE:-2026-09-24T08:20:00Z}"
+DEFAULT_RESOLVE_BEFORE="${VPSSH_RESOLVE_BEFORE:-2026-10-02T00:00:00Z}"
 VERSIONS_CACHE="$ROOT/state/versions.cache.json"
 NPM_REGISTRY="${VPSSH_NPM_REGISTRY:-}"
 # 新版本发布满多少小时才升级（--latest / 页面一键升级）：上游常见「主包先发、子包晚几小时补齐」

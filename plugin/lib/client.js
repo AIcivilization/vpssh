@@ -5289,7 +5289,27 @@ window.__ModuleLoader__.load({
     }
 
     const BRAND_PRIORITY = -10
-    let layoutOpened = false
+
+    /** 屏幕上换到一个没见过、也没开任何页签的对话时，在它的右栏打开「VPS 状态」。返回取消监听的函数 */
+    function watchDefaultLayout(right) {
+      const mounted = right?.mounted
+      if (typeof mounted?.subscribe !== 'function' || typeof right.openTabIn !== 'function') return () => {}
+      const seen = new Set()
+      const check = () => {
+        try {
+          const sessionId = mounted.getSnapshot()
+          if (!sessionId || seen.has(sessionId)) return
+          seen.add(sessionId)
+          if ((right.tabsIn?.(sessionId) ?? []).length > 0) return
+          right.openTabIn(sessionId, SIDEBAR_KIND)
+        } catch (error) {
+          console.warn('[vpssh] 打开 VPS 状态失败', error)
+        }
+      }
+      const off = mounted.subscribe(() => setTimeout(check, 0))
+      setTimeout(check, 0)
+      return off
+    }
 
     // ——————————————————————— 注册 ———————————————————————
 
@@ -5434,18 +5454,10 @@ window.__ModuleLoader__.load({
           effect(() => () => {
             if (sidebarRightApi === right) sidebarRightApi = null
           }, 'vpssh: sidebar api')
-          // 默认布局：DSH 刷新后会重置布局，每次加载打开一次「VPS 状态」（DSH 打开右栏时会自动收起左栏）。
-          // 只开这一次，之后用户怎么摆都不管
-          if (!layoutOpened) {
-            layoutOpened = true
-            setTimeout(() => {
-              try {
-                right.openTab(SIDEBAR_KIND)
-              } catch (error) {
-                console.warn('[vpssh] 打开 VPS 状态失败', error)
-              }
-            }, 0)
-          }
+          // 默认布局：右栏常驻「VPS 状态」。DSH 0.2 的右栏跟着对话走（每个对话各有自己的页签），
+          // 所以盯着屏幕上是哪个对话：本次打开页面后第一次看到它、它又还没有任何页签，就给它打开。
+          // 每个对话只做一次：用户在这次里把它关了，就不再自作主张
+          effect(() => watchDefaultLayout(right), 'vpssh: default layout')
         })
       } catch (error) {
         console.warn('[vpssh] 拿不到右侧栏', error)
@@ -5498,7 +5510,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })

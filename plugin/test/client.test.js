@@ -85,6 +85,38 @@ test('品牌：侧栏顶部换成 vpssh，自己画的标志', async () => {
   assert.match(renderToStaticMarkup(React.createElement(mark.component, { size: 32 })), /width="32"/, '按侧栏要的尺寸画')
 })
 
+test('默认布局：每个对话第一次出现在屏幕上、又没开页签时，右栏打开「VPS 状态」；只做一次', async () => {
+  const { exported } = await loadClient()
+  let current
+  const listeners = new Set()
+  const tabs = new Map()
+  const opened = []
+  const right = {
+    mounted: { getSnapshot: () => current, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn) } },
+    tabsIn: (id) => tabs.get(id) ?? [],
+    openTabIn: (id, kind) => { opened.push([id, kind]); tabs.set(id, [{ kind }]) },
+  }
+  const show = async (id) => {
+    current = id
+    for (const fn of listeners) fn()
+    await new Promise((r) => setTimeout(r, 5))
+  }
+  const off = exported.__test.watchDefaultLayout(right)
+  await new Promise((r) => setTimeout(r, 5))
+  assert.deepEqual(opened, [], '没有对话时什么也不做')
+  await show('s1')
+  assert.deepEqual(opened, [['s1', 'vpssh-status']])
+  tabs.set('s1', []) // 用户把它关了
+  await show('s2')
+  await show('s1')
+  assert.deepEqual(opened.map(([id]) => id), ['s1', 's2'], '回到关过的对话不再自作主张')
+  tabs.set('s3', [{ kind: 'files' }])
+  await show('s3')
+  assert.equal(opened.length, 2, '已经有页签的对话不动')
+  off()
+  assert.equal(listeners.size, 0)
+})
+
 test('设置页能渲染', async () => {
   const { exported } = await loadClient()
   const ctx = fakeSlots()

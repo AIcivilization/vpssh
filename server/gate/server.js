@@ -20,6 +20,7 @@ const https = require("node:https");
 const net = require("node:net");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 // 站点块模板与 gate 同源管理：install.sh、bin/vpssh 也调用它，只此一份
@@ -50,6 +51,10 @@ const SETUP_MAX_FAILURES = 10;
 const CADDY_ADMIN = process.env.CADDY_ADMIN || "http://127.0.0.1:2019";
 const CADDY_SITE_FILE = process.env.CADDY_SITE_FILE || "/etc/caddy/vpssh-site.conf";
 const DEEPSEEK_KEY_REF = "DEEPSEEK_API_KEY"; // DSH 约定：deriveKeyRef("deepseek")
+// vpssh 的工作区：DSH 的每个对话都要属于一个工作区（服务器上的一个目录）。vpssh 里这个概念没有意义，
+// 由 gate 每次 DSH 启动后登记好这一个，用户打开页面就能直接开始对话，不用先「选择工作区」。
+// 工作区的名字取目录名，所以目录就叫 vpssh（中英文都一样）
+const WORKSPACE_DIR = process.env.VPSSH_WORKSPACE || path.join(os.homedir(), "vpssh");
 // vpssh 插件由 install.sh 装好，向导不再让用户挑插件（vpssh 默认不装别的插件）
 // pnpm 12 起默认带约 1 天的发布冷却期（minimumReleaseAge），`pnpm add <pkg>` 会装到一天前的旧版。
 // 插件作者修 bug 后用户就该拿到修复，这里关掉冷却期：预装与插件市场安装都取真正的最新版。
@@ -608,6 +613,18 @@ function applyDshCookie(setCookieLine) {
 	dsh.lastError = null;
 	dsh.crashStreak = 0;
 	log(`dsh session cookie acquired (authority=${dsh.cookie.authority}, expires=${new Date(expiresAt).toISOString()})`);
+	ensureWorkspace().catch(() => {});
+}
+
+/** 登记 vpssh 的工作区。workspace/create 对已登记的目录直接返回原来那个，每次启动都调一遍也没关系 */
+async function ensureWorkspace() {
+	try {
+		fs.mkdirSync(WORKSPACE_DIR, { recursive: true, mode: 0o700 });
+		const value = await dshRpc("workspace/create", { request: { path: WORKSPACE_DIR } });
+		log(`workspace ${value && value.created ? "created" : "ready"}: ${WORKSPACE_DIR}`);
+	} catch (err) {
+		log(`workspace setup failed (${WORKSPACE_DIR}): ${err && err.message}`);
+	}
 }
 
 /** 构造发往 DSH 的 Cookie 头：剥离客户端的 dsh-auth-*（防伪）与 gate 自身会话，注入服务端 DSH Cookie（仅 authority 匹配时）。 */
