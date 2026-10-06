@@ -1,0 +1,258 @@
+// lib/index.js — 插件入口（设计第十二节）
+//
+// 挂载要点：
+//   - tools 是硬依赖（inject），没有它这个插件没有意义
+//   - commands / webServer / skills / agents 都是**可选**宿主服务，一律经 ctx.inject 延迟注册：
+//     cordis 里没声明就直接读 ctx.skills 会抛 “cannot get property without inject”（实测），
+//     服务缺席时回调不执行，插件照常激活
+//   - 任何一处注册失败只降级，绝不阻断插件加载——但一定要写进宿主日志
+//     （DSH Desktop：~/Library/Application Support/DSH Desktop/logs/host/）
+
+import { randomBytes } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
+import { registerCommands } from './commands.js'
+import { loadBindingCache, repairSshSetup } from './config.js'
+import { markPart, noteDuplicate, pruneErrors, recordError, setForm } from './health.js'
+import { registerTools } from './tools.js'
+import { localShellGuard, registerVpsMode } from './vps-mode.js'
+import { onLangChange } from './i18n.js'
+
+export const name = 'vps-manager'
+
+// —— 同一个 DSH 进程里只运行一份 ——
+// 用户实测：插件市场 dshmarket 装插件时会「热挂载」一份（不用重启就能用），同时也按 DSH 的正规方式
+// 写进了 profile 的 bundles；重启后两处各加载一次（DSH 日志：package dsh-vps-manager resolves from
+// multiple active Loader sources … remove one entry）。第二份注册时撞上第一份，命令、工具、路由、终端
+// 全报「已经注册过」，诊断里还把第一份的「正常」覆盖成「失败」。所以第二份直接让路。
+// 第一份被卸载（市场里停用、热重载）时清掉标记，之后再加载的那份正常接班。
+const RUNNING = Symbol.for('dsh-vps-manager.running')
+
+/** 测试用：清掉「已经有一份在运行」的标记 */
+export function _resetInstanceGuard() {
+  delete globalThis[RUNNING]
+}
+export const inject = ['tools']
+
+const SKILL_NAME = 'vps-operator'
+
+function warn(ctx, message, error) {
+  const text = `[dsh-vps-manager] ${message}${error ? `：${error.message ?? error}` : ''}`
+  if (ctx?.logger?.warn) ctx.logger.warn(text)
+  else console.warn(text)
+}
+
+/** 交给宿主在卸载 / 重载时反注册；宿主不支持就算了，重启 DSH 一样会清掉 */
+function track(scopedCtx, dispose, label) {
+  try {
+    scopedCtx.effect?.(() => dispose, label)
+  } catch {
+    // 老版本 cordis 没有 effect
+  }
+}
+
+export async function registerSkill(skillCtx) {
+  const content = await readFile(new URL('./skills/vps-operator.md', import.meta.url), 'utf8')
+  // source / provider / content 在「加载」时还会再校验一遍（注册时不查 source）：
+  // 漏了 source，注册成功、模型一读就报 “source must be a string”（实测）
+  return skillCtx.skills.register({
+    name: SKILL_NAME,
+    source: 'runtime',
+    description: '操作用户的 VPS：查看状态、装软件、配服务时读它，里面有必须遵守的操作规则',
+    whenToUse: '对话处于 VPS 模式（收到「[VPS 模式] 已绑定」说明），或要用 vps_exec、vps_write_file、vps_recipe 在服务器上做任何改动之前',
+    content,
+    invocation: { modelInvocable: true, userInvocable: false },
+  })
+}
+
+export function apply(ctx, config = {}) {
+  const running = globalThis[RUNNING]
+  if (running && !running.released) {
+    running.skipped += 1
+    noteDuplicate()
+    warn(ctx, '同一个 DSH 里已经有一份本插件在运行，这一份不再重复注册（多半是插件市场热挂载了一份、DSH 又按 profile 加载了一份），不影响使用')
+    return
+  }
+  const instance = { released: false, skipped: 0 }
+  globalThis[RUNNING] = instance
+  const release = () => {
+    instance.released = true
+    if (globalThis[RUNNING] === instance) delete globalThis[RUNNING]
+  }
+  track(ctx, release, 'vps-manager: single instance')
+  try {
+    ctx.on?.('dispose', release)
+  } catch {
+    // 没有 dispose 事件的宿主：靠上面的 effect；都没有就等重启
+  }
+
+  // desktop：DSH Desktop 宿主开放给插件的服务（卸载插件、重启）。普通 dsh 下一直是空的
+  const deps = { env: process.env, desktop: {}, ...config }
+  // 设置页路由和终端连接共用一个 token：每次启动随机生成，经页面注入给界面
+  deps.token = deps.token ?? randomBytes(24).toString('hex')
+
+  // 插件体检：每一块注册的结果都记下来（/vps-doctor、设置页「反馈与建议」里的诊断信息、每天的兼容性检查都看）。
+  // 失败的同时写进本地错误记录 $DSH_HOME/vps-manager/logs/，反馈时附上（先打码）
+  const note = (message, error) => {
+    warn(ctx, message, error)
+    recordError('load', `${message}${error ? `：${error.message ?? error}` : ''}`, deps.env)
+  }
+  const ok = (part, detail = '') => markPart(part, true, detail)
+  const fail = (part, message, error) => {
+    markPart(part, false, error?.message ?? String(error ?? message))
+    note(message, error)
+  }
+  pruneErrors(deps.env).catch(() => {})
+
+  // 审计日志保留 6 个月，启动时清一次旧的（失败不影响插件）
+  import('./audit.js')
+    .then(({ pruneAudit }) => pruneAudit(deps.env))
+    .catch((error) => note('清理旧审计日志失败', error))
+
+  // 卸载时移走了 SSH 连接配置、之后又重装：从备份恢复，不然清单里的机器永远连不上
+  repairSshSetup(deps.env)
+    .then(({ repaired }) => {
+      if (repaired.length) {
+        const text = `[dsh-vps-manager] SSH 连接配置已自动修复：${repaired.join('；')}`
+        if (ctx?.logger?.info) ctx.logger.info(text)
+        else console.info(text)
+      }
+    })
+    .catch((error) => note('检查 SSH 连接配置失败', error))
+
+  // 已有的对话绑定读进内存：工具守卫是同步的，靠这份副本判断
+  loadBindingCache(deps.env).catch((error) => note('读取对话绑定失败', error))
+
+  // AI 工具（硬依赖 tools）
+  registerTools(ctx, deps)
+    // 只存数字：诊断按界面语言显示，单位不写死
+    .then((registered) => ok('tools', String(registered.length)))
+    .catch((error) => fail('tools', '工具注册失败', error))
+
+  // VPS 模式：绑定期间拦下本机 bash
+  try {
+    if (typeof ctx.tools?.guard === 'function') {
+      ctx.tools.guard(localShellGuard)
+      ok('guard')
+    } else {
+      markPart('guard', false, 'DSH 没有提供 tools.guard')
+    }
+  } catch (error) {
+    fail('guard', '本机 bash 守卫注册失败', error)
+  }
+
+  if (typeof ctx.inject !== 'function') return
+
+  // skill：可选服务
+  ctx.inject(['skills'], (skillCtx) => {
+    registerSkill(skillCtx)
+      .then(() => ok('skill', SKILL_NAME))
+      .catch((error) => fail('skill', 'skill 注册失败', error))
+  })
+
+  // VPS 模式：绑定状态变化时告诉模型（可选服务 agents）
+  ctx.inject(['agents'], (agentCtx) => {
+    try {
+      registerVpsMode(agentCtx, { env: deps.env, warn: note })
+      ok('vpsMode')
+    } catch (error) {
+      fail('vpsMode', 'VPS 模式注册失败', error)
+    }
+  })
+
+  // /vps-* 命令：可选服务，headless 下不挂载。
+  // 命令说明是登记时交给 DSH 的一句固定文字（DSH 只给它自带的命令做了多语言），所以界面换了语言
+  // （服务端从请求里得知）就整组重新登记一遍，输入 / 弹出的说明跟着换
+  ctx.inject(['commands'], (cmdCtx) => {
+    let current = null
+    const mount = () => {
+      try {
+        current?.()
+      } catch {
+        // 旧的撤不掉也照样登记新的
+      }
+      current = null
+      try {
+        current = registerCommands(cmdCtx, deps)
+        ok('commands', String(current.count))
+      } catch (error) {
+        fail('commands', '命令注册失败', error)
+      }
+    }
+    mount()
+    const off = onLangChange(mount)
+    track(cmdCtx, () => {
+      off()
+      current?.()
+    }, 'vps-manager: commands')
+  })
+
+  // 「状态」页签的 AI 解读：插件直接调 DSH 的模型（llm 服务）和默认模型选择（agentDefaultModel）。
+  // 都是可选的：老版本 DSH 没有，就退回成在对话里问
+  ctx.inject(['llm'], (llmCtx) => {
+    const llm = llmCtx.llm ?? llmCtx.get?.('llm')
+    deps.llm = llm
+    track(llmCtx, () => {
+      if (deps.llm === llm) deps.llm = undefined
+    }, 'vps-manager: llm')
+  })
+  ctx.inject(['agentDefaultModel'], (modelCtx) => {
+    const model = modelCtx.agentDefaultModel ?? modelCtx.get?.('agentDefaultModel')
+    deps.defaultModel = model
+    track(modelCtx, () => {
+      if (deps.defaultModel === model) deps.defaultModel = undefined
+    }, 'vps-manager: default model')
+  })
+
+  // DSH 自己的插件管理器（dsh-base 里带的；官方桌面版、dsh web 都有）：设置页「更新」用它装新版，
+  // 和 DSH「插件」页同一套（带锁跑 pnpm、失败自动还原）。老版本 DSH 没有就退回给出命令让用户自己运行
+  ctx.inject(['pluginManager'], (pmCtx) => {
+    const manager = pmCtx.pluginManager ?? pmCtx.get?.('pluginManager')
+    deps.pluginManager = manager
+    track(pmCtx, () => {
+      if (deps.pluginManager === manager) deps.pluginManager = undefined
+    }, 'vps-manager: plugin manager')
+  })
+
+  // DSH Desktop 专有服务：desktopPnpm 执行 `dsh plugin remove`，desktopActions 负责重启。
+  // 插件市场（dshmarket）也是这么用的；普通 dsh 下这两个服务不存在，回调不执行
+  ctx.inject(['desktopPnpm'], (desktopCtx) => {
+    deps.desktop.pnpm = desktopCtx.desktopPnpm
+    try {
+      deps.desktop.profileDir = ctx.get?.('desktopProfiles')?.current?.dir
+    } catch {
+      deps.desktop.profileDir = undefined
+    }
+  })
+  ctx.inject(['desktopActions'], (desktopCtx) => {
+    deps.desktop.actions = desktopCtx.desktopActions
+    setForm('desktop') // 只有 DSH Desktop 提供这个服务
+  })
+
+  // 设置页路由 + 对话里的终端：可选且晚挂载。插件卸载或重载时一并反注册，
+  // 否则同一路径再注册会报重复
+  ctx.inject(['webServer'], async (webCtx) => {
+    try {
+      const { registerRoutes } = await import('./routes.js')
+      if (!deps.desktop.actions) setForm('web') // DSH Desktop 的服务要是晚到，会改回 desktop
+      const routes = registerRoutes(webCtx, deps)
+      track(webCtx, routes.dispose, 'vps-manager: settings routes')
+      ok('routes')
+    } catch (error) {
+      fail('routes', '设置页路由注册失败（设置页不可用，命令与工具不受影响）', error)
+    }
+    try {
+      const { registerTerminal } = await import('./terminal-server.js')
+      const terminal = registerTerminal(webCtx, deps)
+      deps.terminals = terminal // 绑定变化时（设置页开关、/vps-use）要结束旧机器上的终端
+      track(webCtx, () => {
+        if (deps.terminals === terminal) deps.terminals = undefined
+        terminal.dispose()
+      }, 'vps-manager: terminal')
+      ok('terminal')
+    } catch (error) {
+      fail('terminal', '终端连接注册失败（对话里的终端不可用，其他功能不受影响）', error)
+    }
+  })
+}
+
+export default { name, inject, apply }

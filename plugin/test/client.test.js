@@ -1,0 +1,446 @@
+// 面板是浏览器代码，这里用 react-dom/server 做冒烟渲染：
+// 组件树能不能渲染、插槽注册对不对、请求有没有带 token、跨站能不能读到 token。
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import { createRequire } from 'node:module'
+import { renderToStaticMarkup } from 'react-dom/server'
+import React from 'react'
+
+const requireShim = (name) => {
+  if (name === 'react') return React
+  throw new Error(`面板不该 require ${name}`)
+}
+
+async function loadClient({ fetchImpl, storage = {} } = {}) {
+  let spec = null
+  const calls = []
+  const store = new Map(Object.entries(storage))
+  globalThis.window = {
+    __ModuleLoader__: { load: (s) => { spec = s } },
+    __DSH_VPS_TOKEN__: 'test-token-123',
+    confirm: () => true,
+    innerHeight: 800,
+    location: { origin: 'http://127.0.0.1:3000' },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    localStorage: {
+      getItem: (k) => (store.has(k) ? store.get(k) : null),
+      setItem: (k, v) => store.set(k, v),
+      removeItem: (k) => store.delete(k),
+    },
+  }
+  globalThis.fetch = fetchImpl ?? (async (url, init) => {
+    calls.push({ url, init })
+    return { status: 200, json: async () => ({ ok: true, hosts: [], recipes: [], current: '', settings: {} }) }
+  })
+  const mod = await import(`../lib/client.js?${Math.random()}`)
+  assert.ok(spec, 'client.js 应调用 window.__ModuleLoader__.load')
+  const exported = spec.factory(requireShim)
+  return { spec, exported, calls, require: createRequire(import.meta.url) }
+}
+
+function fakeSlots() {
+  const registered = new Map()
+  return {
+    slots: {
+      inject: (_name, cb) => cb(),
+      register: (descriptor, component) => {
+        registered.set(descriptor.name, { descriptor, component })
+        return () => {}
+      },
+    },
+    registered,
+  }
+}
+
+test('bundle 以 ModuleLoader 形式导出，并注册三个挂载点', async () => {
+  const { spec, exported } = await loadClient()
+  assert.equal(spec.id, 'dsh-vps-manager')
+  assert.deepEqual(exported.inject, ['slots'])
+
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const settings = ctx.registered.get('settings.section')
+  const toggle = ctx.registered.get('conversation.session.header.actions')
+  const dock = ctx.registered.get('conversation.composer.dock')
+  assert.ok(settings && toggle && dock, '三个挂载点都要在')
+  assert.equal(toggle.descriptor.id, 'vps-manager')
+  assert.equal(dock.descriptor.id, 'vps-manager')
+  assert.equal(settings.descriptor.id, 'vps-manager')
+
+  // 左侧面板已删除：对话解决不了的才留在 UI 里
+  assert.equal(ctx.registered.get('sidebar.panellist'), undefined, '不该再注册侧栏面板')
+  assert.equal(ctx.registered.get('main'), undefined, '不该再注册主区域')
+})
+
+test('设置页能渲染', async () => {
+  const { exported } = await loadClient()
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(React.createElement(ctx.registered.get('settings.section').component))
+  assert.match(html, /VPS 管理/)
+  assert.match(html, /卸载…/, '设置页底部要有卸载入口')
+})
+
+test('设置页的反馈卡片：平时只有按钮，诊断信息和报错记录收起来，不自动展示（用户定的）', async () => {
+  const { exported } = await loadClient()
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(React.createElement(ctx.registered.get('settings.section').component))
+  assert.match(html, /反馈与建议/)
+  assert.match(html, /反馈问题/)
+  assert.match(html, /提建议/)
+  assert.match(html, />诊断信息</, '诊断信息要自己点开')
+  assert.doesNotMatch(html, /反馈与诊断|最近的错误|各部分都正常|没注册成功/, '默认不展示诊断和报错')
+  assert.match(html, /issues\/new\?template=bug_report\.yml/, '诊断还没读到时，「反馈问题」照样能点')
+})
+
+test('每个请求都带 token 和 JSON 头（跨站网页读不到 token）', async () => {
+  const calls = []
+  const { exported } = await loadClient({
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init })
+      return { status: 200, json: async () => ({ ok: true, hosts: [] }) }
+    },
+  })
+  const data = await exported.__test.api('overview', { a: 1 })
+  assert.deepEqual(data.hosts, [])
+  assert.equal(calls[0].url, '/api-vps/overview')
+  assert.equal(calls[0].init.method, 'POST')
+  assert.equal(calls[0].init.headers['x-dsh-vps-token'], 'test-token-123')
+  assert.equal(calls[0].init.headers['content-type'], 'application/json')
+  assert.equal(calls[0].init.body, '{"a":1}')
+})
+
+test('请求失败时把 host 的错误原样带出来', async () => {
+  const { exported } = await loadClient({
+    fetchImpl: async () => ({ status: 200, json: async () => ({ ok: false, error: '没有登记过这台机器：nope' }) }),
+  })
+  await assert.rejects(exported.__test.api('host/test', { alias: 'nope' }), /没有登记过这台机器：nope/)
+
+  const { exported: broken } = await loadClient({
+    fetchImpl: async () => ({ status: 500, json: async () => { throw new Error('not json') } }),
+  })
+  await assert.rejects(broken.__test.api('overview'), /服务返回异常（HTTP 500）/)
+})
+
+test('DSH 重启过：令牌对不上要说人话，还要说清怎么办', async () => {
+  const { exported } = await loadClient({
+    fetchImpl: async () => ({ status: 403, json: async () => ({ ok: false, error: 'token 不对' }) }),
+  })
+  await assert.rejects(exported.__test.api('overview'), /令牌对不上了.*刷新页面再试/)
+})
+
+test('令牌过期、而运行中的服务端是没有 /api-vps/token 的老版本：退回去首页换新令牌再试一次，用户不用刷新', async () => {
+  const calls = []
+  const fresh = 'abcdef0123456789abcdef0123456789'
+  const { exported } = await loadClient({
+    fetchImpl: async (url, init) => {
+      calls.push(url)
+      if (url === 'http://127.0.0.1:3000/') return { status: 200, text: async () => `<head><script>window.__DSH_VPS_TOKEN__="${fresh}"</script></head>` }
+      if (init?.headers?.['x-dsh-vps-token'] === fresh) return { status: 200, json: async () => ({ ok: true, hosts: ['hk'] }) }
+      return { status: 403, json: async () => ({ ok: false, error: 'token 不对' }) }
+    },
+  })
+  const data = await exported.__test.api('overview')
+  assert.deepEqual(data.hosts, ['hk'])
+  assert.deepEqual(calls, ['/api-vps/overview', '/api-vps/token', 'http://127.0.0.1:3000/', '/api-vps/overview'])
+  assert.equal(globalThis.window.__DSH_VPS_TOKEN__, fresh)
+})
+
+test('运行中装了新版：老服务端没有这个接口（405），提示要重启 DSH', async () => {
+  const { exported } = await loadClient({
+    fetchImpl: async () => ({ status: 405, json: async () => { throw new Error('not json') } }),
+  })
+  await assert.rejects(exported.__test.api('diag/status'), /重启 DSH/)
+})
+
+test('接口不回应：到点报错，按钮不会一直转', async () => {
+  const { exported } = await loadClient({
+    // AbortSignal.timeout 的定时器不拖住事件循环，测试里自己点一根蜡烛
+    fetchImpl: async (_url, init) => new Promise((_resolve, reject) => {
+      const keepAlive = setTimeout(() => {}, 5_000)
+      init.signal?.addEventListener('abort', () => {
+        clearTimeout(keepAlive)
+        const e = new Error('timeout')
+        e.name = 'TimeoutError'
+        reject(e)
+      })
+    }),
+  })
+  await assert.rejects(exported.__test.api('overview', {}, { timeoutMs: 60 }), /没有回应.*再试一次/)
+})
+
+test('连不上 DSH（服务已经关了）：提示去看 DSH 还开着吗', async () => {
+  const { exported } = await loadClient({
+    fetchImpl: async () => { throw new TypeError('Failed to fetch') },
+  })
+  await assert.rejects(exported.__test.api('overview'), /连不上 DSH/)
+})
+
+test('等待中的按钮会显示已等几秒（看得出没卡死）', async () => {
+  const { exported } = await loadClient()
+  const { waitingLabel } = exported.__test
+  assert.equal(waitingLabel('处理中…', 0), '处理中…', '刚点下去不显示秒数')
+  assert.equal(waitingLabel('处理中…', 1), '处理中…')
+  assert.equal(waitingLabel('处理中…', 5), '处理中…（5 秒）')
+  assert.equal(waitingLabel('连接中…', 12), '连接中…（12 秒）')
+})
+
+test('没打开开关的对话：状态条一个像素都不渲染，头部开关也不发请求', async () => {
+  const calls = []
+  const { exported } = await loadClient({
+    fetchImpl: async (url) => {
+      calls.push(url)
+      return { status: 200, json: async () => ({ ok: true, hosts: [], recipes: [] }) }
+    },
+  })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+
+  const dockHtml = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.composer.dock').component, { sessionId: 'unbound' }),
+  )
+  const toggleHtml = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 'unbound' }),
+  )
+  await new Promise((r) => setTimeout(r, 30))
+
+  assert.equal(dockHtml, '', '没绑定机器的对话，输入框下方不该有任何东西')
+  assert.deepEqual(calls, [], '大多数对话跟 VPS 无关，挂载时不该发任何请求')
+  assert.match(toggleHtml, />VPS</, '头部只有 VPS 三个字母加方块')
+  assert.doesNotMatch(toggleHtml, /🟢|🔴/, '不用 emoji，用方块颜色表示')
+})
+
+test('输入框下方：没事就一个像素都不占，只报「不问就不知道」的事', async () => {
+  const { exported } = await loadClient()
+  const { alertsFor } = exported.__test
+
+  // 一切正常 —— 什么都不显示
+  assert.deepEqual(alertsFor('hk', { reachable: true, facts: { disk_pct: '25%' }, running: [] }), [])
+
+  // 后台任务在跑：你关掉页面它还在跑，不说你不知道
+  const busy = alertsFor('hk', { reachable: true, facts: {}, running: [{ meta: { recipeId: 'install-docker' } }] })
+  assert.equal(busy.length, 1)
+  assert.match(busy[0].text, /install-docker/)
+
+  // 连不上
+  const down = alertsFor('hk', { reachable: false, facts: {}, running: [] })
+  assert.equal(down[0].tone, 'danger')
+  assert.match(down[0].text, /连不上/)
+
+  // 磁盘快满
+  const full = alertsFor('hk', { reachable: true, facts: { disk_pct: '92%' }, running: [] })
+  assert.equal(full[0].tone, 'danger')
+  assert.match(full[0].text, /92%/)
+
+  // 磁盘没满就不提
+  assert.deepEqual(alertsFor('hk', { reachable: true, facts: { disk_pct: '60%' }, running: [] }), [])
+})
+
+test('绑定了机器但一切正常时，输入框下方仍然什么都不渲染', async () => {
+  const { exported } = await loadClient({ storage: { 'dsh-vps:bind:s2': 'vps-dsh' } })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.composer.dock').component, { sessionId: 's2' }),
+  )
+  assert.equal(html, '', '没有要报的事就不该占位置')
+})
+
+test('方块里的编号：第一台 1，第二台 2，只有一台也写 1', async () => {
+  const { exported } = await loadClient()
+  const { ballLabel } = exported.__test
+  assert.equal(ballLabel(0), '1', '只有一台也写编号')
+  assert.equal(ballLabel(1), '2')
+  assert.equal(ballLabel(3), '4')
+})
+
+test('头部顺序：VPS → 终端按钮 → 机器方块', async () => {
+  const { exported } = await loadClient({
+    storage: {
+      'dsh-vps:hosts': JSON.stringify([{ alias: 'hk', note: '' }, { alias: 'jp', note: '' }]),
+      'dsh-vps:bind:s7': 'hk',
+    },
+  })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's7' }),
+  )
+  const vps = html.indexOf('>VPS<')
+  const term = html.indexOf('&gt;_')
+  const first = html.indexOf('>1</button>')
+  const second = html.indexOf('>2</button>')
+  assert.ok(vps >= 0 && term > vps, '终端按钮紧跟在 VPS 后面')
+  assert.ok(first > term && second > first, '机器方块在终端按钮之后，按编号排')
+  assert.match(html, /data-vps-group=""[^>]*border:1px solid var\(--dsw-alias-border-l3/, '外面一圈浅色框，看得出是一组按钮')
+  assert.ok(html.startsWith('<span data-vps-group=""') && html.endsWith('</span>'), '框包住整组：VPS、终端、方块都在里面')
+})
+
+test('多台机器时头部是一排开关，没有下拉菜单', async () => {
+  const { exported } = await loadClient({
+    storage: {
+      'dsh-vps:hosts': JSON.stringify([{ alias: 'hk', note: '香港' }, { alias: 'jp', note: '日本' }]),
+      'dsh-vps:bind:s9': 'jp',
+    },
+  })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's9' }),
+  )
+  assert.equal((html.match(/<button/g) ?? []).length, 3, '两台机器两个方块 + 绑定后的终端按钮')
+  assert.match(html, />&gt;_</, '终端按钮')
+  assert.match(html, />1</, '方块里写编号')
+  assert.match(html, />2</)
+  assert.equal((html.match(/VPS/g) ?? []).length, 1, 'VPS 三个字母只出现一次，省地方')
+  assert.match(html, /border-radius:4px/, '圆角方块：数字更好读、点击面积更大')
+  assert.doesNotMatch(html, /position:fixed/, '不再有任何弹出层')
+})
+
+test('终端按钮：没绑定也一直在（位置不跳），但显示为淡色', async () => {
+  const { exported } = await loadClient({
+    storage: { 'dsh-vps:hosts': JSON.stringify([{ alias: 'hk', note: '' }]) },
+  })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 'free' }),
+  )
+  assert.match(html, /&gt;_/, '终端按钮一直在')
+  assert.match(html, /data-vps-terminal=""[^>]*opacity:0\.55/, '没绑定时淡色')
+  assert.match(html, />1<\/button>/, '只有一台也写编号 1')
+  assert.equal((html.match(/<button/g) ?? []).length, 2)
+})
+
+test('终端连接地址跟着页面走：Desktop、dsh web 局域网、https 反向代理都能用；带上界面语言', async () => {
+  const { exported } = await loadClient()
+  const { terminalUrl } = exported.__test
+  assert.equal(
+    terminalUrl('http://127.0.0.1:52100', 's 1', 90, 20),
+    'ws://127.0.0.1:52100/api-vps/ws/terminal?sessionId=s+1&cols=90&rows=20&lang=zh',
+  )
+  assert.equal(
+    terminalUrl('http://192.168.1.8:8787', 's1', 80, 24),
+    'ws://192.168.1.8:8787/api-vps/ws/terminal?sessionId=s1&cols=80&rows=24&lang=zh',
+  )
+  assert.equal(
+    terminalUrl('https://dsh.example.com', 's1', 80, 24),
+    'wss://dsh.example.com/api-vps/ws/terminal?sessionId=s1&cols=80&rows=24&lang=zh',
+    'https 页面必须用 wss，否则浏览器拦截',
+  )
+})
+
+test('输入框下方：绑定了机器但没点开终端时，仍然什么都不渲染', async () => {
+  const { exported } = await loadClient({ storage: { 'dsh-vps:bind:s3': 'hk' } })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.composer.dock').component, { sessionId: 's3' }),
+  )
+  assert.equal(html, '')
+})
+
+test('界面代码里的协议名、路径、xterm 版本与服务端一致', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const client = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
+  const server = await import('../lib/terminal-server.js')
+  assert.ok(client.includes(`'${server.TERMINAL_PROTOCOL}'`), '子协议名')
+  assert.ok(client.includes(`'${server.TERMINAL_PATH}'`), '连接路径')
+  assert.ok(client.includes(`XTERM_VERSION = '${server.XTERM_VERSION}'`), 'xterm 版本号（缓存地址）')
+})
+
+test('设置页有「终端」栏目：颜色方案三选一、字号、断线保留、其他设备', async () => {
+  const { exported } = await loadClient({
+    fetchImpl: async () => ({
+      status: 200,
+      json: async () => ({ ok: true, hosts: [], recipes: [], settings: { confirm: 'careful', terminal: { theme: 'dark', fontSize: 15, keepMinutes: 30 } } }),
+    }),
+  })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  // 设置页要等 overview 回来才渲染设置卡片：直接渲染卡片组件的输出不方便，这里用内部句柄核对取值逻辑
+  const { normalizeTermPrefs, termChrome } = exported.__test
+  assert.deepEqual(normalizeTermPrefs({ theme: 'dark', fontSize: 15, keepMinutes: 30 }), { theme: 'dark', fontSize: 15, keepMinutes: 30 })
+  assert.deepEqual(normalizeTermPrefs({ theme: 'x' }), { theme: 'system', fontSize: 13, keepMinutes: 10 })
+  assert.match(termChrome('system').bg, /^var\(--dsw-/, '跟随系统：用 DSH 的主题变量')
+  assert.equal(termChrome('dark').bg, '#2c2c2e', '暗色：固定用 DSH 深色的输入框底色')
+  assert.equal(termChrome('light').bg, '#ffffff', '白色：固定白底')
+  assert.equal(termChrome('dark').code, termChrome('system').code, '字体不随颜色方案变')
+})
+
+test('设置页源码里「终端」栏目的选项齐全', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const src = await readFile(new URL('../lib/client.js', import.meta.url), 'utf8')
+  for (const label of ['跟随系统', '暗色', '白色', '断线后保留', '允许从其他设备打开 VPS 终端', '字号']) {
+    assert.ok(src.includes(`'${label}'`), `缺少「${label}」`)
+  }
+  assert.ok(src.includes("h(TerminalSettingsCard, { settings, setSettings })"), '终端卡片挂在设置页里')
+})
+
+test('终端已开多久的文字', async () => {
+  const { exported } = await loadClient()
+  const { minutesSince } = exported.__test
+  assert.equal(minutesSince(Date.now()), '刚打开')
+  assert.equal(minutesSince(Date.now() - 5 * 60000), '已开 5 分钟')
+  assert.equal(minutesSince(Date.now() - 125 * 60000), '已开 2 小时 5 分钟')
+})
+
+test('方块颜色 = 连接状态：灰 没选、黄 连接中、绿 连上、红 连不上', async () => {
+  const { exported } = await loadClient()
+  const { chipTone, alertsFor } = exported.__test
+  assert.equal(chipTone(false, { state: 'ok' }), 'off', '没选的那台一律灰，不管它连不连得上')
+  assert.equal(chipTone(true, null), 'checking', '选了但还没测出结果：不能先显示绿')
+  assert.equal(chipTone(true, { state: 'checking' }), 'checking')
+  assert.equal(chipTone(true, { state: 'ok' }), 'ok')
+  assert.equal(chipTone(true, { state: 'fail', hint: 'x' }), 'fail')
+
+  const down = alertsFor('vps-dsh', { reachable: false, hint: 'SSH 配置里找不到「vps-dsh」这台机器', running: [] })
+  assert.equal(down[0].tone, 'danger')
+  assert.equal(down[0].action, 'retry', '连不上的那一行带「重试」')
+  assert.match(down[0].text, /vps-dsh 连不上：SSH 配置里找不到/)
+  assert.deepEqual(alertsFor('vps-dsh', { reachable: null, running: [] }), [], '还在测：输入框下方不占地方')
+})
+
+test('选了机器但还没测出结果的头部：方块是黄的，不是绿的', async () => {
+  const { exported } = await loadClient({ storage: { 'dsh-vps:hosts': JSON.stringify([{ alias: 'hk', note: '' }]), 'dsh-vps:bind:s5': 'hk' } })
+  const ctx = fakeSlots()
+  exported.apply(ctx)
+  const html = renderToStaticMarkup(
+    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's5' }),
+  )
+  assert.match(html, /data-vps-chip="checking"/)
+  assert.doesNotMatch(html, /data-vps-chip="ok"/)
+  assert.match(html, /正在连接 hk/)
+})
+
+test('设置页「界面」「怎么用」：默认收起，只显示标题和一行摘要；记住展开过就展开', async () => {
+  const shut = await loadClient()
+  const render = (exported) => renderToStaticMarkup(React.createElement(exported.__test.FoldCard, { id: 'howto', title: '怎么用', summary: '一行摘要' }, React.createElement('div', null, '里面的内容')))
+  const closed = render(shut.exported)
+  assert.match(closed, /一行摘要/)
+  assert.doesNotMatch(closed, /里面的内容/)
+  assert.match(closed, /aria-expanded="false"/)
+  assert.match(closed, /aria-label="展开「怎么用」"/)
+  const opened = await loadClient({ storage: { 'dsh-vps.settings.open.howto': '1' } })
+  const html = render(opened.exported)
+  assert.match(html, /里面的内容/)
+  assert.match(html, /aria-expanded="true"/)
+  assert.doesNotMatch(html, /一行摘要/, '展开后不再显示摘要')
+})
+
+test('设置页的 dsh-vps 介绍：没装时介绍它并给 GitHub 链接和插件市场搜索；装了就指去「VPS 部署」', async () => {
+  const { exported } = await loadClient()
+  const render = (installed) => renderToStaticMarkup(React.createElement(exported.__test.SisterCard, { installed }))
+  const intro = render(false)
+  assert.match(intro, /在手机、平板上也用 DSH/)
+  assert.match(intro, /href="https:\/\/github.com\/AIcivilization\/dsh-vps"/)
+  assert.match(intro, /在插件市场搜索「dsh-vps」/)
+  assert.doesNotMatch(intro, /VPS 部署/)
+  assert.match(render(null), /在插件市场搜索/, '不知道装没装（老版本 DSH）：按没装介绍')
+  const have = render(true)
+  assert.match(have, /你已经装了 dsh-vps/)
+  assert.match(have, /「VPS 部署」/)
+  assert.doesNotMatch(have, /插件市场搜索/)
+})

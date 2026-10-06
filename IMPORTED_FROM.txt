@@ -1,0 +1,2 @@
+dsh-vps-manager e01aa23 Release 0.6.5: settings card introducing dsh-vps
+dsh-vps 8e51009 docs: 替换「本机状态」截图（隐去域名）

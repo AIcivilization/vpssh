@@ -1,0 +1,778 @@
+// lib/routes.js — 设置页路由 /api-vps/*（设计第三节「界面 ↔ host 通信」）
+//
+// 界面没有 Session 绑定，调 host 只能走 HTTP。而 dsh-host-webserver 本身没有任何
+// 鉴权代码，且允许绑定 0.0.0.0 —— 所以这里必须自己做三件事：
+//   1. 每次启动生成随机 token，经 tapIndex 注入页面；所有路由校验 x-dsh-vps-token
+//      （跨站网页读不到它）
+//   2. 只收 application/json（强制浏览器预检）+ 同源校验（Origin 的 host 必须等于
+//      请求的 Host）
+//   3. **路由永远不提供自由命令执行**；绑定在 0.0.0.0 时，会改东西的路由
+//      默认关闭（页面降级为只读），设置里可以手动打开
+//   4. 文件管理器（files/*）能改服务器上的文件，所以再加两道：只能操作「这个对话绑定的
+//      那台机器」（服务端按对话查，不信界面传来的机器名）；和终端一样默认只允许本机打开
+//
+// 用户在设置页里按下「保存」本身就是同意，所以走 preApproved（界面弹不出审批框：
+// 审批要求处于未结束的轮次中）。
+
+import { randomBytes } from 'node:crypto'
+import { L, LANG_HEADER, withLang } from './i18n.js'
+import { hostsAction, probeHost, probeIfUnknown, recipeAction, taskAction } from './actions.js'
+import {
+  importCandidates,
+  paths,
+  readHosts,
+  readState,
+  removeDropinHost,
+  writeHosts,
+} from './config.js'
+import {
+  authorizedKeysCommand,
+  autoAlias,
+  ensureKey,
+  installKeyWithPassword,
+  openInTerminal,
+  resetHostKey,
+  saveHost,
+  scanFingerprint,
+  sshCopyIdCommand,
+} from './onboarding.js'
+import { loadRecipes } from './recipes.js'
+import { sshCloseMaster, sshResolve } from './ssh.js'
+import { appendAudit } from './audit.js'
+import * as files from './filemgr.js'
+import { isLoopbackRequest } from './terminal-server.js'
+
+const MAX_BODY = 2 * 1024 * 1024
+
+function readBody(req) {
+  return new Promise((resolve, reject) => {
+    let size = 0
+    const chunks = []
+    req.on('data', (chunk) => {
+      size += chunk.length
+      if (size > MAX_BODY) {
+        reject(new Error(L('请求体过大', 'Request body too large')))
+        req.destroy()
+        return
+      }
+      chunks.push(chunk)
+    })
+    req.on('end', () => {
+      const text = Buffer.concat(chunks).toString('utf8')
+      if (!text) return resolve({})
+      try {
+        resolve(JSON.parse(text))
+      } catch {
+        reject(new Error(L('请求体不是合法 JSON', 'Request body is not valid JSON')))
+      }
+    })
+    req.on('error', reject)
+  })
+}
+
+/** 同源校验：Origin 的 host 必须等于请求自己的 Host */
+export function sameOrigin(req) {
+  const origin = req.headers?.origin
+  if (!origin) return true // 非浏览器发起（没有 Origin 头）
+  try {
+    return new URL(origin).host === req.headers.host
+  } catch {
+    return false
+  }
+}
+
+export function checkRequest(req, token, { needToken = true } = {}) {
+  if (req.method !== 'POST') return { ok: false, code: 405, error: L('只接受 POST', 'Only POST is accepted') }
+  const ctype = String(req.headers['content-type'] ?? '')
+  // 只收 JSON：跨站页面要发 JSON 得先过浏览器的预检，预检在这里过不去
+  if (!ctype.includes('application/json')) return { ok: false, code: 415, error: L('只接受 application/json', 'Only application/json is accepted') }
+  if (!sameOrigin(req)) return { ok: false, code: 403, error: L('跨站请求被拒绝', 'Cross-site request refused') }
+  if (needToken && String(req.headers['x-dsh-vps-token'] ?? '') !== token) return { ok: false, code: 403, error: L('token 不对', 'Wrong token') }
+  return { ok: true }
+}
+
+function json(res, code, data) {
+  res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify(data))
+}
+
+export function registerRoutes(ctx, deps = {}) {
+  const ws = ctx.webServer
+  if (!ws || typeof ws.register !== 'function') throw new Error('webServer 服务不可用')
+  const env = deps.env ?? process.env
+  const runner = deps.runner
+  const token = deps.token ?? randomBytes(24).toString('hex')
+  const lanBound = ws.config?.host === '0.0.0.0'
+  const disposers = []
+  // 注册到一半失败（多半是同一个 DSH 里还跑着一份旧版插件，占着这些路径）：已经注册的全部撤掉再报错。
+  // 页面令牌放在最后注入也是这个原因：失败的这一份要是留下了令牌，页面拿到的是它的令牌，
+  // 接口却由另一份处理，永远「令牌对不上」（用户实测：市场热装新版、旧版还在跑时）
+  const register = (add) => {
+    try {
+      disposers.push(add())
+    } catch (error) {
+      for (const d of disposers.splice(0).reverse()) {
+        try {
+          d?.()
+        } catch {
+          // 撤不掉的就算了
+        }
+      }
+      throw error
+    }
+  }
+
+  // 会改东西的路由在局域网暴露时默认关闭
+  async function writeAllowed() {
+    if (!lanBound) return true
+    const doc = await readHosts(env)
+    return doc.settings.allowPanelExecOnLan === true
+  }
+
+  const route = (path, handler, { write = false } = {}) => {
+    register(() => ws.register({
+      kind: 'exact',
+      path: `/api-vps/${path}`,
+      // 界面带来的语言：这个请求里的报错、提示都照它说（见 i18n.js）
+      handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
+        const check = checkRequest(req, token)
+        if (!check.ok) return json(res, check.code, { ok: false, error: check.error })
+        if (write && !(await writeAllowed())) {
+          return json(res, 403, {
+            ok: false,
+            error: L('DSH 的 Web 服务绑定在 0.0.0.0（局域网可见），会改东西的面板操作已默认关闭。要打开请到设置页勾选。', 'DSH\'s web server is bound to 0.0.0.0 (visible on the local network), so panel actions that change things are off by default. Turn them on in the settings page.'),
+          })
+        }
+        try {
+          const body = await readBody(req)
+          const data = await handler(body, req)
+          return json(res, 200, { ok: true, ...data })
+        } catch (error) {
+          // 记进本地错误记录（先打码）：反馈时附上，/vps-doctor 能看到
+          import('./health.js').then(({ recordError }) => recordError(`接口 ${path}`, error, env)).catch(() => {})
+          return json(res, 200, { ok: false, error: error.message ?? String(error) })
+        }
+      }),
+    }))
+  }
+
+  // —— 总览 ——
+  route('overview', async () => {
+    const [hosts, { list, errors, conflicts }] = await Promise.all([
+      hostsAction({ env }),
+      loadRecipes({ env }),
+    ])
+    return {
+      ...hosts,
+      lanBound,
+      recipes: list.map((r) => ({
+        id: r.id, kind: r.kind, name: r.name, desc: r.desc, tags: r.tags,
+        source: r.source, tier: r.tier, requires: r.requires,
+        params: r.params, incomplete: r.incomplete,
+      })),
+      recipeErrors: errors,
+      recipeConflicts: conflicts,
+      paths: paths(env),
+      sister: { installed: sisterInstalled() },
+    }
+  })
+
+  // 姊妹插件 dsh-vps（把 DSH 部署到 VPS 上）装没装：设置页据此决定是介绍它，还是指去「VPS 部署」。
+  // 只读 DSH 插件管理器的清单；没有插件管理器（老版本 DSH）就是不知道（null）
+  function sisterInstalled() {
+    try {
+      const list = deps.pluginManager?.listBundles?.()
+      if (!Array.isArray(list)) return null
+      return list.some((b) => b?.name === 'dsh-vps' && b.enabled !== false && b.installed !== false)
+    } catch {
+      return null
+    }
+  }
+
+  // —— 机器 ——
+  route('host/detail', async ({ alias }) => {
+    const doc = await readHosts(env)
+    const host = doc.hosts[alias]
+    if (!host) throw new Error(L(`没有登记过这台机器：${alias}`, `This machine is not registered: ${alias}`))
+    const state = await readState(env)
+    let resolved = null
+    try {
+      resolved = await sshResolve(alias)
+    } catch {
+      resolved = null
+    }
+    const p = paths(env)
+    return {
+      alias,
+      host,
+      resolved,
+      state: state.hosts?.[alias] ?? {},
+      managed: host.managed !== false,
+      dropinPath: p.sshDropin,
+      sshConfigPath: p.sshConfig,
+    }
+  })
+
+  route('host/save', async (body) => {
+    const saved = await saveHost({ ...body, env, runner })
+    await sshCloseMaster(body.previousAlias ?? body.alias).catch(() => {})
+    return saved
+  }, { write: true })
+
+  route('host/remove', async ({ alias, removeSshBlock = false, removeKnownHost = false }) => {
+    const doc = await readHosts(env)
+    if (!doc.hosts[alias]) throw new Error(L(`没有登记过这台机器：${alias}`, `This machine is not registered: ${alias}`))
+    let resolved = null
+    try {
+      resolved = await sshResolve(alias)
+    } catch {
+      resolved = null
+    }
+    const hosts = { ...doc.hosts }
+    delete hosts[alias]
+    const current = doc.current === alias ? (Object.keys(hosts)[0] ?? '') : doc.current
+    await writeHosts({ ...doc, hosts, current }, env)
+    if (removeSshBlock) await removeDropinHost(alias, env)
+    if (removeKnownHost && resolved) await resetHostKey({ hostname: resolved.hostname, port: resolved.port })
+    const state = await readState(env)
+    if (state.hosts?.[alias]) {
+      delete state.hosts[alias]
+      const { writeState } = await import('./config.js')
+      await writeState(state, env)
+    }
+    return { alias, removedSshBlock: removeSshBlock, removedKnownHost: removeKnownHost }
+  }, { write: true })
+
+  route('host/test', async ({ alias }) => probeHost({ alias, env, runner }))
+
+  route('host/fingerprint', async ({ hostname, port }) => scanFingerprint({ hostname, port }))
+
+  route('host/reset-key', async ({ hostname, port }) => resetHostKey({ hostname, port }), { write: true })
+
+  // —— 导入已有的 ~/.ssh/config 条目 ——
+  route('import/candidates', async () => {
+    const candidates = await importCandidates(env)
+    const out = []
+    for (const c of candidates) {
+      let resolved = null
+      try {
+        resolved = await sshResolve(c.alias)
+      } catch {
+        resolved = null
+      }
+      out.push({ ...c, hostname: resolved?.hostname ?? '', port: resolved?.port ?? 22, user: resolved?.user ?? '' })
+    }
+    return { candidates: out }
+  })
+
+  route('import/adopt', async ({ aliases = [], group = '' }) => {
+    const doc = await readHosts(env)
+    const hosts = { ...doc.hosts }
+    for (const alias of aliases) {
+      hosts[alias] = { note: hosts[alias]?.note ?? '', group, managed: false }
+    }
+    await writeHosts({ ...doc, hosts, current: doc.current || aliases[0] || '' }, env)
+    return { imported: aliases }
+  }, { write: true })
+
+  // —— 添加向导 ——
+  route('onboarding/key', async ({ create = false, keyPath, passphrase }) =>
+    ensureKey({ env, create, keyPath, passphrase }), { write: true })
+
+  route('onboarding/commands', async ({ hostname, port, user, keyPath }) => {
+    const key = await ensureKey({ env, keyPath })
+    return {
+      pubkey: key.pubkey,
+      fingerprint: key.fingerprint,
+      authorizedKeys: key.pubkey ? authorizedKeysCommand(key.pubkey) : '',
+      sshCopyId: sshCopyIdCommand({ identityFile: key.path, user, hostname, port }),
+    }
+  })
+
+  route('onboarding/open-terminal', async ({ hostname, port, user, keyPath }) => {
+    const key = await ensureKey({ env, keyPath })
+    return openInTerminal({ command: sshCopyIdCommand({ identityFile: key.path, user, hostname, port }) })
+  }, { write: true })
+
+  // 添加机器（一页表单）：填了密码就用它放一次公钥，然后保存、用钥匙连一次。
+  // 密码只在这个请求里用一次：不保存、不写日志和审计；带密码的请求只收本机发来的
+  // （从局域网发，密码会明文走一段网络），设置里放开「其他设备」后例外
+  route('onboarding/connect', async ({ hostname, port = 22, user = 'root', password = '', alias, note = '', group = '' }, req) => {
+    const { validateConnection } = await import('./config.js')
+    if (password && !isLoopbackRequest(req)) {
+      const doc = await readHosts(env)
+      if (doc.settings.allowTerminalRemote !== true) {
+        throw new Error(L('带密码添加机器只能在运行 DSH 的这台电脑上操作（从别的设备发，密码会经过网络）。要放开，到 DSH 设置 → VPS 管理 → 界面 里勾选「允许从其他设备打开 VPS 终端」', 'Adding a machine with a password only works on the computer running DSH (from another device the password would cross the network). To allow it, tick "Allow opening the VPS terminal from other devices" under DSH Settings → VPS Manager → Interface'))
+      }
+    }
+    const name = String(alias ?? '').trim() || autoAlias(hostname)
+    const target = validateConnection({ alias: name, hostname: String(hostname ?? '').trim(), port, user: String(user ?? '').trim() || 'root' })
+    const doc = await readHosts(env)
+    if (doc.hosts[name]) throw new Error(L(`别名「${name}」已经有一台机器在用了，换一个别名`, `The alias "${name}" is already used by another machine. Pick a different one`))
+
+    const key = await ensureKey({ env, create: true })
+    let keyInstalled = false
+    if (password) {
+      const install = deps.installKey ?? installKeyWithPassword
+      const res = await install({ hostname: target.hostname, port: target.port, user: target.user, password, pubkey: key.pubkey, env })
+      if (!res.ok) return { connected: false, stage: 'password', reason: res.reason, hint: res.hint }
+      keyInstalled = true
+    }
+    const saved = await saveHost({
+      alias: name, hostname: target.hostname, port: target.port, user: target.user, identityFile: key.path,
+      note: String(note ?? ''), group: String(group ?? ''), managed: true, env, runner,
+    })
+    const fp = await (deps.scanFingerprint ?? scanFingerprint)({ hostname: target.hostname, port: target.port, preferKnown: true }).catch(() => null)
+    await appendAudit({
+      source: 'panel', alias: name, address: `${target.hostname}:${target.port}`, action: 'add_host',
+      note: keyInstalled ? '用密码登录一次放了插件公钥（密码没有保存）' : '没填密码，直接用钥匙连',
+      status: saved.probe?.ok ? 'done' : 'failed',
+    }, env).catch(() => {})
+    return {
+      connected: Boolean(saved.probe?.ok),
+      alias: name,
+      keyInstalled,
+      probe: saved.probe,
+      hint: saved.probe?.ok ? '' : saved.probe?.hint ?? '',
+      fingerprints: fp?.fingerprints ?? [],
+      keyPath: key.path,
+    }
+  }, { write: true })
+
+  route('recipes/run', async ({ id, alias, params, force, waitSeconds = 8 }) =>
+    recipeAction({
+      ctx,
+      action: 'run',
+      id,
+      alias,
+      params,
+      force,
+      waitSeconds,
+      env,
+      runner,
+      source: 'panel',
+      preApproved: true, // 机器设置页「基础配置」里按的保存就是同意
+    }), { write: true })
+
+  route('recipes/verify', async ({ id, alias }) =>
+    recipeAction({ ctx, action: 'verify', id, alias, env, runner, source: 'panel' }))
+
+
+
+  // —— 任务 ——
+  route('tasks/list', async ({ alias }) => taskAction({ ctx, alias, action: 'list', env, runner, source: 'panel' }))
+
+  route('tasks/status', async ({ alias, taskId, tailBytes }) =>
+    taskAction({ ctx, alias, action: 'log', taskId, tailBytes, env, runner, source: 'panel' }))
+
+
+  // —— 会话绑定：对话头部的 VPS 开关 ——
+  route('session/bind', async ({ sessionId, alias }) => {
+    const { bindSession } = await import('./config.js')
+    if (alias) {
+      const doc = await readHosts(env)
+      if (!doc.hosts[alias]) throw new Error(L(`没有登记过这台机器：${alias}`, `This machine is not registered: ${alias}`))
+    }
+    const bound = await bindSession(String(sessionId ?? ''), alias || null, env)
+    deps.terminals?.endFor(String(sessionId ?? ''), bound || '') // 换机器或关开关：连着旧机器的终端结束
+    if (bound) probeIfUnknown(bound, { env, runner }) // 没体检过就后台体检，给模型的说明里才有系统信息
+    return { sessionId, alias: bound }
+  })
+
+  // 所有对话的绑定：界面在页面打开时读一次，本地没有记录的对话以服务器为准
+  route('session/bindings', async () => {
+    const { allSessionBindings } = await import('./config.js')
+    return { bindings: await allSessionBindings(env) }
+  })
+
+  // —— 卸载 ——
+  // 模块先加载好再开始：卸载最后一步会把插件文件从磁盘上删掉，之后再 import 会失败
+  route('uninstall/preview', async () => {
+    const { uninstallPreview } = await import('./uninstall.js')
+    return uninstallPreview({ env, desktop: deps.desktop, pluginManager: deps.pluginManager })
+  })
+
+  route('uninstall/run', async ({ choices }) => {
+    const { runUninstall } = await import('./uninstall.js')
+    // 结果里的 ok 是「每一步都成功」，不能直接铺开：会盖掉回复本身的 ok，有一步没成功界面就只看到
+    // 「请求失败（HTTP 200）」，每一步的结果都看不到（用户实测）
+    const { ok: allOk, ...result } = await runUninstall({ choices: choices ?? {}, env, runner, desktop: deps.desktop, pluginManager: deps.pluginManager })
+    return { ...result, allOk }
+  }, { write: true })
+
+  // 卸载的最后一步（DSH 官方桌面版等）：交给 DSH 的插件管理器移除插件本身。它会当场卸下插件，
+  // 所以单独一个请求、放在其他各项之后；回复写在 removed 里（外层的 ok 只表示请求成功）
+  route('uninstall/remove-plugin', async () => {
+    const { removePluginViaManager } = await import('./uninstall.js')
+    const { ok: removed, text } = await removePluginViaManager({ pluginManager: deps.pluginManager })
+    appendAudit({ source: 'panel', action: 'uninstall_plugin', note: text, status: removed ? 'done' : 'failed' }, env).catch(() => {})
+    return { removed, text }
+  }, { write: true })
+
+  // —— 插件自己的更新 ——
+  // check：GitHub 上最新发布 + npm 上能装的版本（存本机 6 小时，force 时马上重查）；
+  // run：交给 DSH 的插件管理器装那个版本，装好重启 DSH 生效
+  route('update/check', async ({ force }) => {
+    const { checkUpdate } = await import('./update.js')
+    const info = await checkUpdate({ env, force: force === true, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) })
+    return { ...info, canInstall: typeof deps.pluginManager?.installBundle === 'function', canRestart: Boolean(deps.desktop?.actions) }
+  })
+  route('update/run', async ({ version }) => {
+    const { runUpdate } = await import('./update.js')
+    const result = await runUpdate({ pluginManager: deps.pluginManager, version })
+    appendAudit({ source: 'panel', action: 'update_plugin', note: `v${version}${result.ok ? '' : `：${result.code}`}`, status: result.ok ? 'done' : 'failed' }, env).catch(() => {})
+    // 用 updated 而不是 ok：接口外层的 ok 表示「请求成功」，没装成也要把原因和命令交给界面
+    const { ok: updated, ...rest } = result
+    return { updated, ...rest, canRestart: Boolean(deps.desktop?.actions) }
+  }, { write: true })
+
+  // DSH Desktop 的 desktopActions：卸载完一键重启
+  route('desktop/restart', async () => {
+    const actions = deps.desktop?.actions
+    if (!actions) throw new Error(L('这里没法自动重启，请手动重启 DSH', 'DSH cannot be restarted from here. Please restart it yourself'))
+    await actions.requestRestart()
+    return { restarting: true }
+  }, { write: true })
+
+  // check：顺带测一下连不连得上（true = 30 秒内测过就用上次的；'force' = 一定现测）
+  route('session/status', async ({ sessionId, check }) => {
+    const { sessionBinding } = await import('./config.js')
+    const alias = await sessionBinding(String(sessionId ?? ''), env)
+    if (!alias) return { alias: '' }
+    let reach = null
+    if (check) {
+      const { checkReach } = await import('./reach.js')
+      reach = await checkReach(alias, { env, force: check === 'force', ...(deps.reachRun ? { run: deps.reachRun } : {}) })
+    }
+    const state = await readState(env)
+    const st = state.hosts?.[alias] ?? {}
+    return {
+      alias,
+      address: st.address ?? '',
+      reachable: reach ? reach.reachable : st.reachable ?? null,
+      hint: reach ? reach.hint : st.lastError ?? '',
+      checkedAt: reach ? reach.checkedAt : st.lastCheck ?? st.lastSeen ?? null,
+      facts: st.facts ?? {},
+    }
+  })
+
+  // —— 终端的显示设置：界面第一次打开终端时读一次，之后用本地缓存 ——
+  route('terminal/prefs', async () => {
+    const doc = await readHosts(env)
+    return { terminal: doc.settings.terminal }
+  })
+
+  // —— 插件体检与反馈 ——
+  // 汇总：版本、DSH 验证状态、各部分注册结果、最近错误、预填好的反馈链接
+  route('diag/status', async () => {
+    const { diagnostics } = await import('./health.js')
+    return await diagnostics(env)
+  })
+
+  // 界面自己出的错（插槽注册失败之类）也记下来。一次最多收 1 KB，只记不回显
+  route('diag/client-error', async ({ where, message }) => {
+    const { recordError } = await import('./health.js')
+    await recordError(`界面 ${String(where ?? '').slice(0, 40)}`, String(message ?? '').slice(0, 1000), env)
+    return {}
+  })
+
+  // —— 文件管理器（终端面板的「文件」页）——
+  // 机器由对话的绑定决定；从别的设备打开要先在设置里放开（和终端同一个开关）
+  const REMOTE_HINT = L('文件管理和终端一样，默认只能在运行 DSH 的这台电脑上打开。要从局域网或反向代理使用，到 DSH 设置 → VPS 管理 → 界面 里勾选「允许从其他设备打开 VPS 终端」', 'Like the terminal, the Files page only opens on the computer running DSH by default. To use it over the local network or a reverse proxy, tick "Allow opening the VPS terminal from other devices" under DSH Settings → VPS Manager → Interface')
+  async function assertLocal(req) {
+    if (isLoopbackRequest(req)) return
+    const doc = await readHosts(env)
+    if (doc.settings.allowTerminalRemote !== true) throw new Error(REMOTE_HINT)
+  }
+  async function boundAlias(sessionId) {
+    const { sessionBinding } = await import('./config.js')
+    const alias = await sessionBinding(String(sessionId ?? ''), env)
+    if (!alias) throw new Error(L('这个对话还没打开 VPS 开关', 'This conversation has not turned on the VPS switch yet'))
+    return alias
+  }
+  const spawnSsh = deps.spawnSsh // 测试用：换成本机 sh
+  const audit = (entry) => appendAudit({ source: 'files', ...entry }, env).catch(() => {})
+
+  const filesRoute = (path, handler, opts) => route(`files/${path}`, async (body, req) => {
+    await assertLocal(req)
+    const alias = await boundAlias(body.sessionId)
+    try {
+      return await handler({ ...body, alias }, req)
+    } catch (error) {
+      // 服务器上的「没权限」「不存在」之类是给用户看的提示，不是插件的错，不记错误日志
+      if (error instanceof files.FileError) return { ok: false, error: error.message, code: error.code }
+      throw error
+    }
+  }, opts)
+
+  filesRoute('places', async ({ alias }) => ({ alias, ...(await files.places({ alias, env, spawnSsh })) }))
+
+  filesRoute('list', async ({ alias, path }) => files.listDir({ alias, path, env, spawnSsh }))
+
+  filesRoute('mkdir', async ({ alias, dir, name }) => {
+    const res = await files.makeDir({ alias, dir, name, env, spawnSsh })
+    await audit({ alias, action: 'mkdir', path: res.path, status: 'done' })
+    return res
+  }, { write: true })
+
+  filesRoute('rename', async ({ alias, dir, from, to }) => {
+    const res = await files.renameEntry({ alias, dir, from, to, env, spawnSsh })
+    await audit({ alias, action: 'rename', path: files.joinPath(dir, from), note: `→ ${res.path}`, status: 'done' })
+    return res
+  }, { write: true })
+
+  filesRoute('trash', async ({ alias, paths: list }) => {
+    const res = await files.trashEntries({ alias, paths: list, env, spawnSsh })
+    for (const m of res.moved) await audit({ alias, action: 'trash', path: m.path, note: `回收站 ${m.id}`, status: 'done' })
+    return res
+  }, { write: true })
+
+  filesRoute('trash-list', async ({ alias }) => files.listTrash({ alias, env, spawnSsh }))
+
+  filesRoute('restore', async ({ alias, ids }) => {
+    const res = await files.restoreTrash({ alias, ids, env, spawnSsh })
+    for (const r of res.restored) await audit({ alias, action: 'restore', path: r.path, note: `回收站 ${r.id}`, status: 'done' })
+    return res
+  }, { write: true })
+
+  filesRoute('purge', async ({ alias, ids, all }) => {
+    const res = await files.purgeTrash({ alias, ids, all: all === true, env, spawnSsh })
+    await audit({ alias, action: 'purge', note: all === true ? '清空回收站' : `彻底删除 ${ids?.length ?? 0} 项`, status: 'done' })
+    return res
+  }, { write: true })
+
+  // 编辑：打开（整个文件，1 MB 以内）和保存（先对指纹，再走 vps_write_file 同一套：备份、保留权限、原子替换）
+  filesRoute('read', async ({ alias, path }) => files.readText({ alias, path, env, spawnSsh }))
+
+  filesRoute('save', async ({ alias, path, content, expectSha, force }) => {
+    const p = files.normalizePath(path)
+    if (typeof content !== 'string') throw new files.FileError('content_invalid', L('内容不对', 'Invalid content'))
+    if (Buffer.byteLength(content) > files.EDIT_LIMIT) throw new files.FileError('too_large', L('内容超过 1 MB，不能在这里保存', 'The content is over 1 MB and cannot be saved here'))
+    if (!force && expectSha) {
+      const now = await files.currentSha({ alias, path: p, env, spawnSsh })
+      if (now && now !== expectSha) {
+        return { conflict: true, error: L('这个文件在你打开之后被改过（可能是 AI 或别人改的）。可以重新加载看最新内容，或者仍然用你的版本覆盖', 'This file changed after you opened it (perhaps by the AI or someone else). Reload to see the latest content, or overwrite it with your version anyway') }
+      }
+    }
+    const { writeRemoteFile } = await import('./files.js')
+    const res = await writeRemoteFile({
+      alias, path: p, content, taskId: files.newTaskId(), env, runner, meta: { source: 'files', reason: '文件管理器里编辑' },
+    })
+    await audit({ alias, action: 'edit', path: p, status: res.status, exitCode: res.exitCode, taskId: res.taskId })
+    if (res.status !== 'done') throw new files.FileError('save_failed', res.hint || L('保存没成功', 'Saving failed'))
+    const after = await files.currentSha({ alias, path: p, env, spawnSsh }).catch(() => '')
+    return { path: p, backupPath: res.backupPath ?? null, sha: after }
+  }, { write: true })
+
+  // 让 AI 看看这个文件：读出来（大文件取结尾）、打码，等用户下次跟 AI 说话时附上
+  filesRoute('share', async ({ alias, path, sessionId }) => {
+    const res = await files.readText({ alias, path, limit: files.SHARE_LIMIT, mode: 'tail', env, spawnSsh })
+    const { shareFile } = await import('./terminal.js')
+    const queued = shareFile(String(sessionId), { alias, path: res.path, content: res.content, size: res.size, truncated: res.truncated })
+    await audit({ alias, action: 'share', path: res.path, note: `${Buffer.byteLength(res.content)} 字节交给 AI`, status: 'done' })
+    return { path: res.path, size: res.size, bytes: Buffer.byteLength(res.content), truncated: res.truncated, queued }
+  })
+
+  // 下载：先查一下、发一张 2 分钟内有效的票。页面拿票把文件取回来再存；特别大的文件浏览器拿票直接下。
+  // 票在 2 分钟内可以重复用：浏览器的下载被下载工具截走时，下载工具会自己再请求一次
+  const tickets = new Map()
+  filesRoute('download', async ({ alias, path }) => {
+    const info = await files.statPath({ alias, path, env, spawnSsh })
+    for (const [t, v] of tickets) if (v.expires < Date.now()) tickets.delete(t)
+    const ticket = randomBytes(24).toString('hex')
+    tickets.set(ticket, { alias, ...info, expires: Date.now() + 120_000 })
+    const name = info.type === 'dir' ? `${info.name}.tar.gz` : info.name
+    return { url: `/api-vps/files/fetch?t=${ticket}`, name, type: info.type, size: info.size }
+  })
+
+  const connection = () => {
+    try {
+      return ctx.get?.('connection')
+    } catch {
+      return undefined
+    }
+  }
+  const plain = (res, code, text) => {
+    res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' })
+    res.end(text)
+  }
+
+  register(() => ws.register({
+    kind: 'exact',
+    path: '/api-vps/files/fetch',
+    handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
+      const rejection = connection()?.requestRejection?.(req)
+      if (rejection !== undefined) return plain(res, rejection, '')
+      if (req.method !== 'GET') return plain(res, 405, '')
+      const t = new URL(req.url ?? '/', 'http://dsh.invalid').searchParams.get('t') ?? ''
+      const ticket = tickets.get(t)
+      if (!ticket || ticket.expires < Date.now()) {
+        tickets.delete(t)
+        return plain(res, 403, L('下载链接过期了，回到文件列表再点一次下载', 'This download link has expired. Go back to the file list and click Download again'))
+      }
+      try {
+        await assertLocal(req)
+      } catch (error) {
+        return plain(res, 403, error.message)
+      }
+      const name = ticket.type === 'dir' ? `${ticket.name}.tar.gz` : ticket.name
+      const child = (spawnSsh ?? files.defaultSpawnSsh)(ticket.alias, files.downloadScript(ticket))
+      child.stdin.end()
+      res.writeHead(200, {
+        'content-type': ticket.type === 'dir' ? 'application/gzip' : 'application/octet-stream',
+        'content-disposition': files.attachmentHeader(name),
+        'cache-control': 'no-store',
+        'x-content-type-options': 'nosniff',
+        ...(ticket.type === 'file' ? { 'content-length': ticket.size } : {}),
+      })
+      child.stdout.pipe(res)
+      res.on('close', () => {
+        if (!res.writableFinished) child.kill('SIGTERM') // 浏览器取消了下载
+      })
+      child.on('close', (code) => {
+        audit({ alias: ticket.alias, action: 'download', path: ticket.path, status: code === 0 ? 'done' : 'failed', exitCode: code })
+      })
+    }),
+  }))
+
+  // 上传：请求体就是文件本身（不是 JSON）。和其他路由一样校验 token 与同源，外加本机限制和写开关
+  register(() => ws.register({
+    kind: 'exact',
+    path: '/api-vps/files/upload',
+    handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
+      if (req.method !== 'POST') return json(res, 405, { ok: false, error: L('只接受 POST', 'Only POST is accepted') })
+      if (!String(req.headers['content-type'] ?? '').includes('application/octet-stream')) {
+        return json(res, 415, { ok: false, error: L('只接受 application/octet-stream', 'Only application/octet-stream is accepted') })
+      }
+      if (!sameOrigin(req)) return json(res, 403, { ok: false, error: L('跨站请求被拒绝', 'Cross-site request refused') })
+      if (String(req.headers['x-dsh-vps-token'] ?? '') !== token) return json(res, 403, { ok: false, error: L('token 不对', 'Wrong token') })
+      try {
+        await assertLocal(req)
+        if (!(await writeAllowed())) throw new Error(L('DSH 的 Web 服务绑定在 0.0.0.0（局域网可见），会改东西的面板操作已默认关闭。要打开请到设置页勾选。', 'DSH\'s web server is bound to 0.0.0.0 (visible on the local network), so panel actions that change things are off by default. Turn them on in the settings page.'))
+        const q = new URL(req.url ?? '/', 'http://dsh.invalid').searchParams
+        const alias = await boundAlias(q.get('sessionId'))
+        const size = Number(q.get('size'))
+        const result = await files.uploadFile({ alias, path: q.get('path'), size, stream: req, env, spawnSsh })
+        await audit({ alias, action: 'upload', path: result.path, note: `${size} 字节${result.backupPath ? '，原文件已备份' : ''}`, status: 'done', taskId: result.taskId })
+        return json(res, 200, { ok: true, ...result })
+      } catch (error) {
+        if (!req.complete) req.resume() // 没读完的请求体要读掉，连接才能正常结束
+        return json(res, 200, { ok: false, error: error.message ?? String(error) })
+      }
+    }),
+  }))
+
+  // —— 终端面板的「状态」页签：看一遍这台机器（只读），点了才让 AI 解读 ——
+  // 默认看这个对话绑定的那台；右侧栏可以指定别的机器来「看」（只读，不改对话绑定）。
+  // 指定的必须是登记过的机器；采集是只读的，不弹审批
+  const statusRoute = (path, handler) => route(`status/${path}`, async (body, req) => {
+    let alias
+    if (body.alias) {
+      const doc = await readHosts(env)
+      if (!doc.hosts?.[body.alias]) throw new Error(L(`没有登记过这台机器：${body.alias}`, `No such machine: ${body.alias}`))
+      alias = String(body.alias)
+    } else {
+      alias = await boundAlias(body.sessionId)
+    }
+    return handler({ ...body, alias }, req)
+  })
+  const canInterpret = () => Boolean(deps.llm?.stream && deps.defaultModel?.currentSelection)
+  const statusView = async (alias, fresh) => {
+    const status = await import('./status.js')
+    const cache = await status.readStatusCache(alias, env)
+    const collectedAt = fresh?.collectedAt ?? cache?.collectedAt
+    const data = fresh?.data ?? cache?.data
+    if (!data) return { alias, status: null, interpretation: cache?.interpretation ?? null, canInterpret: canInterpret() }
+    const judged = status.judge(data, Date.parse(collectedAt))
+    return {
+      alias,
+      status: { collectedAt, data, judged, brief: status.statusBrief(alias, data, judged) },
+      interpretation: cache?.interpretation ?? null,
+      canInterpret: canInterpret(),
+    }
+  }
+
+  // 打开页签先给上次的结果（存在本机），马上有东西看；再由界面发起一次新的采集
+  statusRoute('get', async ({ alias }) => statusView(alias))
+
+  statusRoute('collect', async ({ alias }) => {
+    const { collectStatus } = await import('./status.js')
+    const res = await collectStatus({ alias, env, runner })
+    if (!res.ok) return { ...(await statusView(alias)), failed: { status: res.status, hint: res.hint } }
+    return statusView(alias, res)
+  })
+
+  // 右侧栏顶上的机器编号：每台上次看的结果里有没有要注意的（只读本机缓存，不连服务器）
+  route('status/overview', async () => {
+    const status = await import('./status.js')
+    const doc = await readHosts(env)
+    const hosts = await Promise.all(Object.keys(doc.hosts ?? {}).map(async (alias) => {
+      const cache = await status.readStatusCache(alias, env).catch(() => null)
+      if (!cache?.data) return { alias, collectedAt: null, worst: null, attention: 0 }
+      const { attention } = status.judge(cache.data, Date.parse(cache.collectedAt))
+      return { alias, collectedAt: cache.collectedAt, worst: attention.some((i) => i.level === 'danger') ? 'danger' : attention.length ? 'warn' : 'ok', attention: attention.length }
+    }))
+    return { hosts }
+  })
+
+  statusRoute('interpret', async ({ alias }) => {
+    const { interpretStatus } = await import('./status.js')
+    try {
+      const { interpretation } = await interpretStatus({ alias, env, llm: deps.llm, defaultModel: deps.defaultModel })
+      return { interpretation }
+    } catch (error) {
+      return { interpretation: null, error: error.message, code: error.code ?? 'failed' }
+    }
+  })
+
+  // —— 设置与审计 ——
+  route('settings/save', async ({ settings, groups }) => {
+    const doc = await readHosts(env)
+    const next = await writeHosts({
+      ...doc,
+      settings: { ...doc.settings, ...(settings ?? {}) },
+      groups: groups ?? doc.groups,
+    }, env)
+    return { settings: next.settings, groups: next.groups }
+  }, { write: true })
+
+
+  // 页面自己来换令牌：令牌对不上时（DSH 重启过、插件热更新过、DSH 官方桌面版的首页不经过这里）
+  // 界面悄悄来取一次再重试，用户什么都不用做。和从首页读令牌一样安全：只认同源、只收 JSON
+  // （跨站页面发不过来，也读不到回应），并且和其他接口一样先过 DSH 自己的登录校验
+  register(() => ws.register({
+    kind: 'exact',
+    path: '/api-vps/token',
+    handler: (req, res) => withLang(req.headers?.[LANG_HEADER], async () => {
+      const check = checkRequest(req, token, { needToken: false })
+      if (!check.ok) return json(res, check.code, { ok: false, error: check.error })
+      return json(res, 200, { ok: true, token })
+    }),
+  }))
+
+  // 所有接口都注册成功了，才把令牌交给页面。两条路都给：
+  // - 结构化的注入行（DSH 0.2 起）：官方桌面版的页面从本地打开，只认这种行（经 IPC 交给页面），不跑下面的 HTML 转换
+  // - tapIndex 的 HTML 转换：老版本 DSH 只有这条；网页版两条都会生效，写的是同一个值
+  if (typeof ctx.on === 'function') {
+    register(() => ctx.on('webserver/index-inject', (table) => {
+      if (Array.isArray(table)) table.push({ kind: 'global', name: '__DSH_VPS_TOKEN__', value: token })
+    }))
+  }
+  if (typeof ws.tapIndex === 'function') {
+    register(() => ws.tapIndex((html) =>
+      html.replace('</head>', `<script>window.__DSH_VPS_TOKEN__=${JSON.stringify(token)}</script></head>`)))
+  }
+
+  return {
+    token,
+    dispose: () => {
+      for (const d of disposers) {
+        try {
+          d?.()
+        } catch {
+          // 反注册失败不影响卸载
+        }
+      }
+    },
+  }
+}

@@ -1,0 +1,1075 @@
+#!/usr/bin/env bash
+# dsh-vps 管理命令（M3）
+# 设计依据：dsh-vps-architecture-design.md §4.2.6 / §10
+#
+# 子命令：
+#   status              服务状态 + 健康 + 版本提示
+#   restart             重启 gate（DSH 子进程随之重启并自动重新兑换）
+#   upgrade [version]   升级 DSH 版本（默认 latest_verified）；--latest 强上 npm 最新版
+#   update-gate        更新 gate 代码本身（gate/server.js）并重启
+#   rollback            符号链接切回上一版本并重启
+#   reset-admin         删除 admin.json 与 setup.lock，重新走向导并换发令牌（应急）
+#   setup-url           打印初始设置链接（含一次性令牌）
+#   vpn                 仅我可访问：WireGuard 隧道（setup/add/revoke/list/status/on/off）——保留但不在帮助里列出
+#   tunnel              仅我可访问：SSH 本地端口转发（零安装，打印用法）——保留但不在帮助里列出
+#   backup              打包 DSH_HOME + state 到 backups/（保留最近 3 份）
+#   selfcheck           手动触发升级回归自检探针
+#   install-units       安装浏览器一键升级所需的 systemd 单元（install.sh / update-gate 调用）
+#   upgrade-run         执行浏览器发起的升级请求（由 dsh-vps-upgrade.service 以 root 调用）
+
+set -Eeuo pipefail
+# set -e 会让脚本在任何一条命令失败时静默退出；这里把"在哪一行、哪条命令"打出来，
+# 升级日志（state/upgrade.log）里就能直接看到原因，而不是戛然而止。
+trap 'printf "\033[1;31m[dsh-vps]\033[0m 意外退出：第 %s 行 \`%s\` 返回 %s\n" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
+
+ROOT="${DSHVPS_ROOT:-/opt/dsh-vps}"
+GATE_PORT="${GATE_PORT:-3100}"
+HEALTH_URL="http://127.0.0.1:$GATE_PORT/gate/health"
+SELFCHECK_URL="http://127.0.0.1:$GATE_PORT/gate/selfcheck"
+DSH_HOME_DIR="${DSH_HOME:-/home/dsh/.dsh}"
+SERVICE="dsh-gate"
+RAW_BASE="${DSHVPS_RAW_BASE:-https://raw.githubusercontent.com/AIcivilization/dsh-vps/main}"
+VERSIONS_URL="${DSHVPS_VERSIONS_URL:-$RAW_BASE/versions.json}"
+# 依赖解析冻结时间点的兜底值（版本表里带 resolve_before 时以版本表为准）。
+# 只钉顶层包版本不够：DSH 子包依赖是 ^x 浮动范围，上游发新预发布波次时解析结果会整体漂上去
+# ——2026-09-22 上游漏发 rc.3 的 dsh-client-ui-sidebar-documentpreview 就导致过 ETARGET。
+# 同日 03:46 的 cordis 系列新版本同样与 rc.2 不兼容（HMR 服务缺失致启动崩溃），故取 03:40。
+# 升级 latest_verified 时必须同步推后这个值。
+DEFAULT_RESOLVE_BEFORE="${DSHVPS_RESOLVE_BEFORE:-2026-09-24T08:20:00Z}"
+VERSIONS_CACHE="$ROOT/state/versions.cache.json"
+NPM_REGISTRY="${DSHVPS_NPM_REGISTRY:-}"
+# 新版本发布满多少小时才升级（--latest / 页面一键升级）：上游常见「主包先发、子包晚几小时补齐」
+UPGRADE_COOLDOWN_HOURS="${DSHVPS_UPGRADE_COOLDOWN_HOURS:-12}"
+# 安装时选了 --mirror cn：升级也走 npmmirror，与首次安装同源
+if [[ -z "$NPM_REGISTRY" && -f "$ROOT/state/config.json" ]] && grep -q '"mirror": *"cn"' "$ROOT/state/config.json"; then
+	NPM_REGISTRY="https://registry.npmmirror.com"
+fi
+
+log()  { printf '\033[1;32m[dsh-vps]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[dsh-vps]\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m[dsh-vps]\033[0m %s\n' "$*" >&2; exit 1; }
+
+require_root() { [[ $EUID -eq 0 ]] || die "需要 root（sudo dsh-vps $*）"; }
+
+current_version() { readlink "$ROOT/dsh/current" 2>/dev/null || echo "(未安装)"; }
+
+## region: backup
+
+cmd_backup() {
+	require_root
+	mkdir -p "$ROOT/backups"
+	local ts="$ROOT/backups/dsh-vps-$(date +%Y%m%d-%H%M%S).tar.gz"
+	# DSH 运行中仍在写文件：GNU tar 遇到"读取期间文件有变化"返回 1，归档本身完整，只告警；
+	# 返回 2 才是真失败
+	local rc=0
+	tar -czf "$ts" -C / "${DSH_HOME_DIR#/}" "${ROOT#/}/state" 2>/dev/null || rc=$?
+	if [[ $rc -eq 1 ]]; then
+		warn "部分文件在备份期间有变动（DSH 运行中属正常），备份仍可用"
+	elif [[ $rc -ne 0 ]]; then
+		die "备份失败（tar 返回 $rc）"
+	fi
+	chmod 600 "$ts"
+	log "备份完成: $ts"
+	# 保留最近 3 份。写成 if：`[[ ]] && ...` 作为函数最后一行时，条件不成立会让函数返回 1，
+	# 调用方在 set -e 下直接静默退出——首次升级（备份不足 4 份）就曾因此在备份后中止
+	local old
+	old=$(ls -1t "$ROOT"/backups/dsh-vps-*.tar.gz 2>/dev/null | tail -n +4 || true)
+	if [[ -n "$old" ]]; then
+		rm -f $old
+		log "已清理旧备份"
+	fi
+}
+
+## endregion
+
+## region: update-gate
+
+# 安装目录不是 git 仓库（install.sh 从 RAW_BASE 取文件），所以 gate 代码
+# 只能靠重新拉取更新。upgrade 管 DSH 版本，update-gate 管 gate 自身代码。
+cmd_update_gate() {
+	require_root
+	[[ -f "$ROOT/gate/server.js" ]] || die "未找到 $ROOT/gate/server.js（不是 dsh-vps 安装目录？）"
+	# node --check 走 ESM loader，只认 .js/.cjs/.mjs 等已知后缀；用 .cjs 同时
+	# 锁定 CommonJS 解析，不受将来可能出现的 package.json {"type":"module"} 影响。
+	local tmp="$ROOT/gate/server.update.cjs"
+	log "拉取最新 gate/server.js ($RAW_BASE/gate/server.js)"
+	curl -fsSL --max-time 30 "$RAW_BASE/gate/server.js" -o "$tmp" \
+		|| { rm -f "$tmp"; die "拉取失败（离线？或 DSHVPS_RAW_BASE 指向有误）"; }
+	node --check "$tmp" \
+		|| { rm -f "$tmp"; die "新版本语法检查失败，原文件未改动"; }
+	if cmp -s "$tmp" "$ROOT/gate/server.js"; then
+		rm -f "$tmp"
+		log "gate 已是最新版本，无需更新"
+		return 0
+	fi
+	cp -p "$ROOT/gate/server.js" "$ROOT/gate/server.js.bak" && log "已备份旧版: $ROOT/gate/server.js.bak"
+	mv "$tmp" "$ROOT/gate/server.js"
+	chmod 644 "$ROOT/gate/server.js"
+	# 站点块模板与 gate 同源（install.sh、dsh-vps vpn 都用它），顺手同步（幂等）
+	local sb="$ROOT/gate/site-block.update.js"
+	if curl -fsSL --max-time 30 "$RAW_BASE/gate/site-block.js" -o "$sb" && node --check "$sb"; then
+		mv "$sb" "$ROOT/gate/site-block.js"
+		chmod 644 "$ROOT/gate/site-block.js"
+	else
+		rm -f "$sb"
+		warn "gate/site-block.js 未更新（保留现有版本）"
+	fi
+	# dsh-vps 自身：先写临时文件再 rename，正在执行的旧脚本仍持有旧 inode，不会读到半截新内容
+	local nb="$ROOT/bin/dsh-vps.update"
+	if curl -fsSL --max-time 30 "$RAW_BASE/bin/dsh-vps" -o "$nb" && bash -n "$nb"; then
+		chmod 755 "$nb"
+		mv "$nb" "$ROOT/bin/dsh-vps"
+	else
+		rm -f "$nb"
+		warn "bin/dsh-vps 未更新（保留现有版本）"
+	fi
+	log "重启 $SERVICE ..."
+	systemctl restart "$SERVICE"
+	sleep 3
+	# 以下都用新版 dsh-vps 执行：静态补丁（含升级提示条）与一键升级单元（幂等）
+	"$ROOT/bin/dsh-vps" ownshost on >/dev/null 2>&1 || true
+	"$ROOT/bin/dsh-vps" install-units || warn "一键升级单元安装失败"
+	if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
+		log "更新完成，gate 已就绪"
+	else
+		warn "重启后健康检查未通过：journalctl -u $SERVICE -n 50"
+		warn "回滚：cp $ROOT/gate/server.js.bak $ROOT/gate/server.js && systemctl restart $SERVICE"
+		return 1
+	fi
+}
+
+## endregion
+
+## region: status
+
+cmd_status() {
+	echo "== 服务 =="
+	systemctl is-active "$SERVICE" 2>/dev/null | sed 's/^/  dsh-gate: /' || echo "  dsh-gate: inactive"
+	systemctl is-active caddy 2>/dev/null | sed 's/^/  caddy:    /' || echo "  caddy:    (未安装)"
+	echo
+	echo "== 配置 =="
+	[[ -f "$ROOT/state/config.json" ]] && sed 's/^/  /' "$ROOT/state/config.json" || echo "  (无 config.json)"
+	echo "  当前 DSH 版本: $(current_version)"
+	cmd_ownshost status
+	echo
+	echo "== 健康 =="
+	local health
+	if health=$(curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null); then
+		printf '%s\n' "$health" | sed 's/^/  /'
+	else
+		echo "  gate 不可达（服务未运行或启动中）"
+	fi
+	echo
+	# 版本表提示（24h 缓存）
+	local cache_ok=0
+	if [[ -f "$VERSIONS_CACHE" ]]; then
+		local age=$(( $(date +%s) - $(stat -c %Y "$VERSIONS_CACHE" 2>/dev/null || echo 0) ))
+		[[ $age -lt 86400 ]] && cache_ok=1
+	fi
+	if [[ $cache_ok -eq 0 ]]; then
+		curl -fsSL --max-time 8 "$VERSIONS_URL" -o "$VERSIONS_CACHE.tmp" 2>/dev/null \
+			&& mv "$VERSIONS_CACHE.tmp" "$VERSIONS_CACHE" || rm -f "$VERSIONS_CACHE.tmp"
+	fi
+	if [[ -f "$VERSIONS_CACHE" ]]; then
+		local latest
+		latest=$(sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' "$VERSIONS_CACHE" | head -1)
+		local cur
+		cur=$(current_version)
+		if [[ -n "$latest" && "$latest" != "$cur" ]]; then
+			if printf '%s\n%s\n' "$cur" "$latest" | sort -V | tail -1 | grep -qx "$latest"; then
+				echo "== 提示：有新验证版本 ${latest}（当前 ${cur}），运行 sudo dsh-vps upgrade 升级 =="
+			fi
+		else
+			echo "== 已是最新验证版本（${cur}） =="
+		fi
+	else
+		echo "== 版本表暂不可达（离线或仓库未发布），跳过升级提示 =="
+	fi
+}
+
+## endregion
+
+## region: selfcheck
+
+cmd_selfcheck() {
+	local out
+	out=$(curl -fsS --max-time 15 "$SELFCHECK_URL" 2>/dev/null) || {
+		warn "selfcheck 探针不可达（gate 未运行？先 sudo systemctl restart ${SERVICE}）"
+		return 1
+	}
+	printf '%s\n' "$out"
+	printf '%s' "$out" | grep -q '"pass":true'
+}
+
+wait_selfcheck() { # $1=重试次数
+	local i
+	for i in $(seq 1 "$1"); do
+		if cmd_selfcheck >/dev/null 2>&1; then
+			return 0
+		fi
+		warn "自检未通过（第 $i/$1 次），等待 10s 重试..."
+		sleep 10
+	done
+	return 1
+}
+
+## endregion
+
+## region: upgrade / rollback
+
+switch_version() { # $1=版本目录名
+	ln -sfn "$1" "$ROOT/dsh/current"
+	# 新版本的 node_modules 是干净的，静态补丁必须重打
+	ownshost_apply on >/dev/null 2>&1 || true
+	systemctl restart "$SERVICE"
+}
+
+cmd_upgrade() {
+	require_root
+	local target="" latest_mode=0 assume_yes=0 verified_latest=0
+	while [[ $# -gt 0 ]]; do
+		case "$1" in
+		--latest) latest_mode=1; shift ;;
+		--yes) assume_yes=1; shift ;;
+		-*) die "未知参数: $1" ;;
+		*) target="$1"; shift ;;
+		esac
+	done
+
+	local cur
+	cur=$(current_version)
+	log "当前版本: $cur"
+	# --latest 明确要最新，不冻结解析；其余情况冻结在验证过的时间点之前
+	local resolve_before="$DEFAULT_RESOLVE_BEFORE"
+
+	if [[ $latest_mode -eq 1 ]]; then
+		warn "--latest：将安装官方最新版（npm latest 与 next 渠道中较新、且发布满 ${UPGRADE_COOLDOWN_HOURS} 小时的一个），可能未经 dsh-vps 验证（有备份与自动回滚兜底）"
+		[[ $assume_yes -eq 1 ]] || { read -rp "确认继续？[y/N] " ans; [[ "$ans" == "y" || "$ans" == "Y" ]] || die "已取消"; }
+		local reg_arg=(dist-tags time --json)
+		[[ -n "$NPM_REGISTRY" ]] && reg_arg+=(--registry="$NPM_REGISTRY")
+		# 官方同时维护 latest（正式）与 next（预览）两个渠道，取其中版本号更高、且过了冷静期的；
+		# alpha 等内部渠道不取。冷静期见 UPGRADE_COOLDOWN_HOURS（与 gate 的升级提示同一规则）
+		target=$(npm view @deepseek-ai/dsh "${reg_arg[@]}" 2>/dev/null | COOLDOWN_H="$UPGRADE_COOLDOWN_HOURS" node -e '
+const doc = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const t = doc["dist-tags"] || {};
+const times = doc.time || {};
+const cooldown = Number(process.env.COOLDOWN_H || 12) * 3600000;
+const parse = (v) => { const [c, p] = v.split("-", 2); return { c: c.split(".").map(Number), p: p === undefined ? null : p.split(".") }; };
+const cmp = (a, b) => {
+	const x = parse(a), y = parse(b);
+	for (let i = 0; i < 3; i++) if (x.c[i] !== y.c[i]) return x.c[i] - y.c[i];
+	if (x.p === null || y.p === null) return (x.p === null) - (y.p === null);
+	for (let i = 0; i < Math.max(x.p.length, y.p.length); i++) {
+		const p = x.p[i], q = y.p[i];
+		if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
+		const pn = /^\d+$/.test(p), qn = /^\d+$/.test(q);
+		if (pn && qn && +p !== +q) return +p - +q;
+		if (pn !== qn) return pn ? -1 : 1;
+		if (p !== q) return p < q ? -1 : 1;
+	}
+	return 0;
+};
+const c = [t.latest, t.next].filter((v) => typeof v === "string" && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(v))
+	.filter((v) => { const at = Date.parse(times[v] || ""); return Number.isFinite(at) && Date.now() - at >= cooldown; });
+if (!c.length) process.exit(1);
+console.log(c.sort(cmp).pop());
+') || die "无法查询 npm 最新版本"
+		# 官方最新版恰好是我们验证过的版本：用验证时冻结的依赖树，而不是当下重新解析
+		local vt
+		if vt=$(curl -fsSL --max-time 10 "$VERSIONS_URL" 2>/dev/null) \
+			&& [[ "$(printf '%s' "$vt" | sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' | head -1)" == "$target" ]]; then
+			local vrb
+			vrb=$(printf '%s' "$vt" | sed -n 's/.*"resolve_before": *"\([^"]*\)".*/\1/p' | head -1)
+			if [[ -n "$vrb" ]]; then
+				resolve_before="$vrb"
+				verified_latest=1
+				log "$target 是已验证版本，按验证时的依赖树安装（冻结于 $vrb）"
+			fi
+		fi
+	elif [[ -z "$target" ]]; then
+		# 默认：已验证版本表的 latest_verified
+		local versions
+		versions=$(curl -fsSL --max-time 10 "$VERSIONS_URL" 2>/dev/null) \
+			|| die "无法获取版本表（${VERSIONS_URL}）。可显式指定版本：dsh-vps upgrade <version>"
+		target=$(printf '%s' "$versions" | sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' | head -1)
+		[[ -n "$target" ]] || die "版本表中没有 latest_verified 字段"
+		local rb
+		rb=$(printf '%s' "$versions" | sed -n 's/.*"resolve_before": *"\([^"]*\)".*/\1/p' | head -1)
+		[[ -n "$rb" ]] && resolve_before="$rb"
+		# min_gate 提示（gate 无版本戳，仅提醒人工确认）
+		if printf '%s' "$versions" | grep -q "\"dsh\": *\"$target\""; then
+			local min_gate
+			min_gate=$(printf '%s' "$versions" | grep -o "\"min_gate\": *\"[^\"]*\"" | head -1 | sed 's/.*: *"\(.*\)"/\1/')
+			[[ -n "$min_gate" ]] && warn "该版本要求 gate >= ${min_gate}，请确认 gate 代码已同步更新"
+		fi
+	fi
+
+	[[ "$target" == "$cur" ]] && { log "已是 ${target}，无需升级"; exit 0; }
+	log "目标版本: $target"
+
+	# 1. 备份（防数据格式不向前兼容）
+	cmd_backup
+
+	# 2. 版本化安装
+	local prefix="$ROOT/dsh/$target"
+	if [[ ! -f "$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js" ]]; then
+		mkdir -p "$prefix"
+		# 数组恒不为空：bash 3.2 在 set -u 下展开空数组会报 unbound variable
+		local args=(--no-audit --no-fund --loglevel=error)
+		[[ -n "$NPM_REGISTRY" ]] && args+=(--registry="$NPM_REGISTRY")
+		local frozen=1
+		[[ ($latest_mode -eq 1 && $verified_latest -eq 0) || "$resolve_before" == "none" ]] && frozen=0
+		[[ $frozen -eq 1 ]] && args+=(--before="$resolve_before")
+		if ! npm install --prefix "$prefix" "${args[@]}" "@deepseek-ai/dsh@$target"; then
+			if [[ $frozen -eq 1 ]]; then
+				warn "按时间点冻结解析失败，改为不冻结重试（可能装到未验证的新版本）"
+				local args2=(--no-audit --no-fund --loglevel=error)
+				[[ -n "$NPM_REGISTRY" ]] && args2+=(--registry="$NPM_REGISTRY")
+				npm install --prefix "$prefix" "${args2[@]}" "@deepseek-ai/dsh@$target" \
+					|| die "npm 安装 $target 失败"
+			else
+				die "npm 安装 $target 失败"
+			fi
+		fi
+		[[ -f "$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js" ]] || die "安装产物缺失: $prefix"
+	fi
+
+	# 3. 切换 + 重启
+	log "切换到 $target 并重启..."
+	switch_version "$target"
+
+	# 4. 回归自检（重试 3 次）
+	if wait_selfcheck 3; then
+		log "升级成功：$cur -> ${target}（自检通过）"
+	else
+		warn "自检失败，自动回滚到 $cur ..."
+		switch_version "$cur"
+		die "升级失败已回滚。原因见上方自检输出；可查 journalctl -u $SERVICE -n 50"
+	fi
+
+	# 5. 清理：保留最近 2 个版本目录
+	local old_dirs
+	old_dirs=$(ls -1d "$ROOT"/dsh/*/ 2>/dev/null | grep -v current | sed 's|/$||' | sort -V | head -n -2 || true)
+	for d in $old_dirs; do
+		[[ "$(basename "$d")" == "$cur" ]] && continue # 保底：至少留一个可回滚目标
+		rm -rf "$d" && log "已清理旧版本目录: $d"
+	done
+}
+
+cmd_rollback() {
+	require_root
+	local cur
+	cur=$(current_version)
+	local prev
+	prev=$(ls -1d "$ROOT"/dsh/*/ 2>/dev/null | grep -v current | sed 's|/$||' | xargs -n1 basename 2>/dev/null \
+		| grep -vx "$cur" | sort -V | tail -1 || true)
+	[[ -n "$prev" ]] || die "没有可回滚的版本目录"
+	log "回滚: $cur -> $prev"
+	switch_version "$prev"
+	sleep 3
+	if cmd_selfcheck >/dev/null 2>&1; then
+		log "回滚完成，自检通过"
+	else
+		warn "回滚后自检未通过，请查 journalctl -u $SERVICE -n 50"
+	fi
+}
+
+## endregion
+
+## region: 启动令牌
+
+# 生成一次性令牌并写入 state/setup.token；令牌经 $SETUP_TOKEN 返回。
+new_setup_token() {
+	local tok
+	tok=$(head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+	if [[ ${#tok} -lt 24 ]]; then
+		warn "启动令牌生成失败，向导将不校验令牌"
+		SETUP_TOKEN=""
+		return 1
+	fi
+	mkdir -p "$ROOT/state"
+	chmod 700 "$ROOT/state"
+	printf '%s' "$tok" >"$ROOT/state/setup.token"
+	local owner
+	owner=$(stat -c %U "$ROOT/state" 2>/dev/null || echo dsh)
+	chown "$owner" "$ROOT/state/setup.token" 2>/dev/null || true
+	chmod 600 "$ROOT/state/setup.token"
+	SETUP_TOKEN="$tok"
+}
+
+# 访问地址：优先 gate.env 的 DSH_TRUSTED_HOST（--trusted-host 的实际取值），回退 config.json
+current_host() {
+	local host=""
+	if [[ -f "$ROOT/state/gate.env" ]]; then
+		host=$(sed -n 's/^DSH_TRUSTED_HOST=//p' "$ROOT/state/gate.env" | head -1)
+		host=${host%\"}; host=${host#\"}
+		host=${host%\'}; host=${host#\'}
+	fi
+	if [[ -z "$host" && -f "$ROOT/state/config.json" ]]; then
+		host=$(sed -n 's/.*"domain"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$ROOT/state/config.json" | head -1)
+	fi
+	printf '%s' "$host"
+}
+
+cmd_setup_url() {
+	require_root
+	local host token=""
+	host=$(current_host)
+	[[ -n "$host" ]] || die "无法确定访问地址（$ROOT/state/gate.env 缺失）；可手工拼接 https://<你的域名>/setup?token=<令牌>"
+	[[ -f "$ROOT/state/setup.token" ]] && token=$(tr -d '[:space:]' <"$ROOT/state/setup.token")
+	if [[ -z "$token" ]]; then
+		if [[ -f "$ROOT/state/setup.lock" ]]; then
+			log "初始设置已完成，无需令牌。直接打开 https://$host 登录。"
+		else
+			warn "未找到启动令牌（$ROOT/state/setup.token），向导当前不校验令牌；直接打开 https://$host 设置。"
+		fi
+		return 0
+	fi
+	log "初始设置链接（令牌一次性，设置完成后自动失效）："
+	echo "  https://$host/setup?token=$token"
+}
+
+## endregion
+
+## region: reset-admin
+
+cmd_reset_admin() {
+	require_root
+	local assume_yes=0
+	[[ "${1:-}" == "--yes" ]] && assume_yes=1
+	if [[ $assume_yes -eq 0 ]]; then
+		warn "将删除管理员账号与向导锁（admin.json + setup.lock），之后需重新走浏览器向导。"
+		read -rp "确认继续？[y/N] " ans
+		[[ "$ans" == "y" || "$ans" == "Y" ]] || die "已取消"
+	fi
+	rm -f "$ROOT/state/admin.json" "$ROOT/state/setup.lock"
+	# 重开向导等于重新暴露 /setup：必须换发令牌，否则旧令牌（可能已泄露）仍然有效
+	new_setup_token || true
+	log "已重置，并已换发启动令牌。"
+	cmd_setup_url
+}
+
+## endregion
+
+## region: restart
+
+cmd_restart() {
+	require_root
+	systemctl restart "$SERVICE"
+	log "已重启 ${SERVICE}（DSH 子进程将自动重启并重新兑换会话）"
+}
+
+## endregion
+
+## region: ownshost
+
+# 公网域名下 DSH 前端按 location.hostname 判定 connection.isLoopback=false，
+# 设置镜像随即退化为 memory 持久化，设置页报"设置在此浏览器中不可用"，
+# 填 Key、改权限全部废掉。官方预留的 __DSH_TRANSPORT__.ownsHost 声明可解除
+# 该判定（dsh-client-connection: isLoopback = transport?.ownsHost === true || ...）。
+#
+# 早先走的是 gate 代理改写 HTML，已经证明太脆：压缩响应、304、超大 body
+# 任意一个条件不满足就静默失效，且外部完全看不出来。改为直接写前端静态文件：
+# dsh-host-frontend-static 对每个 index 响应都 readFile(dist/index.html)，
+# 改完即刻生效，不依赖代理、不怕缓存、不怕压缩。
+ownshost_index() { echo "$ROOT/dsh/current/node_modules/@deepseek-ai/dsh-web-frontend/dist/index.html"; }
+
+ownshost_apply() { # $1=on|off；stdout: patched / present / off
+	local mode="${1:-on}"
+	local idx
+	idx=$(ownshost_index)
+	if [[ ! -f "$idx" ]]; then
+		warn "未找到前端 index.html（${idx}），跳过 ownsHost 补丁"
+		return 1
+	fi
+	local tmp rc=0
+	tmp=$(mktemp "${TMPDIR:-/tmp}/dshvps-ownshost.XXXXXX.cjs")
+	cat >"$tmp" <<'NODE'
+const fs = require("fs");
+const [file, mode] = process.argv.slice(2);
+const MARK = "dsh-vps:ownshost";
+const SNIPPET =
+	'<script data-dsh-vps="ownshost">/* ' + MARK +
+	" */window.__DSH_TRANSPORT__=Object.assign(window.__DSH_TRANSPORT__||{},{ownsHost:true});</script>";
+// 升级提示条：同源脚本，由 gate 提供（/gate/ui.js）
+const UI_MARK = "dsh-vps:ui";
+const UI_SNIPPET = '<script data-dsh-vps="' + UI_MARK + '" src="/gate/ui.js" defer></script>';
+// 添加到手机桌面：iPhone 用的 PNG 图标与桌面上的名字（与 gate/server.js 的 HOME_SCREEN_TAGS 一致）
+const ICON_MARK = "dsh-vps:icon";
+const ICON_SNIPPET =
+	'<link rel="apple-touch-icon" href="/gate/apple-touch-icon.png" data-dsh-vps="' + ICON_MARK + '">' +
+	'<meta name="apple-mobile-web-app-title" content="DSH">' +
+	'<meta name="apple-mobile-web-app-capable" content="yes">' +
+	'<meta name="mobile-web-app-capable" content="yes">';
+let s = fs.readFileSync(file, "utf8");
+const orig = file + ".orig";
+if (mode === "off") {
+	if (fs.existsSync(orig)) fs.copyFileSync(orig, file);
+	else fs.writeFileSync(file, s.split("\n").filter((l) => !l.includes(MARK) && !l.includes(UI_MARK) && !l.includes(ICON_MARK)).join("\n"));
+	console.log("off");
+	process.exit(0);
+}
+const missing = [];
+if (!s.includes(MARK)) missing.push(SNIPPET);
+if (!s.includes(UI_MARK)) missing.push(UI_SNIPPET);
+if (!s.includes(ICON_MARK)) missing.push(ICON_SNIPPET);
+if (missing.length === 0) {
+	console.log("present");
+	process.exit(0);
+}
+if (!fs.existsSync(orig)) fs.copyFileSync(file, orig);
+const m = s.match(/<head(?:\s[^>]*)?>/i);
+if (m === null) {
+	console.error("no <head> found in " + file);
+	process.exit(1);
+}
+const at = m.index + m[0].length;
+fs.writeFileSync(file, s.slice(0, at) + missing.map((x) => "\n    " + x).join("") + s.slice(at));
+console.log("patched");
+NODE
+	node "$tmp" "$idx" "$mode" || rc=$?
+	rm -f "$tmp"
+	return $rc
+}
+
+cmd_ownshost() {
+	local mode="${1:-status}"
+	local idx
+	idx=$(ownshost_index)
+	case "$mode" in
+	on)
+		require_root
+		local out
+		out=$(ownshost_apply on) || { warn "ownsHost 补丁失败（见上方错误）"; return 1; }
+		if [[ "$out" == "patched" ]]; then
+			log "已写入 ownsHost 声明（原件备份为 index.html.orig）"
+			log "无需重启：DSH 每次响应都重新读取该文件。浏览器硬刷新一次即可。"
+		else
+			log "ownsHost 声明已存在，无需重复写入"
+		fi
+		;;
+	off)
+		require_root
+		ownshost_apply off >/dev/null || { warn "撤销失败"; return 1; }
+		log "已撤销 ownsHost 声明（设置页回到官方默认的不可用状态）"
+		;;
+	status)
+		if [[ ! -f "$idx" ]]; then
+			echo "  ownsHost 补丁: 未找到 $idx"
+			return 1
+		fi
+		if DSH_VPS_IDX="$idx" node -e 'process.exit(require("fs").readFileSync(process.env.DSH_VPS_IDX,"utf8").includes("dsh-vps:ownshost")?0:1)'; then
+			echo "  ownsHost 补丁: 已生效"
+		else
+			echo "  ownsHost 补丁: 未生效 → sudo dsh-vps ownshost on"
+		fi
+		;;
+	*) die "用法: dsh-vps ownshost [on|off|status]" ;;
+	esac
+}
+
+## endregion
+
+## region: 仅我可访问
+
+# 两种办法，目标一致：让公网访问不到登录页。
+#
+#   1) vpn    WireGuard 自建隧道。给每台设备发一个我们分配的隧道地址（10.7.0.x），
+#             服务端只放行这个网段。出口 IP 怎么变都不影响——它根本不参与判断。
+#   2) tunnel SSH 本地端口转发。零安装，适合只在电脑上用的场景。
+#
+# 不做公网出口 IP 白名单：出口 IP 不是身份，换网络 / 宽带重拨就变，会把使用者
+# 自己关在门外。隧道地址由我们分配，永不变化。
+#
+# 分离隧道：不开 ip_forward、不做 NAT。这台机器只提供 DSH 访问通道，不是全流量 VPN。
+
+VPN_IF="wg0"
+VPN_SUBNET_DEFAULT="10.7.0.0/24"
+VPN_PORT_DEFAULT=51820
+VPN_DIR="$ROOT/state/vpn"     # 服务端密钥 + 每台设备的记录与客户端配置
+VPN_ENV="$ROOT/state/vpn.env" # DSHVPS_VPN=on|off / DSHVPS_VPN_SUBNET
+WG_DIR="/etc/wireguard"
+WG_CONF="$WG_DIR/$VPN_IF.conf"
+
+vpn_env() { # 输出 on|off
+	if [[ -f "$VPN_ENV" ]] && grep -qx 'DSHVPS_VPN=on' "$VPN_ENV"; then
+		printf 'on'
+	else
+		printf 'off'
+	fi
+}
+
+vpn_subnet() {
+	local s=""
+	[[ -f "$VPN_ENV" ]] && s=$(sed -n 's/^DSHVPS_VPN_SUBNET=//p' "$VPN_ENV" | head -1)
+	printf '%s' "${s:-$VPN_SUBNET_DEFAULT}"
+}
+
+vpn_listen_port() {
+	local p=""
+	[[ -f "$WG_CONF" ]] && p=$(sed -n 's/^[[:space:]]*ListenPort[[:space:]]*=[[:space:]]*//p' "$WG_CONF" | head -1)
+	printf '%s' "${p:-$VPN_PORT_DEFAULT}"
+}
+
+# state/ 属主通常是 dsh（gate 运行身份）。vpn.env 由 root 写入后要交还属主，
+# 否则向导改域名时 gate 读不到，隧道策略会被静默丢掉。
+vpn_state_owner() { stat -c %U "$ROOT/state" 2>/dev/null || echo dsh; }
+
+vpn_set_mode() { # $1=on|off
+	local mode="$1" owner
+	owner=$(vpn_state_owner)
+	mkdir -p "$ROOT/state"
+	printf 'DSHVPS_VPN=%s\nDSHVPS_VPN_SUBNET=%s\n' "$mode" "$(vpn_subnet)" >"$VPN_ENV"
+	chown "$owner" "$VPN_ENV" 2>/dev/null || true
+	chmod 600 "$VPN_ENV"
+}
+
+site_block_js() {
+	if [[ ! -f "$ROOT/gate/site-block.js" ]]; then
+		log "缺少 gate/site-block.js，拉取一份..."
+		curl -fsSL --max-time 30 "$RAW_BASE/gate/site-block.js" -o "$ROOT/gate/site-block.js" \
+			|| die "拉取失败（离线？可稍后运行: sudo dsh-vps update-gate）"
+		chmod 644 "$ROOT/gate/site-block.js"
+	fi
+	printf '%s' "$ROOT/gate/site-block.js"
+}
+
+# 重写 Caddy 站点块并热加载。root 运行，直接 systemctl reload，不必绕 admin API。
+vpn_apply_site() {
+	require_root
+	local host js
+	host=$(current_host)
+	[[ -n "$host" ]] || die "无法确定站点地址（$ROOT/state/gate.env 缺失）"
+	js=$(site_block_js)
+	node "$js" "$host" "$ROOT" "$GATE_PORT" >/etc/caddy/dsh-site.conf || die "生成站点块失败"
+	chown "$(vpn_state_owner)":caddy /etc/caddy/dsh-site.conf 2>/dev/null || true
+	chmod 640 /etc/caddy/dsh-site.conf
+	systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy >/dev/null 2>&1 || true
+}
+
+vpn_endpoint_host() { # 客户端 Endpoint 用的主机名：域名优先，其次公网 IP
+	local h
+	h=$(current_host)
+	if [[ -z "$h" ]]; then
+		h=$(curl -4 -fsSL --max-time 5 https://api.ipify.org 2>/dev/null | tr -d '[:space:]' || true)
+	fi
+	[[ -n "$h" ]] || h=$(hostname -I 2>/dev/null | awk '{print $1}')
+	printf '%s' "$h"
+}
+
+vpn_next_ip() { # 输出下一个未占用的隧道地址（如 10.7.0.2）
+	local subnet prefix last=1 f addr oct
+	subnet=$(vpn_subnet)
+	prefix="${subnet%.*}."
+	for f in "$VPN_DIR"/peers/*.env; do
+		[[ -f "$f" ]] || continue
+		addr=$(sed -n 's/^ADDRESS=//p' "$f" | head -1)
+		addr=${addr%/*}
+		oct=${addr##*.}
+		if [[ "$oct" =~ ^[0-9]+$ ]] && ((oct > last)); then last=$oct; fi
+	done
+	printf '%s%s' "$prefix" "$((last + 1))"
+}
+
+# 增量同步给内核，不重启接口（重启会掐掉已连着的设备）
+vpn_wg_syncconf() {
+	wg syncconf "$VPN_IF" <(wg-quick strip "$WG_CONF") \
+		|| die "同步隧道配置失败（wg syncconf）；可尝试 systemctl restart wg-quick@$VPN_IF"
+}
+
+vpn_conf_drop_peer() { # $1=名字：按注释标记整段移除 [Peer]
+	local tmp
+	tmp=$(mktemp "${TMPDIR:-/tmp}/dshvps-wg.XXXXXX")
+	awk -v want="# dsh-vps peer: $1" '
+		/^\[/ { flush() }
+		{ buf[++n] = $0 }
+		END { flush() }
+		function flush(   i, keep) {
+			if (n == 0) return
+			keep = 1
+			for (i = 1; i <= n; i++) if (index(buf[i], want) > 0) keep = 0
+			if (keep) for (i = 1; i <= n; i++) print buf[i]
+			n = 0
+		}
+	' "$WG_CONF" >"$tmp"
+	mv "$tmp" "$WG_CONF"
+	chmod 600 "$WG_CONF"
+}
+
+vpn_peer_conf() { # $1=名字 $2=地址 $3=客户端私钥 $4=服务端公钥
+	local subnet
+	subnet=$(vpn_subnet)
+	cat <<EOF
+# dsh-vps 客户端配置 · $1
+# 分离隧道：只有访问 $subnet 会走这台 VPS，其余流量照常走本地网络。
+[Interface]
+PrivateKey = $3
+Address = $2/32
+
+[Peer]
+PublicKey = $4
+Endpoint = $(vpn_endpoint_host):$(vpn_listen_port)
+AllowedIPs = $subnet
+PersistentKeepalive = 25
+EOF
+}
+
+vpn_show_conf() { # $1=名字 $2=配置文件路径
+	local conf="$2"
+	echo
+	echo "------------------------------------------------------------"
+	echo " 设备 $1 的客户端配置（同时保存在 ${conf}）"
+	echo "------------------------------------------------------------"
+	cat "$conf"
+	echo "------------------------------------------------------------"
+	if command -v qrencode >/dev/null 2>&1; then
+		echo " 手机 WireGuard App 扫码导入："
+		qrencode -t ansiutf8 -r "$conf"
+	else
+		warn "未装 qrencode，想扫码导入可：apt-get install -y qrencode"
+	fi
+}
+
+cmd_vpn_add() {
+	require_root
+	local name="${1:-}"
+	[[ -n "$name" ]] || die "用法: sudo dsh-vps vpn add <设备名>   例：sudo dsh-vps vpn add macbook"
+	[[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]] || die "设备名只能用字母、数字、-、_：$name"
+	[[ -d "$VPN_DIR" ]] || die "尚未初始化隧道：sudo dsh-vps vpn setup"
+	[[ -f "$VPN_DIR/peers/$name.env" ]] && die "设备已存在：${name}（先 sudo dsh-vps vpn revoke ${name}）"
+
+	local srv_pub ip priv pub
+	srv_pub=$(tr -d '[:space:]' <"$VPN_DIR/server.pub")
+	ip=$(vpn_next_ip)
+	mkdir -p "$VPN_DIR/peers"
+	chmod 700 "$VPN_DIR" "$VPN_DIR/peers"
+	priv=$(wg genkey)
+	pub=$(printf '%s' "$priv" | wg pubkey)
+
+	printf 'ADDRESS=%s/32\nPUBLIC_KEY=%s\nCREATED_AT=%s\n' \
+		"$ip" "$pub" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$VPN_DIR/peers/$name.env"
+	chmod 600 "$VPN_DIR/peers/$name.env"
+
+	# 名字标记写在 [Peer] 之后：吊销时按「从上一个 [ 到下一个 [ 之前」整段删除，
+	# 标记若在 [Peer] 之前会被算进上一段，删错对象。
+	printf '\n[Peer]\n# dsh-vps peer: %s\nPublicKey = %s\nAllowedIPs = %s/32\n' \
+		"$name" "$pub" "$ip" >>"$WG_CONF"
+	vpn_wg_syncconf
+
+	local conf="$VPN_DIR/peers/$name.conf"
+	vpn_peer_conf "$name" "$ip" "$priv" "$srv_pub" >"$conf"
+	chmod 600 "$conf"
+	vpn_show_conf "$name" "$conf"
+	log "隧道地址 ${ip}（含私钥，$conf 权限 600；丢了就 revoke 后重新签发）"
+}
+
+cmd_vpn_revoke() {
+	require_root
+	local name="${1:-}"
+	[[ -n "$name" ]] || die "用法: sudo dsh-vps vpn revoke <设备名>"
+	[[ -f "$VPN_DIR/peers/$name.env" ]] || die "没有这台设备：$name"
+	vpn_conf_drop_peer "$name"
+	rm -f "$VPN_DIR/peers/$name.env" "$VPN_DIR/peers/$name.conf"
+	vpn_wg_syncconf
+	log "已吊销 ${name}（它的隧道立即失效）"
+}
+
+cmd_vpn_list() {
+	# 中文标题按字节算宽度，用 %-Ns 对齐反而错位，交给制表符
+	printf '  设备\t隧道地址\t最近握手\n'
+	local found=0 handshakes="" f
+	if command -v wg >/dev/null 2>&1; then
+		handshakes=$(wg show "$VPN_IF" latest-handshakes 2>/dev/null || true)
+	fi
+	for f in "$VPN_DIR"/peers/*.env; do
+		[[ -f "$f" ]] || continue
+		found=1
+		local name addr pub hs when="从未"
+		name=$(basename "$f" .env)
+		addr=$(sed -n 's/^ADDRESS=//p' "$f" | head -1)
+		pub=$(sed -n 's/^PUBLIC_KEY=//p' "$f" | head -1)
+		hs=$(printf '%s\n' "$handshakes" | awk -v k="$pub" '$1==k {print $2; exit}')
+		if [[ -n "$hs" && "$hs" != "0" ]]; then
+			when=$(date -d "@$hs" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "$hs")
+		fi
+		printf '  %s\t%s\t%s\n' "$name" "$addr" "$when"
+	done
+	[[ $found -eq 1 ]] || echo "  （还没有签发设备：sudo dsh-vps vpn add <名字>）"
+}
+
+cmd_vpn_status() {
+	echo "== 访问策略 =="
+	if [[ "$(vpn_env)" == "on" ]]; then
+		echo "  仅隧道可访问：Caddy 只放行 $(vpn_subnet)，其他来源直接断连"
+	else
+		echo "  公网可访问：任何来源都能打开登录页（凭用户名密码）"
+	fi
+	echo
+	echo "== 隧道接口 =="
+	if [[ -d "/sys/class/net/$VPN_IF" ]]; then
+		echo "  $VPN_IF 已启用（监听 UDP $(vpn_listen_port)）"
+		wg show "$VPN_IF" 2>/dev/null | sed 's/^/  /'
+	else
+		echo "  $VPN_IF 未启用（sudo dsh-vps vpn setup）"
+	fi
+	echo
+	echo "== 已签发设备 =="
+	cmd_vpn_list
+}
+
+cmd_vpn_mode() {
+	local mode="${1:-}"
+	[[ "$mode" == "on" || "$mode" == "off" ]] || die "用法: sudo dsh-vps vpn on|off"
+	require_root
+	if [[ "$mode" == "on" && ! -f "$WG_CONF" ]]; then
+		die "隧道还没建：sudo dsh-vps vpn setup"
+	fi
+	vpn_set_mode "$mode"
+	vpn_apply_site
+	if [[ "$mode" == "on" ]]; then
+		log "已切为「仅隧道可访问」：公网打不开登录页，隧道里的设备照常访问"
+	else
+		log "已切为「公网可访问」：隧道还能继续用，只是不再强制"
+	fi
+}
+
+cmd_vpn_setup() {
+	require_root
+	local name="${1:-device1}"
+	local subnet port addr srv_pub
+	subnet=$(vpn_subnet)
+	port=$VPN_PORT_DEFAULT
+
+	if ! command -v wg >/dev/null 2>&1; then
+		log "安装 WireGuard..."
+		apt-get update -y >/dev/null
+		apt-get install -y wireguard >/dev/null || die "WireGuard 安装失败"
+	fi
+
+	mkdir -p "$VPN_DIR/peers"
+	chmod 700 "$VPN_DIR" "$VPN_DIR/peers"
+
+	# 服务端密钥只生成一次：重跑 setup 不换密钥，已签发的设备不受影响
+	if [[ ! -f "$VPN_DIR/server.key" ]]; then
+		(umask 077 && wg genkey >"$VPN_DIR/server.key")
+		chmod 600 "$VPN_DIR/server.key"
+	fi
+	wg pubkey <"$VPN_DIR/server.key" >"$VPN_DIR/server.pub"
+	srv_pub=$(tr -d '[:space:]' <"$VPN_DIR/server.pub")
+
+	addr="${subnet%.*}.1"
+	if [[ ! -f "$WG_CONF" ]]; then
+		mkdir -p "$WG_DIR"
+		chmod 700 "$WG_DIR"
+		cat >"$WG_CONF" <<EOF
+# dsh-vps 隧道接口：给这台机器上的 DSH 开一条私有通道。
+# 分离隧道——不开 IP 转发、不做 NAT。它不是全流量 VPN，只服务 DSH。
+[Interface]
+Address = $addr/24
+ListenPort = $port
+PrivateKey = $(tr -d '[:space:]' <"$VPN_DIR/server.key")
+SaveConfig = false
+EOF
+		chmod 600 "$WG_CONF"
+	elif ! grep -q "dsh-vps" "$WG_CONF"; then
+		# 不接管别人的 wg0：往里追加设备会改掉你原有的隧道，卸载时也分不清该不该删
+		die "${WG_CONF} 已存在且不是 dsh-vps 创建的（你自己的 WireGuard？）。为避免改动它，本命令已停止。"
+	else
+		log "已有 ${WG_CONF}，保留接口与已签发的设备"
+	fi
+
+	systemctl enable --now "wg-quick@$VPN_IF" >/dev/null 2>&1 \
+		|| die "启动 wg-quick@$VPN_IF 失败：journalctl -u wg-quick@$VPN_IF -n 50"
+
+	if command -v ufw >/dev/null 2>&1; then
+		ufw allow "$port"/udp >/dev/null && log "ufw 已放行 $port/udp"
+	fi
+
+	vpn_set_mode on
+	vpn_apply_site
+	log "已切为「仅隧道可访问」：公网访问登录页会直接断连"
+
+	cmd_vpn_add "$name"
+
+	echo
+	echo "============================================================"
+	echo " 隧道已就绪"
+	echo "------------------------------------------------------------"
+	echo " 服务端隧道地址 : ${addr}（网段 ${subnet}）"
+	echo " 监听           : UDP $port"
+	echo "------------------------------------------------------------"
+	echo " 1. 云厂商安全组放行 UDP ${port}（多数连不上都是卡在这一步）"
+	echo " 2. 设备装 WireGuard 官方 App，导入上面这份配置"
+	echo " 3. 连上后访问 https://$(vpn_endpoint_host)"
+	echo "------------------------------------------------------------"
+	echo " 隧道连不上或设备丢了？SSH 登录后：sudo dsh-vps vpn off"
+	echo " （公网立即恢复，隧道配置原样保留，修好再 vpn on）"
+	echo " 临时访问不想装东西：sudo dsh-vps tunnel（SSH 本地转发）"
+	echo "============================================================"
+}
+
+cmd_vpn() {
+	local sub="${1:-status}"
+	shift || true
+	case "$sub" in
+	setup) cmd_vpn_setup "$@" ;;
+	add) cmd_vpn_add "$@" ;;
+	revoke) cmd_vpn_revoke "$@" ;;
+	list) cmd_vpn_list "$@" ;;
+	status) cmd_vpn_status "$@" ;;
+	on) cmd_vpn_mode on ;;
+	off) cmd_vpn_mode off ;;
+	-h | --help) cmd_vpn_help ;;
+	*) cmd_vpn_help; die "未知动作: $sub" ;;
+	esac
+}
+
+cmd_vpn_help() {
+	cat <<'EOF'
+用法: sudo dsh-vps vpn <动作>
+  setup [名字]   安装 WireGuard、建隧道、签发第一台设备，并切到「仅隧道可访问」
+  add <名字>     再签发一台设备（打印配置与二维码）
+  revoke <名字>  吊销设备，立即失效
+  list           列出设备与最近握手时间
+  status         访问策略 + 隧道状态 + 设备
+  on | off       切换「仅隧道可访问」/「公网可访问」
+EOF
+}
+
+cmd_tunnel() {
+	local host
+	host=$(vpn_endpoint_host)
+	cat <<EOF
+零安装方案：SSH 本地端口转发。不装任何东西，效果同样是「只有你能访问 DSH」。
+
+  1. 本机开一个窗口执行（关掉窗口隧道就没了）：
+       ssh -N -L $GATE_PORT:127.0.0.1:$GATE_PORT root@$host
+
+  2. 浏览器打开：
+       http://127.0.0.1:$GATE_PORT
+
+写进 ~/.ssh/config 之后一条命令：
+
+  Host dsh
+    HostName $host
+    User root
+    LocalForward $GATE_PORT 127.0.0.1:$GATE_PORT
+    ServerAliveInterval 30
+
+之后只要：ssh -N dsh
+
+说明：
+  · 只把本机 $GATE_PORT 转发到服务器上同样的端口；断开即失效
+  · 公网那扇门仍然开着（要彻底关上用 sudo dsh-vps vpn setup）
+  · 手机用不了这种方式，要常连就用 WireGuard 隧道
+EOF
+}
+
+## endregion
+
+## region: 浏览器一键升级
+
+# 页面上点「立即升级」→ gate（dsh 用户，无特权）只写 state/upgrade.request →
+# systemd path 单元看到文件 → 以 root 跑 dsh-vps upgrade-run。网页拿不到 root，
+# 能触发的只有这一条固定命令：升级到 npm 官方 latest（备份 → 自检 → 失败自动回滚）。
+UPGRADE_REQUEST="$ROOT/state/upgrade.request"
+UPGRADE_STATUS="$ROOT/state/upgrade.status.json"
+UPGRADE_LOG="$ROOT/state/upgrade.log"
+
+cmd_install_units() {
+	require_root
+	cat >/etc/systemd/system/dsh-vps-upgrade.path <<UNIT
+# dsh-vps：监听浏览器发起的 DSH 升级请求（由 dsh-vps install-units 生成）
+[Unit]
+Description=dsh-vps: watch for browser-initiated DSH upgrade requests
+
+[Path]
+PathExists=$UPGRADE_REQUEST
+Unit=dsh-vps-upgrade.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	cat >/etc/systemd/system/dsh-vps-upgrade.service <<UNIT
+# dsh-vps：执行浏览器发起的 DSH 升级（由 dsh-vps install-units 生成）
+[Unit]
+Description=dsh-vps: run a DSH upgrade requested from the browser
+
+[Service]
+Type=oneshot
+ExecStart=$ROOT/bin/dsh-vps upgrade-run
+TimeoutStartSec=30min
+UNIT
+	systemctl daemon-reload
+	systemctl enable --now dsh-vps-upgrade.path >/dev/null 2>&1 || die "启用 dsh-vps-upgrade.path 失败"
+	log "浏览器一键升级已启用（dsh-vps-upgrade.path）"
+}
+
+write_upgrade_status() { # $1=state $2=from $3=to
+	local owner
+	owner=$(stat -c %U "$ROOT/state" 2>/dev/null || echo dsh)
+	printf '{"state":"%s","from":"%s","to":"%s","at":%s}\n' "$1" "$2" "$3" "$(date +%s)000" >"$UPGRADE_STATUS"
+	chown "$owner" "$UPGRADE_STATUS" 2>/dev/null || true
+	chmod 600 "$UPGRADE_STATUS"
+}
+
+cmd_upgrade_run() {
+	require_root
+	# 先删请求文件：path 单元在文件仍存在时会再次触发
+	[[ -f "$UPGRADE_REQUEST" ]] || exit 0
+	rm -f "$UPGRADE_REQUEST"
+	local from to rc=0 owner
+	from=$(current_version)
+	write_upgrade_status running "$from" ""
+	owner=$(stat -c %U "$ROOT/state" 2>/dev/null || echo dsh)
+	: >"$UPGRADE_LOG"
+	chown "$owner" "$UPGRADE_LOG" 2>/dev/null || true
+	chmod 600 "$UPGRADE_LOG"
+	# 独立进程执行：写在 `|| rc=$?` 里的函数/子 shell 会让 set -e 失效，出错也不停
+	"$ROOT/bin/dsh-vps" upgrade --latest --yes >>"$UPGRADE_LOG" 2>&1 || rc=$?
+	[[ $rc -eq 0 ]] || printf '[dsh-vps] 升级进程退出码 %s（原因见上一行）\n' "$rc" >>"$UPGRADE_LOG"
+	to=$(current_version)
+	if [[ $rc -eq 0 ]]; then
+		write_upgrade_status success "$from" "$to"
+	else
+		write_upgrade_status failed "$from" "$to"
+	fi
+}
+
+## endregion
+
+usage() {
+	cat <<'EOF'
+dsh-vps 管理命令
+用法: sudo dsh-vps <子命令>
+  status              服务状态 + 健康 + 版本提示
+  restart             重启 gate（DSH 随之重启并重新兑换会话）
+  upgrade [version]   升级 DSH 版本；--latest [--yes] 强上 npm 最新版
+  update-gate         更新 gate 自身代码（gate/server.js）并重启
+  ownshost [on|off|status]  设置页可用性补丁（公网域名下解除"设置不可用"）
+  rollback            切回上一 DSH 版本（秒级，不依赖网络）
+  reset-admin [--yes] 删除管理员与向导锁，重新走初始设置（换发令牌）
+  setup-url          打印初始设置链接（含一次性令牌）
+  backup              备份数据到 /opt/dsh-vps/backups/（保留 3 份）
+  selfcheck           手动触发回归自检探针
+EOF
+}
+
+case "${1:-}" in
+status) cmd_status ;;
+restart) cmd_restart ;;
+upgrade) shift; cmd_upgrade "$@" ;;
+update-gate) cmd_update_gate ;;
+ownshost) shift; cmd_ownshost "$@" ;;
+rollback) cmd_rollback ;;
+reset-admin) shift; cmd_reset_admin "$@" ;;
+setup-url) cmd_setup_url ;;
+backup) cmd_backup ;;
+selfcheck) cmd_selfcheck ;;
+install-units) cmd_install_units ;;
+upgrade-run) cmd_upgrade_run ;;
+vpn) shift; cmd_vpn "$@" ;;
+tunnel) cmd_tunnel ;;
+"" | -h | --help) usage ;;
+*) usage; die "未知子命令: $1" ;;
+esac
