@@ -134,7 +134,7 @@ window.__ModuleLoader__.load({
         })
       } catch (error) {
         if (error?.name === 'TimeoutError') throw new Error(L(`等了 ${Math.round(timeoutMs / 1000)} 秒没有回应：可以再试一次，或刷新页面`, `No response after ${Math.round(timeoutMs / 1000)} seconds: try again, or reload the page`))
-        throw new Error(L('连不上 DSH：看看 DSH 还开着吗，或刷新页面', 'Cannot reach DSH: check that DSH is still running, or reload the page'))
+        throw new Error(L('连不上 vpssh：刷新页面再试', 'Cannot reach vpssh: reload the page'))
       }
       let data = null
       try {
@@ -150,7 +150,7 @@ window.__ModuleLoader__.load({
         if (/token/i.test(message)) {
           // 先自己换新令牌再试一次，用户什么都不用做；换不到才请他刷新
           if (!retried && (await refreshToken())) return api(path, body, { timeoutMs, retried: true })
-          throw new Error(L('令牌对不上了（DSH 重启过或页面开太久）：刷新页面再试', 'Token mismatch (DSH restarted, or the page has been open a long time): reload the page and try again'))
+          throw new Error(L('令牌对不上了（vpssh 重启过或页面开太久）：刷新页面再试', 'Token mismatch (vpssh restarted, or the page has been open a long time): reload the page and try again'))
         }
         throw new Error(message)
       }
@@ -963,7 +963,7 @@ window.__ModuleLoader__.load({
             passwordInput,
             h('div', { style: hint }, L('只用这一次，不保存', 'Used once, not stored')))),
 
-        section(L('在 DSH 里怎么称呼它（选填）', 'What to call it in DSH (optional)')),
+        section(L('在 vpssh 里怎么称呼它（选填）', 'What to call it in vpssh (optional)')),
         h('div', { style: grid2 },
           h('div', null,
             h('label', { style: S.label }, L('别名', 'Alias')),
@@ -1052,29 +1052,6 @@ window.__ModuleLoader__.load({
       if (id === 'key') return pv.present.key
       if (id === 'data') return pv.present.data
       return true
-    }
-
-    // —— 姊妹产品 vpssh：把 DSH 装进 VPS，手机、平板用浏览器就能用。最多两行 ——
-    const SISTER_URL = 'https://github.com/AIcivilization/vpssh'
-    function SisterCard({ installed }) {
-      const link = h('a', { href: SISTER_URL, target: '_blank', rel: 'noreferrer', style: { color: T.accent, fontWeight: 500 } }, 'GitHub：vpssh ↗')
-      return h('div', { style: { ...S.card, display: 'flex', gap: 12, alignItems: 'flex-start' } },
-        // 手机 + 平板的小图
-        h('span', { 'aria-hidden': 'true', style: { flex: '0 0 auto', width: 30, height: 30, borderRadius: 8, background: T.layer, color: T.accent, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', marginTop: 1 } },
-          h('svg', { width: 17, height: 17, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round' },
-            h('rect', { x: 2, y: 4, width: 13, height: 16, rx: 2 }), h('rect', { x: 15.5, y: 9, width: 6.5, height: 11, rx: 1.5 }), h('path', { d: 'M7.5 17h2' }))),
-        h('div', { style: { minWidth: 0, flex: 1, lineHeight: 1.65 } },
-          h('div', null,
-            h('span', { style: { fontWeight: 600 } }, L('在手机、平板上也用 DSH', 'Use DSH on your phone or tablet too')),
-            h('span', { style: S.muted }, installed
-              ? L(' · 你已经装了 vpssh', ' · you already have vpssh')
-              : L(' · 用 vpssh 把 DSH 装进你的 VPS，自带登录页和 HTTPS，打开浏览器就能用', ' · vpssh installs DSH on your VPS with a login page and HTTPS, so any browser can open it'))),
-          h('div', { style: { ...S.muted, fontSize: 12.5 } },
-            installed
-              ? L('在设置左侧「VPS 部署」里把 DSH 部署到服务器 · ', 'Deploy DSH to a server from "VPS Deploy" in the settings sidebar · ')
-              : null,
-            link,
-            installed ? null : L(' · 或在插件市场搜索「vpssh」', ' · or search for "vpssh" in the plugin market'))))
     }
 
     // —— 设置页里可折叠的卡片（「界面」「怎么用」）：默认收起，点标题行展开；开没开记在本机 ——
@@ -1542,7 +1519,6 @@ window.__ModuleLoader__.load({
             h('div', null, L('⑤ 传文件、改配置：终端面板标题栏切到「文件」——拖进来上传、右键下载、双击编辑、删了进回收站；右键「让 AI 看看这个文件」', '⑤ Move files and edit configs: switch the terminal panel\'s title bar to "Files" — drag in to upload, right-click to download, double-click to edit, deletes go to the trash; right-click "Let the AI look at this file"')),
             h('div', null, L('全部命令与用法：', 'Every command and how to use it: '), h('span', { style: S.mono }, '/vps-help')))),
 
-        h(SisterCard, { installed: d?.sister?.installed ?? null }),
 
         d?.paths ? h('div', { style: S.card },
           h('div', { style: S.h2 }, L('数据位置', 'Data location')),
@@ -1780,7 +1756,7 @@ window.__ModuleLoader__.load({
             if (list.length === 1) {
               await bind(list[0].alias)
               checkNow(sessionId, list[0].alias, true)
-            } else if (list.length === 0) setError(L('还没有机器：DSH 设置 → VPS 管理 → 添加', 'No machines yet: DSH Settings → VPS Manager → Add'))
+            } else if (list.length === 0) setError(L('还没有机器：设置 → VPS 管理 → 添加', 'No machines yet: Settings → VPS Manager → Add'))
             return
           }
           await switchMachine(sessionId, bind, alias === target.alias ? '' : target.alias)
@@ -1835,7 +1811,7 @@ window.__ModuleLoader__.load({
             checkNow(sessionId, list[0].alias, true)
             openTerminal(sessionId, list[0].alias)
           } else if (list.length === 0) {
-            setError(L('还没有机器：DSH 设置 → VPS 管理 → 添加', 'No machines yet: DSH Settings → VPS Manager → Add'))
+            setError(L('还没有机器：设置 → VPS 管理 → 添加', 'No machines yet: Settings → VPS Manager → Add'))
           } else {
             setError(L('先点后面的编号选一台机器，再打开终端', 'Pick a machine with one of the numbers first, then open the terminal'))
           }
@@ -4078,7 +4054,7 @@ window.__ModuleLoader__.load({
 
       if (!viewAlias) {
         return h('div', { style: { padding: 24, fontSize: 13, color: c.secondary, lineHeight: 1.7 } },
-          L('还没有机器：DSH 设置 → VPS 管理 → 添加机器', 'No machines yet: DSH Settings → VPS Manager → Add machine'))
+          L('还没有机器：设置 → VPS 管理 → 添加机器', 'No machines yet: Settings → VPS Manager → Add machine'))
       }
 
       const k = { track: c.segTrack, on: c.segOn, edge: c.edge, text: c.text, idle: c.secondary }
@@ -4222,10 +4198,10 @@ window.__ModuleLoader__.load({
           }
           if (data?.ok) resolve({ ok: true, ...data })
           else if (xhr.status === 405) resolve({ ok: false, error: L('当前运行的插件还没有上传功能：DSH 运行期间装的新版本要重启 DSH 才生效', 'The running plugin cannot upload yet: a version installed while DSH was running takes effect after DSH restarts') })
-          else if (/token/i.test(data?.error ?? '')) resolve({ ok: false, tokenStale: true, error: L('令牌对不上了（DSH 重启过）：刷新页面再试', 'Token mismatch (DSH restarted): reload the page and try again') })
+          else if (/token/i.test(data?.error ?? '')) resolve({ ok: false, tokenStale: true, error: L('令牌对不上了（vpssh 重启过）：刷新页面再试', 'Token mismatch (vpssh restarted): reload the page and try again') })
           else resolve({ ok: false, error: data?.error || L(`上传失败（HTTP ${xhr.status}）`, `Upload failed (HTTP ${xhr.status})`) })
         }
-        xhr.onerror = () => resolve({ ok: false, error: L('连不上 DSH，上传中断了', 'Cannot reach DSH; the upload was interrupted') })
+        xhr.onerror = () => resolve({ ok: false, error: L('连不上 vpssh，上传中断了', 'Cannot reach vpssh; the upload was interrupted') })
         xhr.onabort = () => resolve({ ok: false, error: L('已取消', 'Cancelled'), cancelled: true })
         xhr.send(file)
       })
@@ -5507,7 +5483,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, SisterCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })

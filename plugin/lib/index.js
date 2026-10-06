@@ -14,7 +14,7 @@ import { registerCommands } from './commands.js'
 import { loadBindingCache, repairSshSetup } from './config.js'
 import { markPart, noteDuplicate, pruneErrors, recordError, setForm } from './health.js'
 import { registerTools } from './tools.js'
-import { localShellGuard, registerVpsMode } from './vps-mode.js'
+import { localToolGuard, registerVpsMode } from './vps-mode.js'
 import { onLangChange } from './i18n.js'
 
 export const name = 'vpssh'
@@ -128,16 +128,16 @@ export function apply(ctx, config = {}) {
     .then((registered) => ok('tools', String(registered.length)))
     .catch((error) => fail('tools', '工具注册失败', error))
 
-  // VPS 模式：绑定期间拦下本机 bash
+  // 守卫：所有对话都拦下 DSH 自带的本机工具（vpssh 所在的服务器上有全部钥匙，见 vps-mode.js）
   try {
     if (typeof ctx.tools?.guard === 'function') {
-      ctx.tools.guard(localShellGuard)
+      ctx.tools.guard(localToolGuard)
       ok('guard')
     } else {
       markPart('guard', false, 'DSH 没有提供 tools.guard')
     }
   } catch (error) {
-    fail('guard', '本机 bash 守卫注册失败', error)
+    fail('guard', '本机工具守卫注册失败', error)
   }
 
   if (typeof ctx.inject !== 'function') return

@@ -2,9 +2,9 @@
 "use strict";
 
 /*
- * dsh-gate — DeepSeek Harness (DSH) VPS 部署的零依赖登录网关。
+ * vpssh 的零依赖登录网关：登录、初始向导，以子进程方式运行并代理 DeepSeek Harness（DSH）。
  *
- * 职责（详见 dsh-vps-architecture-design.md 第 3、4 节）：
+ * 职责（详见 vpssh-architecture-design.md 第 3、4 节）：
  *   1. 登录门：scrypt 口令 + HMAC 会话 Cookie + 登录限流
  *   2. 透明代理：Host 原样透传（域名已在 DSH --trusted-host 白名单），
  *      剥离客户端 dsh-auth-* Cookie，注入服务端持有的 DSH 会话 Cookie
@@ -22,7 +22,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
-// 站点块模板与 gate 同源管理：install.sh、bin/dsh-vps 也调用它，只此一份
+// 站点块模板与 gate 同源管理：install.sh、bin/vpssh 也调用它，只此一份
 const { caddySiteBlock, readVpnEnv } = require("./site-block.js");
 
 //#region 配置
@@ -40,7 +40,7 @@ let dshTrustedHost = process.env.DSH_TRUSTED_HOST || "";
 // 关掉浏览器即失效，服务端也最多认 1 天
 const SESSION_TTL_MS = Number(process.env.SESSION_TTL_DAYS || 30) * 86_400_000;
 const SESSION_SHORT_TTL_MS = 86_400_000;
-const SESSION_COOKIE = "dshvps_session";
+const SESSION_COOKIE = "vpssh_session";
 const DSH_COOKIE_PREFIX = "dsh-auth-";
 const CONNECT_TIMEOUT_MS = 10_000;
 const LOGIN_WINDOW_MS = 5 * 60_000;
@@ -48,22 +48,16 @@ const LOGIN_MAX_FAILURES = 5;
 const SETUP_WINDOW_MS = 10 * 60_000;
 const SETUP_MAX_FAILURES = 10;
 const CADDY_ADMIN = process.env.CADDY_ADMIN || "http://127.0.0.1:2019";
-const CADDY_SITE_FILE = process.env.CADDY_SITE_FILE || "/etc/caddy/dsh-site.conf";
+const CADDY_SITE_FILE = process.env.CADDY_SITE_FILE || "/etc/caddy/vpssh-site.conf";
 const DEEPSEEK_KEY_REF = "DEEPSEEK_API_KEY"; // DSH 约定：deriveKeyRef("deepseek")
-// /setup 向导可选的常用插件（package 名即 `dsh plugin --profile web add <pkg>` 的入参）
-const PLUGIN_OPTIONS = [
-	// required：本产品自己的设置页（版本与一键升级、网关状态、安装/卸载到 VPS），必装，向导里勾选且不可取消
-	{ id: "dsh-vps", pkg: "dsh-vps", name: "VPS 部署 dsh-vps（必装）", nameEn: "VPS Deploy dsh-vps (required)", desc: "本产品的设置页「设置 → VPS 部署」：DSH 版本与一键升级、网关状态，以及把 DSH 安装到 / 卸载出其他 VPS", descEn: "This project's settings page, Settings → VPS Deploy: DSH version and one-click upgrade, gateway status, and installing DSH on / removing it from other VPSs", required: true },
-	{ id: "dshmarket", pkg: "dshmarket", name: "插件市场 dsh-market", nameEn: "Plugin market dsh-market", desc: "设置页内浏览/搜索/一键安装社区插件与主题，之后想装什么都在这里装", descEn: "Browse, search and install community plugins and themes from Settings — install anything else from here later" },
-	{ id: "dsh-vps-manager", pkg: "dsh-vps-manager", name: "VPS 管理 dsh-vps-manager", nameEn: "VPS manager dsh-vps-manager", desc: "在 DSH 里直接管理这台 VPS：不花 token 的查询命令、对话内终端、按风险分级确认的 AI 操作、运维菜谱库", descEn: "Manage this VPS from inside DSH: token-free query commands, an in-conversation terminal, risk-graded AI operations and a recipe library" },
-];
+// vpssh 插件由 install.sh 装好，向导不再让用户挑插件（vpssh 默认不装别的插件）
 // pnpm 12 起默认带约 1 天的发布冷却期（minimumReleaseAge），`pnpm add <pkg>` 会装到一天前的旧版。
 // 插件作者修 bug 后用户就该拿到修复，这里关掉冷却期：预装与插件市场安装都取真正的最新版。
 const PLUGIN_ENV = { pnpm_config_minimum_release_age: "0" };
 // 本产品仓库入口：放在 gate 自己的页面（登录 / 初始向导 / 启动等待），
 // 不碰 DSH 原生界面，DSH 升级不受影响。
-const REPO_URL = "https://github.com/AIcivilization/dsh-vps";
-const REPO_LABEL = "AIcivilization/dsh-vps";
+const REPO_URL = "https://github.com/AIcivilization/vpssh";
+const REPO_LABEL = "AIcivilization/vpssh";
 // 内联 GitHub 图标，不依赖外部 CDN，离线也能显示
 const REPO_ICON =
 	'<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">' +
@@ -92,30 +86,30 @@ const SCRYPT_KEYLEN = 64;
 // gate 作为已认证的本地代理注入该声明，即可让设置页/填 Key/权限策略全部恢复。
 // 设 GATE_OWNS_HOST=0 可关闭注入（退回"设置页不可用"的官方默认行为）。
 const OWNS_HOST_INJECT = process.env.GATE_OWNS_HOST !== "0";
-// 与 bin/dsh-vps 的 ownshost 补丁共用同一标记：改前端静态文件是主机制，
+// 与 bin/vpssh 的 ownshost 补丁共用同一标记：改前端静态文件是主机制，
 // 这里的代理改写只是补丁缺失时的兜底，两者互相识别、绝不重复注入。
-const OWNS_HOST_MARK = "dsh-vps:ownshost";
+const OWNS_HOST_MARK = "vpssh:ownshost";
 const OWNS_HOST_SNIPPET =
-	`<script data-dsh-vps="ownshost">/* ${OWNS_HOST_MARK} */` +
+	`<script data-vpssh="ownshost">/* ${OWNS_HOST_MARK} */` +
 	"window.__DSH_TRANSPORT__=Object.assign(window.__DSH_TRANSPORT__||{},{ownsHost:true});</script>";
 let ownshostLogged = false;
-// 升级提示条：同源脚本 /gate/ui.js。bin/dsh-vps 的静态补丁同样写入它，两边共用同一标记。
-const UI_MARK = "dsh-vps:ui";
-const UI_SNIPPET = `<script data-dsh-vps="${UI_MARK}" src="/gate/ui.js" defer></script>`;
+// 升级提示条：同源脚本 /gate/ui.js。bin/vpssh 的静态补丁同样写入它，两边共用同一标记。
+const UI_MARK = "vpssh:ui";
+const UI_SNIPPET = `<script data-vpssh="${UI_MARK}" src="/gate/ui.js" defer></script>`;
 // 添加到手机桌面：iPhone 不认 manifest 里的 SVG 图标，要一张 PNG 的 apple-touch-icon；
 // 桌面上显示的名字用 DSH。登录页与 DSH 页面都带上（扫码后可能在登录前就添加）。
 // 图标（180×180 PNG，源文件 assets/apple-touch-icon.png）以 base64 内嵌在本文件末尾：
 // update-gate 只更新 server.js 也能带上图标，不多一个要下载的文件。
-const ICON_MARK = "dsh-vps:icon";
+const ICON_MARK = "vpssh:icon";
 const HOME_SCREEN_TAGS =
-	`<link rel="apple-touch-icon" href="/gate/apple-touch-icon.png" data-dsh-vps="${ICON_MARK}">` +
+	`<link rel="apple-touch-icon" href="/gate/apple-touch-icon.png" data-vpssh="${ICON_MARK}">` +
 	'<meta name="apple-mobile-web-app-title" content="DSH">' +
 	'<meta name="apple-mobile-web-app-capable" content="yes">' +
 	'<meta name="mobile-web-app-capable" content="yes">';
 
 
 // DSH 版本检测：跟随官方最新版（npm latest 与 next 渠道中较新的一个）。页面上确认后，gate 只写 state/upgrade.request，
-// 由 root 的 dsh-vps-upgrade.path/.service 执行升级（gate 自身无权改 /opt/dsh-vps/dsh）。
+// 由 root 的 vpssh-upgrade.path/.service 执行升级（gate 自身无权改 /opt/vpssh/dsh）。
 const DSH_PACKAGE = "@deepseek-ai/dsh";
 const UPDATE_CHECK_INTERVAL_MS = 6 * 3_600_000;
 // 冷静期：新版本发布满这么久才提示升级。上游多次出现「主包先发、子包几小时后才补齐」
@@ -123,29 +117,13 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 3_600_000;
 const UPGRADE_COOLDOWN_MS = Number(process.env.GATE_UPGRADE_COOLDOWN_HOURS || 12) * 3_600_000;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
-// DSH 的若干特权端点（dsh-market 的 restart / backup 导出 / self-uninstall）要求
+// DSH 的若干特权端点（备份导出等）要求
 // "直连回环"：只要出现 x-forwarded-for / x-real-ip / forwarded 任一头，
 // 就认定回环对端是代理而非用户本人并 403。gate 是本机可信代理，转发前剥掉这些头。
 // 设 GATE_STRIP_FORWARDING=0 可关闭剥离。
 const STRIP_FORWARDING = process.env.GATE_STRIP_FORWARDING !== "0";
 const FORWARDING_HEADERS = new Set(["forwarded", "x-forwarded-for", "x-real-ip"]);
 
-// dsh-market 的"立即重启"端点。gate 必须接管它：让 dsh-market 自己重启会
-// 在 gate 之外拉起一个新的 DSH 进程，抢占 3080 端口，gate 的子进程随后
-// EADDRINUSE 且再也抓不到 launchToken → 永久"会话尚未就绪"。
-const MARKET_RESTART_PATHS = new Set(["/dsh-market/restart", "/dsh-market/restart/"]);
-// dshmarket 1.64+ 的 v1 接口：内部直接调用上面那个旧端点（不经 HTTP），必须一起接管
-const MARKET_RESTART_V1_PATHS = new Set(["/dsh-market/api/v1/restart", "/dsh-market/api/v1/restart/"]);
-const MARKET_V1_SCHEMA = "dsh-market/update-api/v1";
-
-// dshmarket 的写操作（安装/更新/卸载/备份导出……）为防 DNS 重绑定，要求 Host 必须是回环地址，
-// Origin 必须与 Host 一致；经 gate 转发时 Host 是公网域名，于是一律 403 "untrusted origin"。
-// gate 已完成登录校验，这里替它做同样的同源检查（Origin 与公网 Host 一致、非跨站），
-// 通过后把 Host/Origin 改写成 DSH 的回环地址再转发。设 GATE_MARKET_LOOPBACK=0 可关闭。
-const MARKET_PREFIX = "/dsh-market/";
-const MARKET_LOOPBACK = process.env.GATE_MARKET_LOOPBACK !== "0";
-// 设 GATE_TAKEOVER_RESTART=0 则放行给 DSH 自己处理（会退回到上面那个坑，仅供对照排障）
-const TAKEOVER_RESTART = process.env.GATE_TAKEOVER_RESTART !== "0";
 
 // 逐跳头：代理时重建，不透传（请求侧 transfer-encoding 由 node 自动处理）
 const HOP_HEADERS = new Set([
@@ -251,7 +229,7 @@ function sendHtml(res, status, html, extraHeaders) {
 // 这些页面在进入 DSH 之前，读不到 DSH 的语言设置：先看 Cookie 里用户手动选过的语言，
 // 再看浏览器 Accept-Language（中文显示中文，其余英文）。页面右上角可手动切换。
 
-const LANG_COOKIE = "dshvps_lang";
+const LANG_COOKIE = "vpssh_lang";
 
 /** 本次请求用的语言：zh 或 en */
 function requestLang(req) {
@@ -500,7 +478,7 @@ function spawnDsh() {
 		const text = chunk.toString();
 		dsh.outputTail = (dsh.outputTail + text).slice(-2048);
 		if (looksLikePortConflict(text)) {
-			dsh.lastError = `${DSH_PORT} 端口被占用（残留或其他 DSH 进程），本进程无法监听：journal 见 EADDRINUSE。处理：sudo ss -ltnp | grep ${DSH_PORT} 查到 PID 后 kill，或 systemctl restart dsh-gate`;
+			dsh.lastError = `${DSH_PORT} 端口被占用（残留或其他 DSH 进程），本进程无法监听：journal 见 EADDRINUSE。处理：sudo ss -ltnp | grep ${DSH_PORT} 查到 PID 后 kill，或 systemctl restart vpssh`;
 			log(`dsh startup looks blocked: ${dsh.lastError}`);
 		}
 		scanBuf = scanForToken(scanBuf + text);
@@ -529,8 +507,8 @@ function spawnDsh() {
 				const delay = dsh.crashStreak > 1 ? Math.min(2000 * 2 ** (dsh.crashStreak - 1), 30_000) : 2000;
 				if (dsh.crashStreak >= 3) {
 					const errLine = (dsh.outputTail.match(/^\s*(?:[A-Za-z]*Error|error):.*$/gm) || []).pop();
-					if (errLine && !dsh.lastError) dsh.lastError = `DSH 连续 ${dsh.crashStreak} 次启动失败：${errLine.trim()}。详见 journalctl -u dsh-gate -n 100`;
-					dsh.lastError = dsh.lastError || `DSH 连续 ${dsh.crashStreak} 次快速退出（最近一次 code=${code} signal=${signal}，存活 ${uptimeMs}ms）。常见原因：3080 端口被占用、DSH_BIN 路径失效、DSH_HOME 权限问题。详见 journalctl -u dsh-gate -n 100`;
+					if (errLine && !dsh.lastError) dsh.lastError = `DSH 连续 ${dsh.crashStreak} 次启动失败：${errLine.trim()}。详见 journalctl -u vpssh -n 100`;
+					dsh.lastError = dsh.lastError || `DSH 连续 ${dsh.crashStreak} 次快速退出（最近一次 code=${code} signal=${signal}，存活 ${uptimeMs}ms）。常见原因：3080 端口被占用、DSH_BIN 路径失效、DSH_HOME 权限问题。详见 journalctl -u vpssh -n 100`;
 				}
 				setTimeout(spawnDsh, delay);
 			}
@@ -542,7 +520,7 @@ function spawnDsh() {
 async function spawnDshWithPreflight() {
 	const busy = await probePortBusy();
 	if (busy) {
-		dsh.lastError = `${DSH_HOST}:${DSH_PORT} 启动前已被占用：可能有残留的 DSH 进程（或 dsh-market 自行拉起的实例）。gate 只能从自己的子进程 stdout 捕获 launchToken，端口被别人占着就永远兑换不到会话。处理：sudo ss -ltnp | grep ${DSH_PORT} → kill 对应 PID，再 systemctl restart dsh-gate`;
+		dsh.lastError = `${DSH_HOST}:${DSH_PORT} 启动前已被占用：可能有残留的 DSH 进程。gate 只能从自己的子进程 stdout 捕获 launchToken，端口被别人占着就永远兑换不到会话。处理：sudo ss -ltnp | grep ${DSH_PORT} → kill 对应 PID，再 systemctl restart vpssh`;
 		log(dsh.lastError);
 	}
 	spawnDsh();
@@ -657,7 +635,7 @@ function loginPage({ error, notice, next, lang = "zh", req }) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>dsh-vps · ${L("登录", "Sign in")}</title>
+<title>vpssh · ${L("登录", "Sign in")}</title>
 ${HOME_SCREEN_TAGS}
 <style>
 :root{color-scheme:dark}
@@ -684,8 +662,8 @@ ${LANG_CSS}
 <body>
 ${req ? langSwitch(req, lang) : ""}
 <main>
-<h1>dsh-vps</h1>
-<p class="sub">${L("DeepSeek Harness 登录门", "DeepSeek Harness sign-in")}</p>
+<h1>vpssh</h1>
+<p class="sub">${L("全平台 AI 驱动的 VPS 管理及 SSH 工具", "AI-driven VPS management and SSH tool for every platform")}</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${notice ? `<p class="notice">${esc(notice)}</p>` : ""}
 <form method="post" action="/login">
@@ -740,7 +718,7 @@ async function handleLogin(req, res) {
 	const L = translator(lang);
 	if (req.method === "GET" || req.method === "HEAD") {
 		const next = safeNext(new URL(req.url, "http://x").searchParams.get("next"));
-		const notice = admin ? void 0 : L("尚未配置管理员：请先完成初始设置向导，或运行 `dsh-vps reset-admin`。", "No admin account yet: finish the setup wizard first, or run `dsh-vps reset-admin`.");
+		const notice = admin ? void 0 : L("尚未配置管理员：请先完成初始设置向导，或运行 `vpssh reset-admin`。", "No admin account yet: finish the setup wizard first, or run `vpssh reset-admin`.");
 		sendHtml(res, 200, loginPage({ notice, next, lang, req }));
 		return;
 	}
@@ -788,7 +766,7 @@ function handleLogout(req, res) {
 	res.end();
 }
 
-/** 直连回环的请求：dsh-vps CLI、install.sh 的健康检查都走这条路。 */
+/** 直连回环的请求：vpssh CLI、install.sh 的健康检查都走这条路。 */
 function isLoopbackRequest(req) {
 	const ip = req.socket.remoteAddress || "";
 	return ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1";
@@ -832,7 +810,7 @@ function handleHealth(req, res) {
 				trustedHost: dshTrustedHost,
 				port: DSH_PORT,
 			},
-			// 访问策略：public = 公网凭密码登录；tunnel = 仅 WireGuard 隧道网段可达（dsh-vps vpn）
+			// 访问策略：public = 公网凭密码登录；tunnel = 仅 WireGuard 隧道网段可达（vpssh vpn）
 			access: readVpnEnv(STATE_DIR).on ? "tunnel" : "public",
 			launchTokenCaptured: dsh.token !== null,
 			dshCookie: cookie
@@ -859,10 +837,10 @@ function sendDshNotReady(res, lang = "zh") {
 	sendHtml(
 		res,
 		503,
-		`<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><meta charset="utf-8"><title>503 ${L("DeepSeek Harness 启动中", "DeepSeek Harness is starting")}</title>
+		`<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><meta charset="utf-8"><title>503 ${L("vpssh 启动中", "vpssh is starting")}</title>
 <meta name="robots" content="noindex">
 <body style="background:#0b0e14;color:#dbe2ea;font:15px/1.7 system-ui,-apple-system,'Segoe UI',sans-serif;padding:40px;max-width:760px">
-<h2 style="margin:0 0 4px">${L("DeepSeek Harness 正在启动", "DeepSeek Harness is starting")}</h2>
+<h2 style="margin:0 0 4px">${L("vpssh 正在启动", "vpssh is starting")}</h2>
 <p style="color:#7d8a9c;margin:0 0 20px">${L("gate 还没拿到 DSH 会话；本页每 3 秒自动检查一次，就绪后会自动刷新。", "The gateway has no DSH session yet. This page checks every 3 seconds and reloads as soon as it is ready.")}</p>
 <table style="border-collapse:collapse;font-size:14px">
 <tr><td style="padding:3px 16px 3px 0;color:#9aa7b8">${L("DSH 子进程", "DSH process")}</td><td id="s-alive">${state.childAlive ? W.alive : W.dead}</td></tr>
@@ -871,7 +849,7 @@ function sendDshNotReady(res, lang = "zh") {
 </table>
 <p id="s-err" style="margin:16px 0 0;padding:10px 12px;border-radius:8px;background:#2a2112;color:#fbbf24;font-size:13px;${state.error ? "" : "display:none"}">${esc(state.error || "")}</p>
 <p id="s-wait" style="color:#7d8a9c;font-size:13px;margin:16px 0 0">${L("已等待", "Waited")} <span id="s-sec">0</span> ${L("秒…", "s…")} <button onclick="location.reload()" style="margin-left:8px;padding:4px 10px;border:1px solid #2a3547;border-radius:6px;background:#0d1219;color:#dbe2ea;cursor:pointer">${L("立即刷新", "Reload now")}</button></p>
-<p style="color:#5c6b7e;font-size:12px;margin:20px 0 0">${L("超过 2 分钟仍未就绪，多半是 3080 端口被残留进程占用或 DSH 启动失败：", "Still not ready after 2 minutes? Port 3080 is probably held by a leftover process, or DSH failed to start: ")}<code>journalctl -u dsh-gate -n 100</code>${L("，然后 ", ", then ")}<code>systemctl restart dsh-gate</code>${L("。", ".")}</p>
+<p style="color:#5c6b7e;font-size:12px;margin:20px 0 0">${L("超过 2 分钟仍未就绪，多半是 3080 端口被残留进程占用或 DSH 启动失败：", "Still not ready after 2 minutes? Port 3080 is probably held by a leftover process, or DSH failed to start: ")}<code>journalctl -u vpssh -n 100</code>${L("，然后 ", ", then ")}<code>systemctl restart vpssh</code>${L("。", ".")}</p>
 ${repoLinkInline()}
 <script>
 var W=${JSON.stringify(W)};
@@ -912,9 +890,9 @@ function sendBadGateway(res, lang = "zh") {
 		502,
 		`<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><meta charset="utf-8"><title>502</title>
 <body style="background:#0b0e14;color:#dbe2ea;font:15px system-ui;padding:40px">
-<h2>${L("无法连接 DeepSeek Harness", "Cannot reach DeepSeek Harness")}</h2>
+<h2>${L("vpssh 暂时连不上", "vpssh is not responding")}</h2>
 <p>${L(`DSH 后端（127.0.0.1:${DSH_PORT}）不可达。`, `The DSH backend (127.0.0.1:${DSH_PORT}) is unreachable.`)}</p>
-<p style="color:#7d8a9c">${L("排障：", "Troubleshoot: ")}journalctl -u dsh-gate -n 50</p></body>`,
+<p style="color:#7d8a9c">${L("排障：", "Troubleshoot: ")}journalctl -u vpssh -n 50</p></body>`,
 	);
 }
 
@@ -950,7 +928,7 @@ function collectAndInject(upRes, res, status, respHeaders) {
 			res.end();
 			return;
 		}
-		// 静态文件补丁（bin/dsh-vps ownshost on）已经在页面里时不再重复注入
+		// 静态文件补丁（bin/vpssh ownshost on）已经在页面里时不再重复注入
 		const missing = [];
 		if (!body.includes(OWNS_HOST_MARK)) missing.push(OWNS_HOST_SNIPPET);
 		if (!body.includes(UI_MARK)) missing.push(UI_SNIPPET);
@@ -963,7 +941,7 @@ function collectAndInject(upRes, res, status, respHeaders) {
 				body = body.slice(0, end) + missing.join("") + body.slice(end);
 				if (!ownshostLogged) {
 					ownshostLogged = true;
-					log("injected page snippets by proxy (静态文件补丁未生效，建议 sudo dsh-vps ownshost on)");
+					log("injected page snippets by proxy (静态文件补丁未生效，建议 sudo vpssh ownshost on)");
 				}
 			}
 		}
@@ -987,7 +965,7 @@ function proxyHttp(req, res) {
 	const headers = {};
 	for (const [key, value] of Object.entries(req.headers)) {
 		if (HOP_HEADERS.has(key) || key === "cookie") continue;
-		// 转发头会让 DSH 判定"回环对端是代理"而拒绝特权端点（如 dsh-market 重启）
+		// 转发头会让 DSH 判定"回环对端是代理"而拒绝特权端点
 		if (STRIP_FORWARDING && FORWARDING_HEADERS.has(key)) continue;
 		// 条件请求会让上游回 304（无 body 可改写），导航请求一律取全量
 		if (wantsHtml && (key === "if-none-match" || key === "if-modified-since")) continue;
@@ -995,11 +973,6 @@ function proxyHttp(req, res) {
 	}
 	const cookie = upstreamCookieHeader(req.headers.cookie, authority);
 	if (cookie !== void 0) headers.cookie = cookie;
-	if (MARKET_LOOPBACK && (req.url || "").startsWith(MARKET_PREFIX)) {
-		const loopback = `127.0.0.1:${DSH_PORT}`;
-		headers.host = loopback;
-		if (headers.origin !== void 0) headers.origin = `http://${loopback}`;
-	}
 
 	let responded = false;
 	const upstreamReq = http.request(
@@ -1063,18 +1036,6 @@ function proxyHttp(req, res) {
 	req.pipe(upstreamReq);
 }
 
-/** 市场请求的同源检查：Origin（若有）须与浏览器访问的公网 Host 一致，且不是跨站请求。 */
-function marketRequestSameOrigin(req) {
-	if (String(req.headers["sec-fetch-site"] || "") === "cross-site") return false;
-	const origin = req.headers.origin;
-	if (origin === void 0) return true; // 同源 GET 导航（如备份下载）不带 Origin
-	try {
-		return new URL(origin).host === requestAuthority(req.headers);
-	} catch {
-		return false;
-	}
-}
-
 function denyUnauthenticated(req, res, pathname) {
 	if (pathname.startsWith("/api")) {
 		sendText(res, 401, "gate authentication required");
@@ -1085,26 +1046,6 @@ function denyUnauthenticated(req, res, pathname) {
 	res.end();
 }
 
-/**
- * 接管 dsh-market 的"立即重启"：官方实现会自行拉起一个新的 dsh 进程，
- * 在 systemd 下会脱离 gate 的父子关系——新进程抢走 3080，gate 的子进程随后
- * EADDRINUSE，且 gate 永远读不到新进程的 launchToken（页面卡在"会话尚未就绪"）。
- * 这里按官方客户端的协议回 202 + ok，然后由 gate 自己重启 DSH 子进程：
- * 子进程是全新的，/dsh-market/status 的 boot id 随之变化，前端会自动 reload。
- */
-function handleMarketRestart(req, res, v1) {
-	if (req.method !== "POST") {
-		res.writeHead(405, { allow: "POST", "content-length": "0" });
-		res.end();
-		return;
-	}
-	log(`market restart requested${v1 ? " (v1)" : ""}; gate takes over`);
-	const result = { ok: true, managedBy: "dsh-gate", note: "由 gate 重启 DSH 子进程" };
-	res.writeHead(202, { "content-type": "application/json", "cache-control": "no-store" });
-	res.end(JSON.stringify(v1 ? { schema: MARKET_V1_SCHEMA, result } : result));
-	// 让 202 先落地，再动手（客户端随后轮询 /dsh-market/status 等 boot id 变化）
-	setTimeout(() => restartDsh("market restart"), 300);
-}
 
 //#endregion
 
@@ -1328,7 +1269,7 @@ function persistTrustedHost(domain) {
  * 更新运行期 trustedHost 并持久化 → 重启 DSH 子进程（自动重新捕获 token + 兑换）。
  * 站点文件由 install.sh 预创建并属主 dsh（组 caddy 可读），gate 无需 root。
  */
-// 站点块模板在 gate/site-block.js（install.sh 与 dsh-vps vpn 共用）。
+// 站点块模板在 gate/site-block.js（install.sh 与 vpssh vpn 共用）。
 // 改域名时必须带上当前隧道策略，否则「仅隧道可访问」会被改域名动作悄悄抹掉。
 function siteBlock(host) {
 	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR) });
@@ -1406,31 +1347,6 @@ function writeAdminRecord(username, password) {
 	fs.writeFileSync(adminPath(), JSON.stringify(record, null, 2), { mode: 0o600 });
 }
 
-/** 以 DSH 子命令运行（如 `plugin --profile web add <pkg>`），返回 { code, stdout, stderr }。 */
-function runDshCli(cmdArgs, timeoutMs = 5 * 60_000) {
-	return new Promise((resolve) => {
-		const child = spawn(process.execPath, [DSH_BIN, ...cmdArgs], {
-			cwd: GATE_HOME,
-			env: { ...process.env, ...PLUGIN_ENV },
-			stdio: ["ignore", "pipe", "pipe"],
-		});
-		let stdout = "";
-		let stderr = "";
-		let done = false;
-		const finish = (code) => {
-			if (done) return;
-			done = true;
-			resolve({ code, stdout, stderr });
-		};
-		child.stdout.on("data", (c) => { stdout += c; });
-		child.stderr.on("data", (c) => { stderr += c; });
-		child.on("error", (err) => finish(128));
-		child.on("exit", (code) => finish(code === null ? 128 : code));
-		const timer = setTimeout(() => child.kill("SIGKILL"), timeoutMs);
-		timer.unref();
-	});
-}
-
 /** 安装时用的 registry：install.sh --mirror cn 记在 config.json 里，与 DSH 本体同源。 */
 function npmRegistry() {
 	try {
@@ -1440,56 +1356,6 @@ function npmRegistry() {
 		/* 默认源 */
 	}
 	return "https://registry.npmjs.org";
-}
-
-/** 查询包在 registry 上的 latest 版本；失败返回 null（调用方退回不带版本号安装）。 */
-function latestVersion(pkg) {
-	return new Promise((resolve) => {
-		const url = `${npmRegistry()}/${encodeURIComponent(pkg).replace(/^%40/, "@")}/latest`;
-		const req = https.get(url, { headers: { accept: "application/json" }, timeout: 10_000 }, (res) => {
-			const chunks = [];
-			res.on("data", (c) => chunks.push(c));
-			res.on("end", () => {
-				try {
-					const v = res.statusCode === 200 ? JSON.parse(Buffer.concat(chunks).toString("utf8")).version : null;
-					resolve(typeof v === "string" && /^\d+\.\d+\.\d+(?:-[\w.]+)?$/.test(v) ? v : null);
-				} catch {
-					resolve(null);
-				}
-			});
-		});
-		req.on("timeout", () => req.destroy());
-		req.on("error", () => resolve(null));
-	});
-}
-
-/**
- * 后台安装一批常用插件（不阻塞向导响应）。
- * `dsh plugin` 内部转发给 pnpm；装完置空 token 触发一次 DSH 重启，让新 bundle 进入 profile 生效。
- */
-async function installPlugins(options) {
-	let installed = 0;
-	for (const opt of options) {
-		// 下限钉在 registry 上的 latest：即使 pnpm 冷却期配置被别处覆盖，也至少装到最新版；
-		// 用 ^ 而非精确版本，profile 里记成范围，之后插件市场的"更新"照常能升级。
-		const version = await latestVersion(opt.pkg);
-		const pkg = version ? `${opt.pkg}@^${version}` : opt.pkg;
-		log(`installing plugin: ${pkg}${version ? "" : "（未查到 latest，交给 pnpm 解析）"}`);
-		// -w 等附加参数由插件作者的安装命令指定，dsh 原样透传给 pnpm
-		const res = await runDshCli(["plugin", "--profile", "web", "add", ...(opt.args || []), pkg]);
-		if (res.code === 0) {
-			installed += 1;
-			log(`plugin installed: ${pkg}`);
-		} else {
-			const tail = (res.stderr || res.stdout || "").trim().split("\n").slice(-4).join(" | ");
-			log(`plugin install failed for ${pkg}: code=${res.code}${tail ? ` | ${tail}` : ""}`);
-			if (/pnpm not found/i.test(res.stderr || "")) {
-				log("hint: install pnpm first (`npm install -g pnpm`), or re-run install.sh");
-				break; // 后续插件同样会因缺 pnpm 失败，不再逐个重试
-			}
-		}
-	}
-	if (installed > 0) restartDsh("plugins installed");
 }
 
 // 向导限流（内存）：同 IP 10 次 / 10 分钟
@@ -1528,7 +1394,7 @@ function setupPage({ error, username, domain, warnings, token, lang = "zh", req 
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>dsh-vps · ${L("初始设置", "Setup")}</title>
+<title>vpssh · ${L("初始设置", "Setup")}</title>
 <style>
 :root{color-scheme:dark}
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
@@ -1547,9 +1413,6 @@ button:hover{background:#1d4fd8}
 .warn{margin:0 0 12px;padding:8px 10px;border-radius:8px;background:#2a2112;color:#fbbf24;font-size:13px}
 .hint{margin:2px 0 0;font-size:12px;color:#5c6b7e}
 hr{border:0;border-top:1px solid #1f2733;margin:20px 0 4px}
-.chk{display:flex;align-items:flex-start;gap:8px;margin:14px 0 2px;cursor:pointer;font-size:14px;color:#dbe2ea}
-.chk input{width:auto;margin:2px 0 0;accent-color:#2563eb}
-.chk .tip{margin:2px 0 0;font-size:12px;color:#5c6b7e}
 ${REPO_CSS}
 ${LANG_CSS}
 </style>
@@ -1557,8 +1420,8 @@ ${LANG_CSS}
 <body>
 ${req ? langSwitch(req, lang) : ""}
 <main>
-<h1>dsh-vps ${L("初始设置", "setup")}</h1>
-<p class="sub">DeepSeek Harness · ${L("仅需填写以下几项", "just a few fields")}</p>
+<h1>vpssh ${L("初始设置", "setup")}</h1>
+<p class="sub">${L("仅需填写以下几项", "Just a few fields")}</p>
 ${error ? `<p class="err">${esc(error)}</p>` : ""}
 ${(warnings || []).map((w) => `<p class="warn">${esc(w)}</p>`).join("")}
 <form method="post" action="/setup">
@@ -1573,15 +1436,11 @@ ${token ? `<input type="hidden" name="token" value="${esc(token)}">` : ""}
 <p class="hint">${L("至少 12 位", "At least 12 characters")}</p>
 <hr>
 <label for="d">${L("域名（可选）", "Domain (optional)")}</label>
-<input id="d" name="domain" value="${esc(domain || "")}" placeholder="dsh.example.com">
+<input id="d" name="domain" value="${esc(domain || "")}" placeholder="vps.example.com">
 <p class="hint">${L("需已将 A 记录解析到本服务器；留空则沿用当前访问方式。Caddy 自动签发证书。", "Its A record must already point at this server; leave empty to keep the current address. Caddy issues the certificate automatically.")}</p>
 <label for="k">DeepSeek API Key${L("（可选）", " (optional)")}</label>
 <input id="k" name="apiKey" type="password" autocomplete="off" placeholder="sk-...">
 <p class="hint">${L("现在填写最省事；跳过也可稍后在登录后的「添加 API Key」引导，或设置 → 模型 → DeepSeek 中填写。", "Easiest to fill in now; you can also add it later from the \"Add API key\" prompt after signing in, or under Settings → Models → DeepSeek.")}</p>
-<hr>
-<p class="hint" style="margin:2px 0 0">${L("预置插件（默认全选，可取消；其余插件装好后随时在插件市场里自行安装）", "Bundled plugins (pre-checked, optional ones can be unchecked; install anything else from the plugin market later)")}</p>
-${PLUGIN_OPTIONS.map((o) => `
-<label class="chk"><input type="checkbox" name="plugin" value="${o.id}" checked${o.required ? " disabled" : ""}> <span>${esc(lang === "zh" ? o.name : o.nameEn || o.name)}<br><span class="tip">${esc(lang === "zh" ? o.desc : o.descEn || o.desc)}</span></span></label>`).join("")}
 <button type="submit">${L("完成设置", "Finish setup")}</button>
 </form>
 ${repoLink()}
@@ -1599,7 +1458,7 @@ function setupTokenPage(lang = "zh", req) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="robots" content="noindex">
-<title>dsh-vps · ${L("需要启动令牌", "Setup token required")}</title>
+<title>vpssh · ${L("需要启动令牌", "Setup token required")}</title>
 <style>
 :root{color-scheme:dark}
 body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;
@@ -1617,11 +1476,11 @@ ${LANG_CSS}
 <body>
 ${req ? langSwitch(req, lang) : ""}
 <main>
-<h1>dsh-vps ${L("初始设置", "setup")}</h1>
+<h1>vpssh ${L("初始设置", "setup")}</h1>
 <p class="sub">${L("初始设置向导需要启动令牌", "The setup wizard needs a setup token")}</p>
 <p class="err">${L("当前链接缺少启动令牌或令牌不正确。向导只对持有令牌的人开放。", "This link has no setup token, or the token is wrong. The wizard only answers to holders of the token.")}</p>
 <p style="font-size:14px;color:#9aa7b8;margin:0 0 4px">${L("在服务器上执行下面的命令获取带令牌的链接：", "Run this on the server to get the link with its token:")}</p>
-<p style="margin:6px 0 0"><code style="display:block;padding:9px 10px;border-radius:8px;background:#0d1219;color:#93c5fd;font-size:13px;overflow-x:auto">sudo dsh-vps setup-url</code></p>
+<p style="margin:6px 0 0"><code style="display:block;padding:9px 10px;border-radius:8px;background:#0d1219;color:#93c5fd;font-size:13px;overflow-x:auto">sudo vpssh setup-url</code></p>
 <p class="hint" style="margin:16px 0 0">${L("安装结束时该链接已打印在终端里。", "The link was also printed in the terminal when the install finished.")}</p>
 ${repoLink()}
 </main>
@@ -1675,12 +1534,6 @@ async function handleSetup(req, res) {
 	const password2 = String(form.get("password2") || "");
 	const domain = String(form.get("domain") || "").trim().toLowerCase();
 	const apiKey = String(form.get("apiKey") || "").trim();
-	const plugins = (form.getAll("plugin") || [])
-		.map((v) => PLUGIN_OPTIONS.find((o) => o.id === v || o.pkg === v))
-		.filter(Boolean);
-	// 必装项不看表单：disabled 的勾选框不会随表单提交，而且也不该允许被去掉
-	for (const o of PLUGIN_OPTIONS) if (o.required) plugins.unshift(o);
-	const pluginsToInstall = plugins.filter((o, i, arr) => arr.findIndex((x) => x.pkg === o.pkg) === i);
 
 	const redisplay = (error) => {
 		recordSetupFailure(ip);
@@ -1726,11 +1579,6 @@ async function handleSetup(req, res) {
 	clearSetupToken();
 	log("setup completed; wizard locked");
 
-	if (pluginsToInstall.length) {
-		log(`setup: installing plugins in background: ${pluginsToInstall.map((o) => o.pkg).join(", ")}`);
-		installPlugins(pluginsToInstall).catch((err) => log(`plugin install aborted: ${err && err.message}`));
-	}
-
 	if (warnings.length) {
 		sendHtml(res, 200, setupPage({ warnings, username, domain, token, lang, req }));
 		return;
@@ -1740,7 +1588,7 @@ async function handleSetup(req, res) {
 		sendHtml(
 			res,
 			200,
-			`<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><meta charset="utf-8"><title>dsh-vps · ${L("设置完成", "Setup complete")}</title>
+			`<!doctype html><html lang="${lang === "zh" ? "zh-CN" : "en"}"><meta charset="utf-8"><title>vpssh · ${L("设置完成", "Setup complete")}</title>
 <body style="background:#0b0e14;color:#dbe2ea;font:15px system-ui;display:flex;min-height:100vh;align-items:center;justify-content:center">
 <div style="max-width:420px;padding:32px;border:1px solid #1f2733;border-radius:12px;background:#11161f">
 <h2 style="margin-top:0">${L("设置完成", "Setup complete")}</h2>
@@ -1920,8 +1768,8 @@ async function handleUpdate(req, res, user) {
 // 语言跟随 DSH「设置 → 通用 → 语言」：DSH 把当前语言同步到 <html lang>（中文为 zh-CN），
 // 这里读它，并监听它的变化——DSH 晚于提示条完成语言初始化、或用户切换语言时，提示条随之重画。
 const UI_JS = `(function () {
-	if (window.top !== window || document.getElementById("dshvps-update")) return;
-	var KEY = "dshvps-update-dismissed";
+	if (window.top !== window || document.getElementById("vpssh-update")) return;
+	var KEY = "vpssh-update-dismissed";
 	function L(cn, en) { var l = String(document.documentElement.getAttribute("lang") || "").toLowerCase(); return l.indexOf("zh") === 0 ? cn : en; }
 	function store(k, v) { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } }
 	var box, timer, view = null, busy = false, asked = false;
@@ -1936,7 +1784,7 @@ const UI_JS = `(function () {
 			box = el("div", "position:fixed;right:16px;bottom:16px;z-index:2147483647;max-width:min(420px,calc(100vw - 32px));" +
 				"padding:12px 14px;border-radius:10px;background:#11161f;color:#dbe2ea;border:1px solid #2a3547;" +
 				"box-shadow:0 8px 30px rgba(0,0,0,.35);font:13px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif");
-			box.id = "dshvps-update";
+			box.id = "vpssh-update";
 			document.body.appendChild(box);
 		}
 		box.textContent = "";
@@ -1970,8 +1818,8 @@ const UI_JS = `(function () {
 			}
 			if (st && asked && st.state === "failed") {
 				clearInterval(timer);
-				show(function () { return [L("升级未成功，已自动回滚到 " + (st.to || st.from) + "，当前可继续使用。详情：sudo cat /opt/dsh-vps/state/upgrade.log",
-					"The upgrade did not succeed and was rolled back to " + (st.to || st.from) + "; DSH works normally. Details: sudo cat /opt/dsh-vps/state/upgrade.log"),
+				show(function () { return [L("升级未成功，已自动回滚到 " + (st.to || st.from) + "，当前可继续使用。详情：sudo cat /opt/vpssh/state/upgrade.log",
+					"The upgrade did not succeed and was rolled back to " + (st.to || st.from) + "; DSH works normally. Details: sudo cat /opt/vpssh/state/upgrade.log"),
 					[{ label: L("知道了", "OK"), onClick: hide }]]; });
 				return;
 			}
@@ -1988,7 +1836,7 @@ const UI_JS = `(function () {
 			return r.json().then(function (b) { if (!r.ok) throw new Error(b.error || String(r.status)); return b; });
 		}).then(function () {
 			asked = true;
-			store("dshvps-update-asked", String(Date.now()));
+			store("vpssh-update-asked", String(Date.now()));
 			show(function () { return [L("已提交升级请求，等待开始…", "Upgrade requested, waiting for it to start…")]; });
 			timer = setInterval(poll, 3000);
 		}).catch(function (e) {
@@ -1998,12 +1846,12 @@ const UI_JS = `(function () {
 	}
 	function init() {
 		// 升级过程中刷新了页面：继续跟进，完成后给出结果
-		var t = Number(store("dshvps-update-asked") || 0);
+		var t = Number(store("vpssh-update-asked") || 0);
 		asked = t > 0 && Date.now() - t < 30 * 60000;
 		get().then(function (u) {
 			var st = u.status;
 			if (u.requested || (st && st.state === "running")) { asked = true; timer = setInterval(poll, 3000); poll(); return; }
-			if (asked && st && st.at > t) { store("dshvps-update-asked", "0"); if (st.state === "failed") poll(); return; }
+			if (asked && st && st.at > t) { store("vpssh-update-asked", "0"); if (st.state === "failed") poll(); return; }
 			if (!u.available || store(KEY) === u.latest) return;
 			show(function () { return [L("DeepSeek Harness 有新版本 " + u.latest + "（当前 " + u.current + "）", "A new DeepSeek Harness version is available: " + u.latest + " (current " + u.current + ")"), [
 				{ label: L("稍后", "Later"), onClick: function () { store(KEY, u.latest); hide(); } },
@@ -2034,7 +1882,7 @@ function handleUiJs(req, res) {
 
 //#endregion
 
-/** 升级回归自检（dsh-vps upgrade 调用）：健康 + token 兑换 + 登录态 credentials/describe 探针。 */
+/** 升级回归自检（vpssh upgrade 调用）：健康 + token 兑换 + 登录态 credentials/describe 探针。 */
 async function handleSelfcheck(req, res) {
 	const report = {
 		gate: "ok",
@@ -2058,7 +1906,7 @@ async function handleSelfcheck(req, res) {
 	res.end(JSON.stringify(report));
 }
 
-/** selfcheck 仅限回环调用（dsh-vps upgrade 在本机执行），防止公网探测内部状态。 */
+/** selfcheck 仅限回环调用（vpssh upgrade 在本机执行），防止公网探测内部状态。 */
 //#endregion
 
 //#region CLI：--set-admin（安装/应急重置用）
@@ -2135,7 +1983,7 @@ function main() {
 						res.end();
 						return;
 					}
-					sendText(res, 503, "gate not configured: admin account missing (run `dsh-vps reset-admin`)");
+					sendText(res, 503, "gate not configured: admin account missing (run `vpssh reset-admin`)");
 					return;
 				}
 				const user = sessionUser(req);
@@ -2145,12 +1993,6 @@ function main() {
 				}
 				if (pathname === "/gate/update") return handleUpdate(req, res, user);
 				if (pathname === "/gate/password") return handlePassword(req, res, user);
-				if (pathname.startsWith(MARKET_PREFIX) && !marketRequestSameOrigin(req)) {
-					sendText(res, 403, "cross-origin market request refused by gate");
-					return;
-				}
-				if (TAKEOVER_RESTART && MARKET_RESTART_PATHS.has(pathname)) return handleMarketRestart(req, res, false);
-				if (TAKEOVER_RESTART && MARKET_RESTART_V1_PATHS.has(pathname)) return handleMarketRestart(req, res, true);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {

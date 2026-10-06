@@ -113,7 +113,7 @@ test('同一个 DSH 里加载了两份（插件市场热挂载 + profile）：�
   assert.deepEqual(third._warnings, [])
 })
 
-test('apply：5 个工具、21 条命令、1 个 skill、本机 bash 守卫、VPS 模式监听，全部注册成功', async () => {
+test('apply：5 个工具、21 条命令、1 个 skill、本机工具守卫、VPS 模式监听，全部注册成功', async () => {
   const ctx = fakeCtx()
   const home = await mkdtemp(join(tmpdir(), 'vpssh-apply-'))
   apply(ctx, { env: { HOME: home, DSH_HOME: join(home, '.dsh') } })
@@ -133,7 +133,7 @@ test('apply：5 个工具、21 条命令、1 个 skill、本机 bash 守卫、VP
   assert.ok(ctx._skills[0].description.length > 0)
   assert.equal(ctx._skills[0].invocation.modelInvocable, true)
   assert.equal(ctx._skills[0].invocation.userInvocable, false)
-  assert.equal(ctx._guards.length, 1, '本机 bash 守卫要挂上')
+  assert.equal(ctx._guards.length, 1, '本机工具守卫要挂上')
   assert.deepEqual(ctx._listeners.map((l) => [l.event, l.opts?.prepend]), [['agent/pre-step', true]])
   assert.ok(ctx._injected.has('webServer'), 'webServer 必须走 inject，headless 下不注册')
   assert.ok(ctx._injected.has('skills') && ctx._injected.has('agents'), 'skills 与 agents 必须走 inject')

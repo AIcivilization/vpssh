@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# dsh-vps 卸载脚本
+# vpssh 卸载脚本
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/AIcivilization/dsh-vps/main/uninstall.sh \
+#   curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/uninstall.sh \
 #     | sudo bash -s -- --yes
 #   # 或在仓库克隆目录内：
 #   sudo bash uninstall.sh [--yes] [--keep-data] [--purge-caddy]
@@ -16,12 +16,12 @@ set -euo pipefail
 
 ## region: 常量与参数
 
-INSTALL_ROOT="/opt/dsh-vps"
-DSH_USER="dsh"
-DSH_HOME_DIR="/home/dsh/.dsh"
-SERVICE="dsh-gate"
-UNIT_FILE="/etc/systemd/system/dsh-gate.service"
-CADDY_SITE_FILE="/etc/caddy/dsh-site.conf"
+INSTALL_ROOT="/opt/vpssh"
+DSH_USER="vpssh"
+DSH_HOME_DIR="/home/vpssh/.dsh"
+SERVICE="vpssh"
+UNIT_FILE="/etc/systemd/system/vpssh.service"
+CADDY_SITE_FILE="/etc/caddy/vpssh-site.conf"
 CADDYFILE="/etc/caddy/Caddyfile"
 
 ASSUME_YES=0
@@ -34,10 +34,10 @@ die()  { printf '\033[1;31m[uninstall]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
 	cat <<'EOF'
-dsh-vps 卸载脚本
+vpssh 卸载脚本
 用法: sudo bash uninstall.sh [--yes] [--keep-data] [--purge-caddy]
   --yes          跳过交互确认（脚本化调用时用）
-  --keep-data    保留 DSH 数据目录 /home/dsh/.dsh 与系统用户 dsh
+  --keep-data    保留 DSH 数据目录 /home/vpssh/.dsh 与系统用户 vpssh
   --purge-caddy  连 Caddy 软件包与 apt 源一起移除（默认只删本产品的站点块）
 EOF
 }
@@ -60,16 +60,16 @@ done
 
 if [[ $ASSUME_YES -eq 0 ]]; then
 	cat <<EOF
-即将移除 dsh-vps：
+即将移除 vpssh：
   - 服务        ${SERVICE}（停止并禁用，删除 ${UNIT_FILE}）
   - 安装目录    ${INSTALL_ROOT}（含 gate 代码、state、备份）
-  - 命令        /usr/local/bin/dsh-vps
+  - 命令        /usr/local/bin/vpssh
   - Caddy 站点  $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo "（并移除 caddy 软件包）")
-  - 隧道        /etc/wireguard/wg0.conf（仅当它是 dsh-vps vpn 创建的；你自己的 wg0 不动）
+  - 隧道        /etc/wireguard/wg0.conf（仅当它是 vpssh vpn 创建的；你自己的 wg0 不动）
   - DSH 数据    $DSH_HOME_DIR$([ $KEEP_DATA -eq 1 ] && echo "（--keep-data：保留）" || echo "（删除）")
   - 系统用户    $DSH_USER$([ $KEEP_DATA -eq 1 ] && echo "（--keep-data：保留）" || echo "（保留，重装可复用）")
 
-删除前会先打包备份到 /root/dsh-vps-uninstall-<时间戳>.tar.gz
+删除前会先打包备份到 /root/vpssh-uninstall-<时间戳>.tar.gz
 EOF
 	read -rp "确认卸载？输入 yes 继续： " ans
 	[[ "$ans" == "yes" ]] || die "已取消"
@@ -81,7 +81,7 @@ fi
 
 log "步骤 1/6：备份"
 mkdir -p /root
-local_ts="dsh-vps-uninstall-$(date +%Y%m%d-%H%M%S).tar.gz"
+local_ts="vpssh-uninstall-$(date +%Y%m%d-%H%M%S).tar.gz"
 BACKUP="/root/$local_ts"
 targets=()
 # 注意：set -e 下不能写 `[[ -d x ]] && arr+=(x)`——条件为假时整条列表返回非 0 会直接退出
@@ -109,8 +109,8 @@ systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_FILE"
 # 浏览器一键升级单元
-systemctl disable --now dsh-vps-upgrade.path 2>/dev/null || true
-rm -f /etc/systemd/system/dsh-vps-upgrade.path /etc/systemd/system/dsh-vps-upgrade.service
+systemctl disable --now vpssh-upgrade.path 2>/dev/null || true
+rm -f /etc/systemd/system/vpssh-upgrade.path /etc/systemd/system/vpssh-upgrade.service
 systemctl daemon-reload 2>/dev/null || true
 systemctl reset-failed "$SERVICE" 2>/dev/null || true
 
@@ -124,7 +124,7 @@ pkill -u "$DSH_USER" -f "gate/server.js" 2>/dev/null || true
 
 log "步骤 3/6：移除安装目录与命令"
 rm -rf "$INSTALL_ROOT"
-rm -f /usr/local/bin/dsh-vps
+rm -f /usr/local/bin/vpssh
 
 ## endregion
 
@@ -145,7 +145,7 @@ if [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE"; the
 		cp "$orig" "$CADDYFILE" && log "已还原安装前的 Caddyfile（来自 $orig）" \
 			|| warn "Caddyfile 还原失败，请手工检查 $CADDYFILE"
 	else
-		printf '# Caddyfile 已被 dsh-vps 卸载脚本重置（原内容已备份进 %s）\n' "${BACKUP:-（无备份）}" >"$CADDYFILE" \
+		printf '# Caddyfile 已被 vpssh 卸载脚本重置（原内容已备份进 %s）\n' "${BACKUP:-（无备份）}" >"$CADDYFILE" \
 			|| warn "Caddyfile 重置失败，请手工检查 $CADDYFILE"
 	fi
 fi
@@ -165,8 +165,8 @@ fi
 ## region: 步骤 5：隧道
 
 log "步骤 5/6：移除隧道"
-if [[ -f /etc/wireguard/wg0.conf ]] && ! grep -q "dsh-vps" /etc/wireguard/wg0.conf; then
-	log "wg0.conf 不是 dsh-vps 创建的，保留不动"
+if [[ -f /etc/wireguard/wg0.conf ]] && ! grep -q "vpssh" /etc/wireguard/wg0.conf; then
+	log "wg0.conf 不是 vpssh 创建的，保留不动"
 elif [[ -f /etc/wireguard/wg0.conf ]]; then
 	systemctl stop wg-quick@wg0 2>/dev/null || true
 	systemctl disable wg-quick@wg0 2>/dev/null || true
@@ -195,5 +195,5 @@ cat <<EOF
 卸载完成。
   备份：${BACKUP:-（无）}
 重装：
-  curl -fsSL https://raw.githubusercontent.com/AIcivilization/dsh-vps/main/install.sh | sudo bash -s -- --domain <你的域名> --mirror cn
+  curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash -s -- --domain <你的域名> --mirror cn
 EOF

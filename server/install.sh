@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# dsh-vps 一键安装脚本（M2）
+# vpssh 一键安装脚本
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/AIcivilization/dsh-vps/main/install.sh \
-#     | sudo bash -s -- --domain dsh.example.com
+#   curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh \
+#     | sudo bash -s -- --domain vps.example.com
 #   # 或在仓库克隆目录内：
-#   sudo bash install.sh --domain dsh.example.com [--mirror cn]
+#   sudo bash server/install.sh --domain vps.example.com [--mirror cn]
 #
 # 目标 OS：Ubuntu 22.04+ / Debian 12+（裸机，无 Docker）
-# 设计依据：dsh-vps-architecture-design.md §4.1 / §4.3 / §4.4 / §5 / §10
 #
-# 说明：仓库已公开，curl 管道模式可直接拉取 gate 代码；若在克隆目录内运行则优先用本地文件。
+# 装什么：Node 22 → DSH（npm 原样、钉住版本）→ vpssh 插件（本仓库 plugin/）→ 登录网关 → Caddy → systemd。
+# 仓库文件：在克隆目录内运行时用本地文件；curl 管道模式先把整个仓库（VPSSH_REF 指定的分支或标签）下载下来再装。
 
 set -euo pipefail
 
@@ -27,16 +27,17 @@ DSH_VERSION="0.1.7-rc.1" # 钉住版本（设计文档 §10 已验证版本表�
 # 之后升到 0.1.7-rc.1（npm next 渠道），冻结点 2026-09-24T08:20Z——该时刻解析出的依赖树已逐包比对、实测通过。
 # 设为 none 可关闭冻结。
 DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-09-24T08:20:00Z}"
-INSTALL_ROOT="/opt/dsh-vps"
-DSH_USER="dsh"
-DSH_HOME_DIR="/home/dsh/.dsh"
+INSTALL_ROOT="/opt/vpssh"
+DSH_USER="vpssh"
+DSH_HOME_DIR="/home/vpssh/.dsh"
 GATE_PORT=3100
 DSH_PORT=3080
-# gate/unit/caddy 模板来源：优先脚本同目录（仓库克隆），否则从 raw 地址下载
-RAW_BASE="${DSHVPS_RAW_BASE:-https://raw.githubusercontent.com/AIcivilization/dsh-vps/main}"
+# 仓库来源：curl 管道模式下载这个分支或标签的整个仓库
+REPO_TARBALL="${VPSSH_TARBALL:-https://codeload.github.com/AIcivilization/vpssh/tar.gz/${VPSSH_REF:-main}}"
 
 DOMAIN=""
 MIRROR=""
+FORCE_IP=""
 
 log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }
@@ -44,10 +45,11 @@ die()  { printf '\033[1;31m[install]\033[0m %s\n' "$*" >&2; exit 1; }
 
 usage() {
 	cat <<'EOF'
-dsh-vps 安装脚本
+vpssh 安装脚本
 用法: sudo bash install.sh [--domain <域名>] [--mirror cn]
   --domain <域名>   访问域名（需已解析到本机）。不传则以公网 IP + 自签证书过渡
   --mirror cn       国内镜像：Node 走 npmmirror 二进制，DSH 走 npmmirror registry
+  --ip <IP>         不传 --domain 时用这个 IP 访问（默认自动探测公网 IP；内网、多 IP、测试机时用）
 EOF
 }
 
@@ -55,6 +57,7 @@ while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--domain) DOMAIN="${2:?--domain 需要一个值}"; shift 2 ;;
 	--mirror) MIRROR="${2:?--mirror 需要一个值}"; shift 2 ;;
+	--ip) FORCE_IP="${2:?--ip 需要一个值}"; shift 2 ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "未知参数: $1（--help 查看用法）" ;;
 	esac
@@ -71,19 +74,30 @@ if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
 	SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 fi
 
-# 取仓库文件：本地克隆优先，否则走 RAW_BASE
-fetch_file() { # $1=仓库内相对路径 $2=目标路径
-	local rel="$1" dst="$2"
-	if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/$rel" ]]; then
-		install -m 644 "$SCRIPT_DIR/$rel" "$dst"
-	else
-		curl -fsSL "$RAW_BASE/$rel" -o "$dst" \
-			|| die "下载 $rel 失败（仓库未发布时请在克隆目录内运行本脚本）"
+# 仓库根目录：本地克隆（server/ 的上一级）优先，否则下载整个仓库
+REPO_DIR=""
+fetch_repo() {
+	if [[ -n "$SCRIPT_DIR" && -f "$SCRIPT_DIR/gate/server.js" && -f "$SCRIPT_DIR/../plugin/package.json" ]]; then
+		REPO_DIR=$(cd "$SCRIPT_DIR/.." && pwd)
+		return 0
 	fi
+	command -v curl >/dev/null 2>&1 || { apt-get update -y >/dev/null; apt-get install -y curl ca-certificates >/dev/null; }
+	local tmp
+	tmp=$(mktemp -d /tmp/vpssh-src.XXXXXX)
+	log "下载 vpssh：${REPO_TARBALL}"
+	curl -fsSL --retry 2 "$REPO_TARBALL" | tar -xz -C "$tmp" --strip-components=1 \
+		|| die "下载 vpssh 失败：${REPO_TARBALL}"
+	[[ -f "$tmp/server/gate/server.js" && -f "$tmp/plugin/package.json" ]] || die "下载的 vpssh 不完整"
+	REPO_DIR="$tmp"
+}
+
+# 取仓库文件（路径相对于 server/）
+fetch_file() { # $1=server/ 内相对路径 $2=目标路径
+	install -m 644 "$REPO_DIR/server/$1" "$2"
 }
 
 export DEBIAN_FRONTEND=noninteractive
-trap 'warn "安装失败（行 ${LINENO}），可用 journalctl -u dsh-gate -n 50 排查服务问题"' ERR
+trap 'warn "安装失败（行 ${LINENO}），可用 journalctl -u vpssh -n 50 排查服务问题"' ERR
 
 ## endregion
 
@@ -92,7 +106,7 @@ trap 'warn "安装失败（行 ${LINENO}），可用 journalctl -u dsh-gate -n 5
 REINSTALL=0
 
 step1_prechecks() {
-	log "步骤 1/9：前置检查"
+	log "步骤 1/10：前置检查"
 	[[ $EUID -eq 0 ]] || die "请用 root 运行（sudo bash install.sh ...）"
 	command -v curl >/dev/null 2>&1 || { apt-get update -y >/dev/null; apt-get install -y curl ca-certificates >/dev/null; }
 
@@ -157,7 +171,7 @@ install_node_cn() {
 }
 
 step2_node() {
-	log "步骤 2/9：Node.js 22 + pnpm"
+	log "步骤 2/10：Node.js 22 + pnpm"
 	local major
 	major=$(node --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\).*/\1/p' || true)
 	if [[ "${major:-0}" -ge 22 ]]; then
@@ -188,7 +202,7 @@ step2_node() {
 ## region: 步骤 3：DSH 版本化安装
 
 step3_dsh() {
-	log "步骤 3/9：DeepSeek Harness ${DSH_VERSION}（版本化安装）"
+	log "步骤 3/10：DeepSeek Harness ${DSH_VERSION}（版本化安装）"
 	local prefix="$INSTALL_ROOT/dsh/$DSH_VERSION"
 	local bin="$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js"
 	if [[ -f "$bin" ]]; then
@@ -221,9 +235,9 @@ step3_dsh() {
 ## region: 步骤 4：运行身份
 
 step4_user() {
-	log "步骤 4/9：系统用户 $DSH_USER"
+	log "步骤 4/10：系统用户 $DSH_USER"
 	if ! id "$DSH_USER" >/dev/null 2>&1; then
-		useradd --system --shell /usr/sbin/nologin --home-dir /home/dsh --create-home "$DSH_USER"
+		useradd --system --shell /usr/sbin/nologin --home-dir /home/vpssh --create-home "$DSH_USER"
 	fi
 	mkdir -p "$DSH_HOME_DIR"
 	chown -R "$DSH_USER" "$DSH_HOME_DIR"
@@ -232,7 +246,38 @@ step4_user() {
 
 ## endregion
 
-## region: 步骤 5：dsh-gate 代码
+## region: 步骤 5：vpssh 插件
+
+# vpssh 的全部功能都在这个 DSH 插件里（本仓库 plugin/）。只装它，不装别的插件。
+# 放在 $INSTALL_ROOT/plugin（root 所有），再登记到 DSH 的 web profile。
+# 登记时 pnpm 要复制文件（copy）：默认的硬链接碰到 root 的文件会被内核拒绝（protected_hardlinks）；
+# 也不能用 link: 软链接，插件按需加载的 @deepseek-ai/* 包要从 profile 里解析。
+step5_plugin() {
+	log "步骤 5/10：vpssh 插件"
+	local dst="$INSTALL_ROOT/plugin"
+	rm -rf "$dst.new"
+	mkdir -p "$dst.new"
+	(cd "$REPO_DIR/plugin" && tar -cf - --exclude=node_modules --exclude=test --exclude=scripts .) | tar -xf - -C "$dst.new"
+	local args=(--omit=dev --no-audit --no-fund --loglevel=error)
+	[[ "$MIRROR" == "cn" ]] && args+=(--registry=https://registry.npmmirror.com)
+	(cd "$dst.new" && npm ci "${args[@]}") || die "vpssh 插件依赖安装失败"
+	rm -rf "$dst.old"
+	[[ -d "$dst" ]] && mv "$dst" "$dst.old"
+	mv "$dst.new" "$dst"
+	rm -rf "$dst.old"
+	chown -R root:root "$dst"
+	chmod -R go-w "$dst"
+
+	local dsh_bin="$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js"
+	runuser -u "$DSH_USER" -- env HOME=/home/vpssh DSH_HOME="$DSH_HOME_DIR" pnpm_config_minimum_release_age=0 pnpm_config_package_import_method=copy \
+		node "$dsh_bin" plugin --profile web add "file:$dst" \
+		|| die "vpssh 插件登记到 DSH 失败"
+	log "vpssh 插件已安装"
+}
+
+## endregion
+
+## region: 步骤 6：vpssh 网关
 
 # 一次性启动令牌：初始向导在安装结束到用户首次打开浏览器之间是全网可达的，
 # 谁先提交谁就是管理员。令牌写进 state/setup.token，向导提交成功后由 gate 删除。
@@ -252,20 +297,20 @@ generate_setup_token() {
 	log "已生成一次性启动令牌"
 }
 
-step5_gate() {
-	log "步骤 5/9：dsh-gate"
+step6_gate() {
+	log "步骤 6/10：vpssh 网关"
 	mkdir -p "$INSTALL_ROOT/gate" "$INSTALL_ROOT/bin"
 	fetch_file gate/server.js "$INSTALL_ROOT/gate/server.js"
 	node --check "$INSTALL_ROOT/gate/server.js" || die "gate/server.js 语法检查失败"
 	fetch_file gate/site-block.js "$INSTALL_ROOT/gate/site-block.js"
 	node --check "$INSTALL_ROOT/gate/site-block.js" || die "gate/site-block.js 语法检查失败"
-	fetch_file bin/dsh-vps "$INSTALL_ROOT/bin/dsh-vps"
-	chmod 755 "$INSTALL_ROOT/bin/dsh-vps"
-	bash -n "$INSTALL_ROOT/bin/dsh-vps" || die "bin/dsh-vps 语法检查失败"
-	ln -sfn "$INSTALL_ROOT/bin/dsh-vps" /usr/local/bin/dsh-vps
+	fetch_file bin/vpssh "$INSTALL_ROOT/bin/vpssh"
+	chmod 755 "$INSTALL_ROOT/bin/vpssh"
+	bash -n "$INSTALL_ROOT/bin/vpssh" || die "bin/vpssh 语法检查失败"
+	ln -sfn "$INSTALL_ROOT/bin/vpssh" /usr/local/bin/vpssh
 	# 公网域名下浏览器判定 isLoopback=false，设置页会报"设置在此浏览器中不可用"。
 	# 直接写前端静态文件解除该判定（DSH 每次响应都重读该文件，无需重启）。
-	dsh-vps ownshost on || warn "ownsHost 补丁未生效，稍后可手动运行: sudo dsh-vps ownshost on"
+	vpssh ownshost on || warn "ownsHost 补丁未生效，稍后可手动运行: sudo vpssh ownshost on"
 	mkdir -p "$INSTALL_ROOT/state"
 	chmod 700 "$INSTALL_ROOT/state"
 	generate_setup_token
@@ -273,10 +318,10 @@ step5_gate() {
 
 ## endregion
 
-## region: 步骤 6：Caddy
+## region: 步骤 7：Caddy
 
-step6_caddy() {
-	log "步骤 6/9：Caddy"
+step7_caddy() {
+	log "步骤 7/10：Caddy"
 	if ! command -v caddy >/dev/null 2>&1; then
 		apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gpg >/dev/null
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
@@ -288,22 +333,22 @@ step6_caddy() {
 	fi
 
 	# 主 Caddyfile（静态，import 站点文件）+ 站点文件（向导改域名时由 gate 重写）
-	fetch_file caddy/Caddyfile.template /tmp/Caddyfile.dshvps
-	if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s /etc/caddy/Caddyfile /tmp/Caddyfile.dshvps; then
+	fetch_file caddy/Caddyfile.template /tmp/Caddyfile.vpssh
+	if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s /etc/caddy/Caddyfile /tmp/Caddyfile.vpssh; then
 		cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
 	fi
-	install -m 644 /tmp/Caddyfile.dshvps /etc/caddy/Caddyfile
+	install -m 644 /tmp/Caddyfile.vpssh /etc/caddy/Caddyfile
 
 	# 站点块：有域名写域名块（自动 HTTPS），无则按公网 IP 写站点、Caddy 内置 CA 自签过渡
-	# 属主 dsh（向导重写）、组 caddy（Caddy 读取）、640
-	# 站点块由 gate/site-block.js 生成：install.sh 写初始块、gate 改域名、dsh-vps vpn
+	# 属主 vpssh（向导重写）、组 caddy（Caddy 读取）、640
+	# 站点块由 gate/site-block.js 生成：install.sh 写初始块、gate 改域名、vpssh vpn
 	# 切换访问策略，三处共用同一份模板。重装时若 state/vpn.env 还开着隧道模式，
 	# 这里会直接沿用「仅隧道可访问」，不会把已经关上的门重新敞开。
 	local site="$TRUSTED_HOST"
 	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" \
-		>/etc/caddy/dsh-site.conf || die "生成站点块失败"
-	chown "$DSH_USER":caddy /etc/caddy/dsh-site.conf
-	chmod 640 /etc/caddy/dsh-site.conf
+		>/etc/caddy/vpssh-site.conf || die "生成站点块失败"
+	chown "$DSH_USER":caddy /etc/caddy/vpssh-site.conf
+	chmod 640 /etc/caddy/vpssh-site.conf
 
 	systemctl enable --now caddy >/dev/null 2>&1 || true
 	systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy
@@ -312,10 +357,15 @@ step6_caddy() {
 
 ## endregion
 
-## region: 步骤 7：systemd + gate.env + config.json
+## region: 步骤 8：systemd + gate.env + config.json
 
 detect_public_ip() {
 	local ip url
+	if [[ -n "$FORCE_IP" ]]; then
+		[[ "$FORCE_IP" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--ip 不是合法的 IPv4 地址: $FORCE_IP"
+		printf '%s' "$FORCE_IP"
+		return 0
+	fi
 	for url in https://api.ipify.org https://ifconfig.me https://icanhazip.com; do
 		ip=$(curl -4 -fsSL --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]') || continue
 		if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -349,14 +399,14 @@ resolve_trusted_host() {
 	CFG_DOMAIN="${DOMAIN:-$existing_domain}"
 }
 
-step7_systemd() {
-	log "步骤 7/9：systemd 服务"
+step8_systemd() {
+	log "步骤 8/10：systemd 服务"
 	mkdir -p "$INSTALL_ROOT/state" "$INSTALL_ROOT/backups"
 
 	local trusted="$TRUSTED_HOST"
 	local cfg_domain="$CFG_DOMAIN"
 
-	# gate.env：集中管理运行环境变量（0600 属主 dsh，M3 向导改域名后重写并 restart 即可）
+	# gate.env：集中管理运行环境变量（0600 属主 vpssh，M3 向导改域名后重写并 restart 即可）
 	cat >"$INSTALL_ROOT/state/gate.env" <<EOF
 GATE_HOME=$INSTALL_ROOT
 DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
@@ -386,22 +436,22 @@ EOF
 	# systemd unit（模板替换 node 路径）
 	local node_bin
 	node_bin=$(command -v node)
-	fetch_file units/dsh-gate.service /tmp/dsh-gate.service.tpl
-	sed "s|__NODE_BIN__|${node_bin}|" /tmp/dsh-gate.service.tpl >/etc/systemd/system/dsh-gate.service
+	fetch_file units/vpssh.service /tmp/vpssh.service.tpl
+	sed "s|__NODE_BIN__|${node_bin}|" /tmp/vpssh.service.tpl >/etc/systemd/system/vpssh.service
 	systemctl daemon-reload
-	systemctl enable dsh-gate >/dev/null 2>&1
-	systemctl restart dsh-gate
-	log "dsh-gate.service 已启动（DSH_TRUSTED_HOST=${trusted}）"
+	systemctl enable vpssh >/dev/null 2>&1
+	systemctl restart vpssh
+	log "vpssh.service 已启动（DSH_TRUSTED_HOST=${trusted}）"
 	# 浏览器一键升级：DSH 有新版本时页面提示，确认后由 root 服务执行升级
-	"$INSTALL_ROOT/bin/dsh-vps" install-units || warn "一键升级单元安装失败（不影响使用，可稍后 sudo dsh-vps install-units）"
+	"$INSTALL_ROOT/bin/vpssh" install-units || warn "一键升级单元安装失败（不影响使用，可稍后 sudo vpssh install-units）"
 }
 
 ## endregion
 
-## region: 步骤 8：防火墙
+## region: 步骤 9：防火墙
 
-step8_firewall() {
-	log "步骤 8/9：防火墙"
+step9_firewall() {
+	log "步骤 9/10：防火墙"
 	if command -v ufw >/dev/null 2>&1; then
 		ufw allow 22/tcp >/dev/null
 		ufw allow 80/tcp >/dev/null
@@ -414,7 +464,7 @@ step8_firewall() {
 
 ## endregion
 
-## region: 步骤 9：健康自检 + 完成输出
+## region: 步骤 10：健康自检 + 完成输出
 
 wait_gate_health() {
 	local i body
@@ -429,11 +479,11 @@ wait_gate_health() {
 	return 1
 }
 
-step9_verify() {
-	log "步骤 9/9：健康自检"
+step10_verify() {
+	log "步骤 10/10：健康自检"
 	local body healthy=1
 	body=$(wait_gate_health) || {
-		warn "gate 未就绪，请查看: journalctl -u dsh-gate -n 50"
+		warn "gate 未就绪，请查看: journalctl -u vpssh -n 50"
 		die "健康检查失败（gate）"
 	}
 	# 等待 DSH 子进程启动 + launchToken 兑换完成（冷启动需要几秒到几十秒，小内存机器更久）
@@ -452,7 +502,7 @@ step9_verify() {
 			local err
 			err=$(printf '%s' "$body" | sed -n 's/.*"lastError":"\([^"]*\)".*/\1/p')
 			[[ -n "$err" ]] && warn "最近错误: $err"
-			warn "排查: journalctl -u dsh-gate -n 80 --no-pager"
+			warn "排查: journalctl -u vpssh -n 80 --no-pager"
 			break
 		fi
 		sleep 2
@@ -465,41 +515,43 @@ step9_verify() {
 	echo
 	echo "============================================================"
 	if [[ $healthy -eq 1 ]]; then
-		echo " dsh-vps 安装完成"
+		echo " vpssh 安装完成"
 	else
-		echo " dsh-vps 已安装，但 DSH 尚未就绪（见上方警告；页面会显示启动进度与错误）"
+		echo " vpssh 已安装，但 DSH 尚未就绪（见上方警告；页面会显示启动进度与错误）"
 	fi
 	echo "------------------------------------------------------------"
-	echo " DSH 版本  : ${DSH_VERSION}（钉住）"
+	echo " DSH 版本  : ${DSH_VERSION}（vpssh 测过的版本）"
 	echo " 访问地址  : $open_url"
 	if [[ -n "$SETUP_TOKEN" ]]; then
 		echo "             （初始设置需要上面的一次性令牌，别用不带令牌的地址）"
 	elif [[ -z "$DOMAIN" ]]; then
 		echo "             （未传 --domain，当前为自签证书过渡，浏览器会提示证书不受信任；域名可稍后在向导中填写）"
 	fi
-	echo " 服务/日志 : systemctl status dsh-gate | journalctl -u dsh-gate -f"
-	echo " 管理命令  : dsh-vps status | restart | upgrade | rollback | reset-admin | setup-url | backup"
+	echo " 服务/日志 : systemctl status vpssh | journalctl -u vpssh -f"
+	echo " 管理命令  : vpssh status | restart | upgrade | rollback | reset-admin | setup-url | backup"
 	echo "------------------------------------------------------------"
 	echo " 下一步："
 	echo " 1. 若使用域名，请先将 A 记录解析到本机（Caddy 会自动签发证书）"
 	echo " 2. 浏览器打开上面的访问地址，进入初始设置向导"
-	echo " 3. 填写管理员用户名/密码（+ 可选域名、DeepSeek API Key）→ 登录"
+	echo " 3. 设置管理员账号（可选：域名、模型 API Key）→ 登录"
 	if [[ -n "$SETUP_TOKEN" ]]; then
 		echo
-		echo " 令牌只此一份，链接丢了随时重取：sudo dsh-vps setup-url"
+		echo " 令牌只此一份，链接丢了随时重取：sudo vpssh setup-url"
 	fi
 	echo "============================================================"
 }
 
 ## endregion
 
+fetch_repo
 step1_prechecks
 step2_node
 step3_dsh
 step4_user
-step5_gate
+step5_plugin
+step6_gate
 resolve_trusted_host
-step6_caddy
-step7_systemd
-step8_firewall
-step9_verify
+step7_caddy
+step8_systemd
+step9_firewall
+step10_verify

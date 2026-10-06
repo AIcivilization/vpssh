@@ -208,7 +208,7 @@ const PART_LABEL = {
   commands: () => L('/vps- 命令', '/vps- commands'),
   skill: () => L('操作规则（skill）', 'Operating rules (skill)'),
   vpsMode: () => L('VPS 模式', 'VPS mode'),
-  guard: () => L('本机 bash 守卫', 'Local bash guard'),
+  guard: () => L('本机工具守卫', 'Local tool guard'),
   routes: () => L('设置页接口', 'Settings page API'),
   terminal: () => L('对话里的终端', 'Terminal in the conversation'),
 }

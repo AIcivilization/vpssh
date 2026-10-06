@@ -1,14 +1,14 @@
 // lib/vps-mode.js — 「VPS 模式」：对话头部的开关打开，这个对话就是在操作那台服务器
 //
-// 开关只改「命令发到哪台、AI 工具默认连哪台」还不够：模型不知道这件事，会照常用本机 bash，
+// 开关只改「命令发到哪台、AI 工具默认连哪台」还不够：模型不知道这件事，会照常用本机工具，
 // 把用户的服务器问题拿到用户电脑上去查（实测：模型跑了 ps aux、which dsh、ls ~）。所以：
 //
 //   1. 说明：绑定状态变化后的第一步，往这个对话追加一条来源为本插件的 user 消息，
 //      告诉模型绑定了哪台、什么系统、该用哪些工具（照 DSH 自带 dsh-time-context 的
 //      agent/pre-step 写法）。只在变化时发，不每轮刷
-//   2. 守卫：绑定期间拦下本机 bash（ctx.tools.guard，同步、单调拒绝）
+//   2. 守卫：拦下 DSH 自带的本机工具（ctx.tools.guard，同步、单调拒绝）。这一条不看开关，所有对话都拦
 //
-// 两件事都按对话生效：另一个窗口没开开关，既收不到说明，本机 bash 也照常可用。
+// 说明按对话生效：另一个窗口没开开关，就收不到说明。
 
 import { randomUUID } from 'node:crypto'
 import { cachedBinding, readHosts, readState, sessionBinding } from './config.js'
@@ -28,22 +28,45 @@ function ours(source) {
   return source?.kind === SOURCE_KIND || (source?.kind === 'plugin' && source.plugin === PLUGIN)
 }
 
-/** 会在用户电脑上执行命令的工具。只拦这些，读文件、搜索之类不受影响 */
-export const LOCAL_SHELL_TOOLS = new Set(['bash'])
+// vpssh 装在服务器上（"管理机"）。DSH 自带的本机工具碰到的就是管理机本身：所有机器的钥匙、
+// 机器清单、SSH 配置都在这里。模型只要能在本机执行命令或写文件，就能绕过风险分级确认
+// （比如往 SSH 配置里写一行 ProxyCommand，下次连机器就会执行）；能读文件，就能把钥匙读出来。
+// 所以 vpssh 里这些工具在所有对话里一律拦下，不看有没有绑定机器。
+// 要操作管理机本身，走它在机器清单里的那一台（经 SSH，照常确认）。
+
+/** 已知的本机工具：执行命令、读写文件、后台任务、本机终端 */
+export const LOCAL_TOOLS = new Set([
+  'bash', 'pwsh', 'terminal_send',
+  'read', 'read_image', 'grep', 'glob', 'lsp',
+  'write', 'edit', 'str_replace_editor',
+  'job_output', 'job_list', 'job_kill',
+])
+/** 不碰本机的 DSH 工具，名字里有 write 之类的词也放行 */
+const SAFE_TOOLS = new Set(['todo_write', 'ask_user_question', 'skill', 'subagent', 'plan'])
+/** DSH 以后新加的本机工具：名字像执行、写入的，宁可先拦 */
+const LOCAL_TOOL_PATTERN = /(^|_)(bash|pwsh|shell|python|exec|run|code|write|edit|patch|replace|job|terminal)(_|$)/
+
+export function isLocalTool(name) {
+  const n = String(name ?? '')
+  if (n.startsWith('vps_') || n.startsWith('mcp__') || SAFE_TOOLS.has(n)) return false
+  return LOCAL_TOOLS.has(n) || LOCAL_TOOL_PATTERN.test(n)
+}
 
 const MARK_BOUND = '[VPS 模式] 已绑定 '
 const MARK_OFF = '[VPS 模式] 已关闭'
 
 const PRIV_LABEL = { root: 'root', sudo: '免密 sudo', none: '只读（不是 root，也没有免密 sudo）' }
 
-/** 工具守卫：绑定期间拒绝本机 shell。返回字符串就是拒绝理由，返回 undefined 放行 */
-export function localShellGuard(exec) {
-  if (!LOCAL_SHELL_TOOLS.has(exec?.name)) return undefined
+/** 工具守卫：所有对话都拒绝本机工具。返回字符串就是拒绝理由，返回 undefined 放行 */
+export function localToolGuard(exec) {
+  if (!isLocalTool(exec?.name)) return undefined
   const alias = cachedBinding(String(exec?.agent?.session?.id ?? ''))
-  if (!alias) return undefined
   return (
-    `VPS 模式下本机 bash 已停用：这个对话绑定了服务器 ${alias}，用户要操作的是服务器，不是用户的电脑。` +
-    `在服务器上执行请用 vps_exec（host 可以省略）。确实需要在用户电脑上执行时，先请用户关闭对话头部的 VPS 开关。`
+    `vpssh 里不能直接在 vpssh 所在的服务器上执行命令或读写文件（${exec?.name} 已停用）。` +
+    (alias
+      ? `这个对话绑定了服务器 ${alias}：执行用 vps_exec（host 可以省略），改文件用 vps_write_file。`
+      : '操作服务器用 vps_exec / vps_write_file，host 写机器别名（vps_hosts 能列出全部机器）。') +
+    '要操作 vpssh 所在的这台机器，用它在机器清单里的别名，照常经确认执行。'
   )
 }
 
@@ -116,7 +139,7 @@ export async function boundText(alias, env = process.env) {
     '- 动手改之前先查现状：端口被谁占（ss -ltnp）、服务在不在跑、配置文件在哪',
     '- 装常见软件：先 vps_recipe action=list，有现成菜谱就用',
     '- 命令按上面的系统写。不同发行版的包管理器、服务管理、防火墙都不一样；脚本里优先用 $PKG、$SUDO、pkg_install、svc_enable_start、svc_active 这些跨系统写法',
-    '- 本机 bash 在 VPS 模式下已停用，调用会被拒绝；要看用户电脑上的文件，用 read、grep 这类文件工具',
+    '- bash、read、write 这类本机工具在 vpssh 里都已停用（它们碰到的是 vpssh 所在的服务器，那里有全部钥匙），调用会被拒绝',
     '- vps_exec 不是交互终端：要一步步按键的（菜单脚本、交互式安装向导、vim、top、mysql 命令行），告诉用户点对话头部「VPS」后面的 >_ 打开终端自己操作',
     '- 用户要把电脑上的文件传到服务器、或者从服务器下载文件：告诉用户点 >_ 打开面板、切到「文件」页，拖进去上传、右键下载（你没有传文件的工具）',
     '- 动手前先读 skill vps-operator，里面有必须遵守的操作规则',
@@ -126,7 +149,7 @@ export async function boundText(alias, env = process.env) {
 
 export const UNBOUND_TEXT = [
   MARK_OFF,
-  '用户关掉了 VPS 开关：这个对话不再绑定任何服务器，本机 bash 恢复可用。之后如果要操作服务器，需要用户重新打开开关，或者在 vps_ 工具里明确写 host。',
+  '用户关掉了 VPS 开关：这个对话不再绑定任何服务器。之后如果要操作服务器，需要用户重新打开开关，或者在 vps_ 工具里明确写 host。本机工具（bash、read、write 等）仍然停用。',
 ].join('\n')
 
 async function userMessage(text, section = 'vps-mode') {

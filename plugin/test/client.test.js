@@ -182,11 +182,11 @@ test('接口不回应：到点报错，按钮不会一直转', async () => {
   await assert.rejects(exported.__test.api('overview', {}, { timeoutMs: 60 }), /没有回应.*再试一次/)
 })
 
-test('连不上 DSH（服务已经关了）：提示去看 DSH 还开着吗', async () => {
+test('连不上 vpssh（服务已经关了）：提示刷新页面', async () => {
   const { exported } = await loadClient({
     fetchImpl: async () => { throw new TypeError('Failed to fetch') },
   })
-  await assert.rejects(exported.__test.api('overview'), /连不上 DSH/)
+  await assert.rejects(exported.__test.api('overview'), /连不上 vpssh/)
 })
 
 test('等待中的按钮会显示已等几秒（看得出没卡死）', async () => {
@@ -439,19 +439,4 @@ test('设置页「界面」「怎么用」：默认收起，只显示标题和�
   assert.match(html, /里面的内容/)
   assert.match(html, /aria-expanded="true"/)
   assert.doesNotMatch(html, /一行摘要/, '展开后不再显示摘要')
-})
-
-test('设置页的 vpssh 介绍：没装时介绍它并给 GitHub 链接和插件市场搜索；装了就指去「VPS 部署」', async () => {
-  const { exported } = await loadClient()
-  const render = (installed) => renderToStaticMarkup(React.createElement(exported.__test.SisterCard, { installed }))
-  const intro = render(false)
-  assert.match(intro, /在手机、平板上也用 DSH/)
-  assert.match(intro, /href="https:\/\/github.com\/AIcivilization\/vpssh"/)
-  assert.match(intro, /在插件市场搜索「vpssh」/)
-  assert.doesNotMatch(intro, /VPS 部署/)
-  assert.match(render(null), /在插件市场搜索/, '不知道装没装（老版本 DSH）：按没装介绍')
-  const have = render(true)
-  assert.match(have, /你已经装了 vpssh/)
-  assert.match(have, /「VPS 部署」/)
-  assert.doesNotMatch(have, /插件市场搜索/)
 })

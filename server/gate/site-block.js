@@ -5,11 +5,11 @@
  * Caddy 站点块的唯一模板。
  *
  * 三处共用同一份，任何改动只改这里：
- *   - install.sh        首次写入 /etc/caddy/dsh-site.conf
+ *   - install.sh        首次写入 /etc/caddy/vpssh-site.conf
  *   - gate/server.js    浏览器向导改域名时重写
- *   - bin/dsh-vps       vpn on/off 切换访问策略
+ *   - bin/vpssh       vpn on/off 切换访问策略
  *
- * 隧道模式（state/vpn.env 里 DSHVPS_VPN=on）：Caddy 只放行隧道网段，其余来源 abort。
+ * 隧道模式（state/vpn.env 里 VPSSH_VPN=on）：Caddy 只放行隧道网段，其余来源 abort。
  * 为什么不用公网出口 IP 白名单：出口 IP 不是身份，换网络 / 宽带重拨就变，会把使用者
  * 自己关在门外。隧道 IP 由我们自己分配（WireGuard），永不变化。
  *
@@ -28,8 +28,8 @@ function readVpnEnv(stateDir) {
 	const out = { on: false, subnet: DEFAULT_SUBNET };
 	try {
 		const txt = fs.readFileSync(path.join(stateDir, "vpn.env"), "utf8");
-		if (/^\s*DSHVPS_VPN\s*=\s*on\s*$/m.test(txt)) out.on = true;
-		const m = txt.match(/^\s*DSHVPS_VPN_SUBNET\s*=\s*(\S+)\s*$/m);
+		if (/^\s*VPSSH_VPN\s*=\s*on\s*$/m.test(txt)) out.on = true;
+		const m = txt.match(/^\s*VPSSH_VPN_SUBNET\s*=\s*(\S+)\s*$/m);
 		if (m) out.subnet = m[1];
 	} catch {
 		/* 未启用隧道 */
@@ -86,7 +86,7 @@ module.exports = { caddySiteBlock, readVpnEnv, isIpHost, DEFAULT_SUBNET, DEFAULT
 
 if (require.main === module) {
 	const host = process.argv[2];
-	const root = process.argv[3] || process.env.GATE_HOME || "/opt/dsh-vps";
+	const root = process.argv[3] || process.env.GATE_HOME || "/opt/vpssh";
 	const gatePort = Number(process.argv[4] || process.env.GATE_PORT || DEFAULT_GATE_PORT);
 	if (!host) {
 		console.error("用法: node site-block.js <host> [installRoot] [gatePort]");

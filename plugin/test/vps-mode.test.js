@@ -1,4 +1,4 @@
-// VPS 模式：开关打开 = 这个对话在操作服务器。说明只在绑定变化时发；本机 bash 只在绑定的对话里被拦。
+// VPS 模式：开关打开 = 这个对话在操作服务器。说明只在绑定变化时发；本机工具在所有对话里都被拦。
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, writeFile } from 'node:fs/promises'
@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { bindSession, paths, writeHosts } from '../lib/config.js'
 import {
-  PLUGIN, UNBOUND_TEXT, boundText, lastAnnouncement, localShellGuard, planAnnouncement, registerVpsMode,
+  PLUGIN, UNBOUND_TEXT, boundText, lastAnnouncement, localToolGuard, planAnnouncement, registerVpsMode,
 } from '../lib/vps-mode.js'
 
 async function sandbox({ facts } = {}) {
@@ -62,7 +62,7 @@ test('说明里写清系统，模型按系统写命令', async () => {
   assert.match(text, /209\.146\.116\.150:22，洛杉矶/)
   assert.match(text, /ubuntu 24\.04（debian 系）· 包管理 apt · init systemd · 架构 x86_64 · 权限 root/)
   assert.match(text, /vps_exec/)
-  assert.match(text, /本机 bash 在 VPS 模式下已停用/)
+  assert.match(text, /本机工具在 vpssh 里都已停用|bash、read、write 这类本机工具在 vpssh 里都已停用/)
 
   // 还没体检：让模型先确认系统，不许猜
   const { env: env2 } = await sandbox()
@@ -166,14 +166,21 @@ test('两个窗口互不影响：只有绑定的对话收到说明、被拦 bash
   assert.equal((await agents.step(vpsWindow)).length, 1)
   assert.deepEqual(await agents.step(codeWindow), [])
 
-  const bash = (session) => localShellGuard({ name: 'bash', agent: { session } })
-  assert.match(bash(vpsWindow), /VPS 模式下本机 bash 已停用.*vps-dsh.*vps_exec/)
-  assert.equal(bash(codeWindow), undefined, '另一个窗口照常用 bash')
-  assert.equal(localShellGuard({ name: 'read', agent: { session: vpsWindow } }), undefined, '读文件不拦')
-  assert.equal(localShellGuard({ name: 'vps_exec', agent: { session: vpsWindow } }), undefined)
+  const guard = (name, session) => localToolGuard({ name, agent: { session } })
+  assert.match(guard('bash', vpsWindow), /bash 已停用.*绑定了服务器 vps-dsh.*vps_exec/)
+  assert.match(guard('bash', codeWindow), /bash 已停用.*vps_hosts/, '没绑定的对话也拦')
+  for (const name of ['pwsh', 'read', 'read_image', 'grep', 'glob', 'write', 'edit', 'str_replace_editor', 'job_kill', 'terminal_send']) {
+    assert.ok(guard(name, codeWindow), `${name} 碰的是管理机本身，要拦`)
+  }
+  for (const name of ['python_run', 'shell', 'apply_patch', 'code_exec']) {
+    assert.ok(guard(name, codeWindow), `DSH 以后新加的 ${name} 看名字像执行或写入，先拦`)
+  }
+  for (const name of ['vps_exec', 'vps_write_file', 'vps_hosts', 'todo_write', 'ask_user_question', 'skill', 'subagent', 'mcp__srv__write_file']) {
+    assert.equal(guard(name, codeWindow), undefined, `${name} 不碰管理机，放行`)
+  }
 
   await bindSession('sess-window-1', null, env)
-  assert.equal(bash(vpsWindow), undefined, '关掉开关立刻放行')
+  assert.ok(guard('bash', vpsWindow), '关掉开关也照样拦')
 })
 
 test('自己敲的 /vps-sh 输出：下次跟 AI 说话时附上一次，令牌打码', async () => {
