@@ -61,10 +61,10 @@ test('bundle 以 ModuleLoader 形式导出，并注册三个挂载点', async ()
   const ctx = fakeSlots()
   exported.apply(ctx)
   const settings = ctx.registered.get('settings.section')
-  const toggle = ctx.registered.get('conversation.session.header.actions')
+  // VPS 开关在头部最左边（conversation.header.leading）：空白新对话里 DSH 藏起整排动作按钮，只有这里一直在
+  const toggle = ctx.registered.get('conversation.header.leading')
   const dock = ctx.registered.get('conversation.composer.dock')
   assert.ok(settings && toggle && dock, '三个挂载点都要在')
-  assert.equal(toggle.descriptor.id, 'vpssh')
   assert.equal(dock.descriptor.id, 'vpssh')
   assert.equal(settings.descriptor.id, 'vpssh')
 
@@ -101,7 +101,7 @@ test('品牌：侧栏顶部换成 vpssh，自己画的标志', async () => {
   assert.match(renderToStaticMarkup(React.createElement(mark.component, { size: 32 })), /width="32"/, '按侧栏要的尺寸画')
 })
 
-test('默认布局：每个对话第一次出现在屏幕上、又没开页签时，右栏打开「VPS 状态」；只做一次', async () => {
+test('默认布局：每个对话本次第一次出现在屏幕上时，右栏打开「VPS 状态」；只做一次', async () => {
   const { exported } = await loadClient()
   let current
   const listeners = new Set()
@@ -126,9 +126,9 @@ test('默认布局：每个对话第一次出现在屏幕上、又没开页签�
   await show('s2')
   await show('s1')
   assert.deepEqual(opened.map(([id]) => id), ['s1', 's2'], '回到关过的对话不再自作主张')
-  tabs.set('s3', [{ kind: 'files' }])
+  tabs.set('s3', [{ kind: 'vpssh-status' }])
   await show('s3')
-  assert.equal(opened.length, 2, '已经有页签的对话不动')
+  assert.deepEqual(opened.at(-1), ['s3', 'vpssh-status'], '已经有页签也打开：右栏可能是收着的')
   off()
   assert.equal(listeners.size, 0)
 })
@@ -156,7 +156,7 @@ test('默认布局：手机上（右栏会盖满整屏）不自动打开，换�
   delete globalThis.window.innerWidth
 })
 
-test('手机、iPad 打开时先到「服务器状态」；iPad 横屏把左栏收成一竖排；电脑不动', async () => {
+test('打开后的默认布局：手机、iPad 先到「服务器状态」；宽屏把左栏收成一竖排', async () => {
   const run = async ({ touch, width }) => {
     const { exported } = await loadClient()
     globalThis.window.innerWidth = width
@@ -172,7 +172,8 @@ test('手机、iPad 打开时先到「服务器状态」；iPad 横屏把左栏�
   }
   assert.deepEqual(await run({ touch: true, width: 375 }), [['select', 'vpssh-status']], '手机：左栏 DSH 自己会收')
   assert.deepEqual(await run({ touch: true, width: 1180 }), [['select', 'vpssh-status'], ['toggle']], 'iPad 横屏：收起展开的左栏')
-  assert.deepEqual(await run({ touch: false, width: 1440 }), [], '电脑照旧进对话')
+  assert.deepEqual(await run({ touch: false, width: 1440 }), [['toggle']], '电脑：照旧进对话，左栏收成一竖排')
+  assert.deepEqual(await run({ touch: false, width: 900 }), [], '窄窗口：DSH 自己会收，不再切换（否则反而展开）')
 })
 
 test('设置页能渲染', async () => {
@@ -305,7 +306,7 @@ test('没打开开关的对话：状态条一个像素都不渲染，头部开�
     React.createElement(ctx.registered.get('conversation.composer.dock').component, { sessionId: 'unbound' }),
   )
   const toggleHtml = renderToStaticMarkup(
-    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 'unbound' }),
+    React.createElement(exported.__test.VpsToggle, { sessionId: 'unbound' }),
   )
   await new Promise((r) => setTimeout(r, 30))
 
@@ -369,7 +370,7 @@ test('头部顺序：VPS → 终端按钮 → 机器方块', async () => {
   const ctx = fakeSlots()
   exported.apply(ctx)
   const html = renderToStaticMarkup(
-    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's7' }),
+    React.createElement(exported.__test.VpsToggle, { sessionId: 's7' }),
   )
   const vps = html.indexOf('>VPS<')
   const term = html.indexOf('&gt;_')
@@ -391,7 +392,7 @@ test('多台机器时头部是一排开关，没有下拉菜单', async () => {
   const ctx = fakeSlots()
   exported.apply(ctx)
   const html = renderToStaticMarkup(
-    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's9' }),
+    React.createElement(exported.__test.VpsToggle, { sessionId: 's9' }),
   )
   assert.equal((html.match(/<button/g) ?? []).length, 3, '两台机器两个方块 + 绑定后的终端按钮')
   assert.match(html, />&gt;_</, '终端按钮')
@@ -409,7 +410,7 @@ test('终端按钮：没绑定也一直在（位置不跳），但显示为淡�
   const ctx = fakeSlots()
   exported.apply(ctx)
   const html = renderToStaticMarkup(
-    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 'free' }),
+    React.createElement(exported.__test.VpsToggle, { sessionId: 'free' }),
   )
   assert.match(html, /&gt;_/, '终端按钮一直在')
   assert.match(html, /data-vps-terminal=""[^>]*opacity:0\.55/, '没绑定时淡色')
@@ -511,7 +512,7 @@ test('选了机器但还没测出结果的头部：方块是黄的，不是绿�
   const ctx = fakeSlots()
   exported.apply(ctx)
   const html = renderToStaticMarkup(
-    React.createElement(ctx.registered.get('conversation.session.header.actions').component, { sessionId: 's5' }),
+    React.createElement(exported.__test.VpsToggle, { sessionId: 's5' }),
   )
   assert.match(html, /data-vps-chip="checking"/)
   assert.doesNotMatch(html, /data-vps-chip="ok"/)
