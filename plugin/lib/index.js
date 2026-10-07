@@ -125,7 +125,10 @@ export function apply(ctx, config = {}) {
 
   // vpssh 所在的这台服务器：第一次启动时登记成第一台机器（install.sh 给了账号才做）
   ensureLocalHost({ env: deps.env })
-    .then((r) => { if (r.added) console.info(`[vpssh] 已把这台服务器登记为机器 ${r.added}`) })
+    .then((r) => {
+      if (r.added) console.info(`[vpssh] 已把这台服务器登记为机器 ${r.added}`)
+      if (r.updated) console.info(`[vpssh] 机器 ${r.updated} 改为以 ${r.user} 登录`)
+    })
     .catch((error) => note('登记本机失败', error))
 
   // AI 工具（硬依赖 tools）

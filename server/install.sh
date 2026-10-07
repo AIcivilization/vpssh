@@ -359,6 +359,7 @@ sshd_port() {
 
 KEYS_USER="vpssh-keys"
 LOCAL_ADMIN="vpssh-admin"
+LOCAL_USER="root" # vpssh 登录这台机器用的账号（见 step5_keys）
 KEY_PUB="/var/lib/vpssh-keys/vpssh_ed25519.pub"
 LOCAL_SSH_PORT=22
 
@@ -388,29 +389,52 @@ step5_keys() {
 	systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
 	LOCAL_SSH_PORT=$(sshd_port)
 
-	if ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
-		useradd --create-home --shell /bin/bash "$LOCAL_ADMIN"
-		passwd -l "$LOCAL_ADMIN" >/dev/null
+	# 本机用 root 登录：和平时 SSH 上来一样（root@机器名、在 /root 下），终端、文件、AI 看到的都是这台机器本来的样子。
+	# vpssh 的公钥只加一行进 /root/.ssh/authorized_keys，限定只能从本机（127.0.0.1）用；原有的行一字不动。
+	# sshd 禁了 root 登录（PermitRootLogin no）时才退回专用账号 vpssh-admin（免密 sudo）
+	local prl
+	prl=$({ sshd -T 2>/dev/null || true; } | awk '$1=="permitrootlogin"{print $2; exit}')
+	if [[ "$prl" == "no" || "$prl" == "forced-commands-only" ]]; then
+		LOCAL_USER="$LOCAL_ADMIN"
+		if ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
+			useradd --create-home --shell /bin/bash "$LOCAL_ADMIN"
+			passwd -l "$LOCAL_ADMIN" >/dev/null
+		fi
+		local sudoers="/etc/sudoers.d/vpssh-admin"
+		printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$LOCAL_ADMIN" >"$sudoers.tmp"
+		chmod 440 "$sudoers.tmp"
+		visudo -cf "$sudoers.tmp" >/dev/null || die "$(M "sudoers 校验失败" "sudoers check failed")"
+		mv "$sudoers.tmp" "$sudoers"
+		log "$(M "这台机器禁止 root 用 SSH 登录，vpssh 用专用账号 $LOCAL_ADMIN（免密 sudo）管它" "Root SSH login is disabled here; vpssh manages this machine through $LOCAL_ADMIN (passwordless sudo)")"
+	else
+		LOCAL_USER=root
 	fi
-	local sudoers="/etc/sudoers.d/vpssh-admin"
-	printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$LOCAL_ADMIN" >"$sudoers.tmp"
-	chmod 440 "$sudoers.tmp"
-	visudo -cf "$sudoers.tmp" >/dev/null || die "$(M "sudoers 校验失败" "sudoers check failed")"
-	mv "$sudoers.tmp" "$sudoers"
-	local home ssh_dir
-	home=$(getent passwd "$LOCAL_ADMIN" | cut -d: -f6)
-	ssh_dir="$home/.ssh"
-	mkdir -p "$ssh_dir"
-	printf 'from="127.0.0.1,::1",no-agent-forwarding,no-X11-forwarding %s\n' "$(cat "$KEY_PUB")" >"$ssh_dir/authorized_keys"
-	chown -R "$LOCAL_ADMIN:" "$ssh_dir"
-	chmod 700 "$ssh_dir"
-	chmod 600 "$ssh_dir/authorized_keys"
+	add_local_key "$LOCAL_USER"
 	# sshd 限制了 AllowUsers / AllowGroups 时提醒（不替用户改 sshd 配置）
 	if { sshd -T 2>/dev/null || true; } | grep -qiE '^(allowusers|allowgroups) '; then
-		warn "$(M "sshd 设了 AllowUsers/AllowGroups：请把 $LOCAL_ADMIN 加进去，否则 vpssh 管不了这台机器" "sshd uses AllowUsers/AllowGroups: add $LOCAL_ADMIN, or vpssh cannot manage this machine")"
+		warn "$(M "sshd 设了 AllowUsers/AllowGroups：请把 $LOCAL_USER 加进去，否则 vpssh 管不了这台机器" "sshd uses AllowUsers/AllowGroups: add $LOCAL_USER, or vpssh cannot manage this machine")"
 	fi
-	log "$(M "钥匙由 vpssh-keyd 保管；本机账号 $LOCAL_ADMIN（SSH 端口 $LOCAL_SSH_PORT）" "Key held by vpssh-keyd; local account $LOCAL_ADMIN (SSH port $LOCAL_SSH_PORT)")"
+	log "$(M "钥匙由 vpssh-keyd 保管；这台机器以 $LOCAL_USER 登录（SSH 端口 $LOCAL_SSH_PORT）" "Key held by vpssh-keyd; this machine is managed as $LOCAL_USER (SSH port $LOCAL_SSH_PORT)")"
 }
+
+# 把 vpssh 的公钥加进某个账号的 authorized_keys：只追加一行（已有就不重复加），不碰原有内容
+add_local_key() { # $1=账号
+	local user="$1" home ssh_dir file body
+	home=$(getent passwd "$user" | cut -d: -f6)
+	ssh_dir="$home/.ssh"
+	file="$ssh_dir/authorized_keys"
+	body=$(awk '{print $2}' "$KEY_PUB")
+	mkdir -p "$ssh_dir"
+	touch "$file"
+	if ! grep -qF "$body" "$file"; then
+		[[ -z "$(tail -c1 "$file")" ]] || printf '\n' >>"$file"
+		printf 'from="127.0.0.1,::1",no-agent-forwarding,no-X11-forwarding %s\n' "$(cat "$KEY_PUB")" >>"$file"
+	fi
+	chown "$user:" "$ssh_dir" "$file"
+	chmod 700 "$ssh_dir"
+	chmod 600 "$file"
+}
+
 
 ## endregion
 
@@ -611,6 +635,7 @@ DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
 DSH_HOME=$DSH_HOME_DIR
 DSH_TRUSTED_HOST=$trusted
 VPSSH_LOCAL_PORT=$LOCAL_SSH_PORT
+VPSSH_LOCAL_USER=$LOCAL_USER
 GATE_PORT=$GATE_PORT
 DSH_PORT=$DSH_PORT
 VPSSH_PUBLIC_PORT=$PUBLIC_PORT

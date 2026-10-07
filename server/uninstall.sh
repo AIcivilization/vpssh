@@ -82,7 +82,7 @@ if [[ $ASSUME_YES -eq 0 ]]; then
   - 程序        ${INSTALL_ROOT}、/usr/local/bin/vpssh
   - Caddy 站点  $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo "（并移除 caddy 软件包）")
   - 隧道        /etc/wireguard/wg0.conf（仅当它是 vpssh 创建的；你自己的 wg0 不动）
-  - 本机账号    $LOCAL_ADMIN（vpssh 用它管理这台机器，连同它的免密 sudo 一起删）
+  - 本机登录    root 的 authorized_keys 里 vpssh 加的那一行；专用账号 $LOCAL_ADMIN（如有，连同它的免密 sudo）
   - 数据        /home/vpssh、$KEY_DIR、系统用户 $DSH_USER / $KEYS_USER$([ $KEEP_DATA -eq 1 ] && echo "（保留；要删加 --delete-data）" || echo "（删除）")
 
 删除前会先打包备份到 /root/vpssh-uninstall-<时间>.tar.gz
@@ -94,7 +94,7 @@ About to remove vpssh:
   - Program        ${INSTALL_ROOT}, /usr/local/bin/vpssh
   - Caddy site     $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo " (and the caddy package)")
   - Tunnel         /etc/wireguard/wg0.conf (only if vpssh created it; your own wg0 is left alone)
-  - Local account  $LOCAL_ADMIN (vpssh used it to manage this machine; removed with its sudo rule)
+  - Local login    vpssh's line in root's authorized_keys; the account $LOCAL_ADMIN if present (with its sudo rule)
   - Data           /home/vpssh, $KEY_DIR, users $DSH_USER / $KEYS_USER$([ $KEEP_DATA -eq 1 ] && echo " (kept; add --delete-data to remove)" || echo " (deleted)")
 
 A backup goes to /root/vpssh-uninstall-<time>.tar.gz first.
@@ -220,6 +220,17 @@ fi
 ## region: 步骤 6：本机账号与数据
 
 log "$(M "步骤 6/6：本机账号与数据" "Step 6/6: local account and data")"
+# vpssh 用 root 登录这台机器时在 /root/.ssh/authorized_keys 里加过一行：按 vpssh 的公钥认出那一行删掉，其余不动
+if [[ -s "$KEY_DIR/vpssh_ed25519.pub" && -f /root/.ssh/authorized_keys ]]; then
+	key_body=$(awk '{print $2}' "$KEY_DIR/vpssh_ed25519.pub")
+	if [[ -n "$key_body" ]] && grep -qF "$key_body" /root/.ssh/authorized_keys; then
+		cp -p /root/.ssh/authorized_keys "/root/.ssh/authorized_keys.bak-vpssh-$(date +%s)"
+		grep -vF "$key_body" /root/.ssh/authorized_keys >/root/.ssh/authorized_keys.vpssh-tmp || true
+		cat /root/.ssh/authorized_keys.vpssh-tmp >/root/.ssh/authorized_keys # 原文件就地改写，保留属主和权限
+		rm -f /root/.ssh/authorized_keys.vpssh-tmp
+		log "$(M "已从 root 的 authorized_keys 去掉 vpssh 的那一行" "Removed vpssh's line from root's authorized_keys")"
+	fi
+fi
 if id "$LOCAL_ADMIN" >/dev/null 2>&1; then
 	# vpssh 刚经 SSH 登录过它：登录会话（含 systemd --user）还在时 userdel 会拒绝，先结束再删
 	loginctl terminate-user "$LOCAL_ADMIN" 2>/dev/null || true

@@ -63,4 +63,18 @@ test('本机登记：有 VPSSH_LOCAL_USER 才做，只做一次，用户删了�
   assert.match(dropin, /IdentityAgent SSH_AUTH_SOCK/, '明确走 keyd，不受系统 ssh_config 影响')
 
   assert.deepEqual(await ensureLocalHost({ env, probe: false }), { skipped: 'already-done' })
+
+  // 登录账号改了（0.1.5 以前是 vpssh-admin，之后默认 root）：已登记的那台跟着改，备注、分组不变
+  const doc0 = await readHosts(env)
+  const { writeHosts } = await import('../lib/config.js')
+  await writeHosts({ ...doc0, hosts: { [first.added]: { ...doc0.hosts[first.added], group: '本机' } } }, env)
+  const moved = await ensureLocalHost({ env: { ...env, VPSSH_LOCAL_USER: 'root' }, probe: false })
+  assert.equal(moved.updated, first.added)
+  assert.match(await readFile(paths(env).sshDropin, 'utf8'), /User root/)
+  assert.equal((await readHosts(env)).hosts[first.added].group, '本机', '分组不丢')
+  assert.deepEqual(await ensureLocalHost({ env: { ...env, VPSSH_LOCAL_USER: 'root' }, probe: false }), { skipped: 'already-done' })
+
+  // 用户把它删了：账号再变也不加回来
+  await writeHosts({ ...(await readHosts(env)), hosts: {} }, env)
+  assert.deepEqual(await ensureLocalHost({ env, probe: false }), { skipped: 'already-done' })
 })
