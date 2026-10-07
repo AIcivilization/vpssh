@@ -480,7 +480,7 @@ test('设置页源码里「终端」栏目的选项齐全', async () => {
   for (const label of ['跟随系统', '暗色', '白色', '断线后保留', '允许从其他设备打开 VPS 终端', '字号']) {
     assert.ok(src.includes(`'${label}'`), `缺少「${label}」`)
   }
-  assert.ok(src.includes("h(TerminalSettingsCard, { settings, setSettings })"), '终端卡片挂在设置页里')
+  assert.ok(src.includes("h(TerminalSettingsCard, { settings, setSettings, behindGate"), "终端卡片挂在设置页里（网关后面不显示「其他设备」那一项）")
 })
 
 test('终端已开多久的文字', async () => {

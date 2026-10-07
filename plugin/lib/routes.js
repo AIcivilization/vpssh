@@ -170,6 +170,7 @@ export function registerRoutes(ctx, deps = {}) {
     return {
       ...hosts,
       version: LOADED_VERSION,
+      behindGate: env.VPSSH_BEHIND_GATE === '1', // 界面据此隐藏「允许从其他设备打开」这一项
       lanBound,
       recipes: list.map((r) => ({
         id: r.id, kind: r.kind, name: r.name, desc: r.desc, tags: r.tags,
@@ -293,8 +294,9 @@ export function registerRoutes(ctx, deps = {}) {
   route('onboarding/connect', async ({ hostname, port = 22, user = 'root', password = '', alias, note = '', group = '' }, req) => {
     const { validateConnection } = await import('./config.js')
     if (password && !isLoopbackRequest(req)) {
+      const { remoteAllowed } = await import('./config.js')
       const doc = await readHosts(env)
-      if (doc.settings.allowTerminalRemote !== true) {
+      if (!remoteAllowed(doc, env)) {
         throw new Error(L('带密码添加机器只能在运行 DSH 的这台电脑上操作（从别的设备发，密码会经过网络）。要放开，到 DSH 设置 → VPS 管理 → 界面 里勾选「允许从其他设备打开 VPS 终端」', 'Adding a machine with a password only works on the computer running DSH (from another device the password would cross the network). To allow it, tick "Allow opening the VPS terminal from other devices" under DSH Settings → VPS Manager → Interface'))
       }
     }
@@ -434,7 +436,8 @@ export function registerRoutes(ctx, deps = {}) {
   async function assertLocal(req) {
     if (isLoopbackRequest(req)) return
     const doc = await readHosts(env)
-    if (doc.settings.allowTerminalRemote !== true) throw new Error(REMOTE_HINT)
+    const { remoteAllowed } = await import('./config.js')
+    if (!remoteAllowed(doc, env)) throw new Error(REMOTE_HINT)
   }
   async function boundAlias(sessionId) {
     const { sessionBinding } = await import('./config.js')

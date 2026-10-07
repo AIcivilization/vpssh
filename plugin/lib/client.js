@@ -1565,7 +1565,7 @@ window.__ModuleLoader__.load({
               },
             }, L('保存设置', 'Save settings')))) : null,
 
-        settings ? h(TerminalSettingsCard, { settings, setSettings }) : null,
+        settings ? h(TerminalSettingsCard, { settings, setSettings, behindGate: Boolean(d?.behindGate) }) : null,
 
         h(RuntimeCard, { health: gate.data?.health }),
         gate.data?.health ? h(ServerCommandsCard) : null,
@@ -5486,7 +5486,7 @@ window.__ModuleLoader__.load({
       }))
     }
 
-    function TerminalSettingsCard({ settings, setSettings }) {
+    function TerminalSettingsCard({ settings, setSettings, behindGate = false }) {
       const [msg, setMsg] = useState('')
       const [error, setError] = useState('')
       const prefs = normalizeTermPrefs(settings.terminal)
@@ -5529,7 +5529,8 @@ window.__ModuleLoader__.load({
         row(L('断线后保留', 'Keep after disconnect'),
           h(Segmented, { value: prefs.keepMinutes, options: TERM_KEEP, onChange: (v) => setPref('keepMinutes', v) }),
           L('刷新页面或网络断开后，服务器上的终端保留多久。这段时间内回来会自动接上，断开期间的输出也补回来', 'How long the terminal on the server is kept after a reload or network drop. Come back within that time and it reconnects, replaying the output you missed')),
-        row(L('其他设备', 'Other devices'),
+        // vpssh 网关后面本来就都是「别的设备」、都登录过：这一项没有意义，不显示
+        behindGate ? null : row(L('其他设备', 'Other devices'),
           h('label', { style: S.row },
             h('input', {
               type: 'checkbox',

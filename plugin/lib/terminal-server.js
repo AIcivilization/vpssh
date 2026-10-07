@@ -26,7 +26,7 @@ import { readFile } from 'node:fs/promises'
 import { WebSocketServer } from 'ws'
 import { appendAudit } from './audit.js'
 import { noteReach } from './reach.js'
-import { readHosts, sessionBinding } from './config.js'
+import { readHosts, remoteAllowed, sessionBinding } from './config.js'
 import { shellQuote } from './payload.js'
 import { runProcess } from './spawn.js'
 import { assertAlias, baseOptions, classifySshFailure, noSshClientHint, sshArgs } from './ssh.js'
@@ -647,7 +647,7 @@ export function registerTerminal(webCtx, deps = {}) {
     // 鉴权过了才说具体原因：这些是「你该去改设置」一类的提示，不是安全信息
     if (!isLoopbackRequest(req)) {
       const doc = await readHosts(env)
-      if (doc.settings.allowTerminalRemote !== true) {
+      if (!remoteAllowed(doc, env)) {
         throw new Error(L('VPS 终端默认只能在本机打开。要从局域网或反向代理使用，到 DSH 设置 → VPS 管理 → 界面 里勾选「允许从其他设备打开 VPS 终端」', 'By default the VPS terminal only opens on this computer. To use it over the local network or a reverse proxy, tick "Allow opening the VPS terminal from other devices" under DSH Settings → VPS Manager → Interface'))
       }
     }

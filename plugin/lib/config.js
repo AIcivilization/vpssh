@@ -34,6 +34,19 @@ export class ConfigError extends Error {
 
 // —— 路径 ——
 
+/**
+ * 是否在 vpssh 的登录网关后面（vpssh.service 设 VPSSH_BEHIND_GATE=1）。那里所有访问都来自别的设备、
+ * 经网关登录过；DSH 只听 127.0.0.1。「只许运行 DSH 的这台电脑打开终端」的限制在这里没有意义，直接放开
+ */
+export function behindGate(env = process.env) {
+  return env.VPSSH_BEHIND_GATE === '1'
+}
+
+/** 终端、文件、带密码添加机器能不能从别的设备用：网关后面一律可以，否则看设置里的勾选 */
+export function remoteAllowed(doc, env = process.env) {
+  return behindGate(env) || doc?.settings?.allowTerminalRemote === true
+}
+
 /** $DSH_HOME 必须读环境变量解析后的值，不能硬编码 ~/.dsh */
 export function dshHome(env = process.env) {
   const fromEnv = env.DSH_HOME?.trim()

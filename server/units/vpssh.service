@@ -20,6 +20,8 @@ Environment=SSH_AUTH_SOCK=/run/vpssh-keys/agent.sock
 Environment=VPSSH_KEY_PUB=/var/lib/vpssh-keys/vpssh_ed25519.pub
 # vpssh 所在的这台机器：插件第一次启动时把它登记成第一台机器，经本机 SSH 以这个账号登录
 Environment=VPSSH_LOCAL_USER=vpssh-admin
+# 在登录网关后面：所有访问都来自别的设备、都经网关登录过，终端和文件不再限「只许本机打开」
+Environment=VPSSH_BEHIND_GATE=1
 ExecStart=__NODE_BIN__ /opt/vpssh/gate/server.js
 Restart=always
 RestartSec=2

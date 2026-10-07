@@ -39,9 +39,9 @@ function streamRes() {
   return res
 }
 
-async function sandbox() {
+async function sandbox(extraEnv = {}) {
   const home = await mkdtemp(join(tmpdir(), 'vpssh-files-routes-'))
-  const env = { HOME: home, DSH_HOME: join(home, '.dsh') }
+  const env = { HOME: home, DSH_HOME: join(home, '.dsh'), ...extraEnv }
   await writeHosts({ current: '', hosts: { hk: { note: '香港' } } }, env)
   await bindSession('sess-1', 'hk', env)
   const site = join(home, 'site')
@@ -69,6 +69,12 @@ test('关掉 VPS 开关的对话：不给用', async () => {
   const res = await s.call('list', { path: s.site }, { sessionId: 'other' })
   assert.equal(res.ok, false)
   assert.match(res.error, /还没打开 VPS 开关/)
+})
+
+test('在 vpssh 登录网关后面：从别的设备打开直接可以，不用勾选（那里的访问都来自别的设备、都登录过）', async () => {
+  const s = await sandbox({ VPSSH_BEHIND_GATE: '1' })
+  const res = await s.call('list', { path: s.site }, { socket: { remoteAddress: '192.168.1.20' } })
+  assert.equal(res.ok, true, res.error)
 })
 
 test('从别的设备打开：默认拒绝，设置里放开后可以（和终端同一个开关）', async () => {
