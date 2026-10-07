@@ -1240,7 +1240,9 @@ function caddyReload() {
 			reject(new Error(`读取 /etc/caddy/Caddyfile 失败: ${err.message}`));
 			return;
 		}
-		const body = JSON.stringify({ config: caddyfile, adapter: "caddyfile" });
+		// /load 收原样的 Caddyfile，用 Content-Type 告诉 Caddy 怎么解析。曾经发的是 {config, adapter} 的 JSON，
+		// 新版 Caddy 直接 400（unknown field "adapter"），配置根本没换上（用户实测：填域名后打不开）
+		const body = caddyfile;
 		const url = new URL(`${CADDY_ADMIN}/load`);
 		const req = http.request(
 			{
@@ -1248,7 +1250,7 @@ function caddyReload() {
 				port: url.port || 80,
 				method: "POST",
 				path: url.pathname,
-				headers: { "content-type": "application/json", "content-length": Buffer.byteLength(body) },
+				headers: { "content-type": "text/caddyfile", "content-length": Buffer.byteLength(body) },
 				timeout: 20_000,
 			},
 			(res) => {
@@ -1306,12 +1308,21 @@ function siteBlock(host) {
 }
 
 async function applyDomainChange(domain) {
+	// Caddy 没换上新配置就什么都不改：放回原来的站点文件、不换访问地址。否则新地址打不开、旧地址也进不去
+	let previous = null;
+	try {
+		previous = fs.readFileSync(CADDY_SITE_FILE, "utf8");
+	} catch {
+		/* 没有旧文件 */
+	}
 	fs.writeFileSync(CADDY_SITE_FILE, siteBlock(domain));
 	try {
 		await caddyReload();
 		log(`caddy reloaded with site ${domain}`);
 	} catch (err) {
-		log(`warn: caddy reload failed: ${err.message}（站点配置已写入，Caddy 重启后生效）`);
+		if (previous !== null) fs.writeFileSync(CADDY_SITE_FILE, previous);
+		log(`caddy reload failed, kept the old address: ${err.message}`);
+		throw new Error(`Caddy ${err.message}`);
 	}
 	dshTrustedHost = domain;
 	persistTrustedHost(domain);
