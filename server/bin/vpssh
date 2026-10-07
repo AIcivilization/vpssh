@@ -879,7 +879,7 @@ PrivateKey = $(tr -d '[:space:]' <"$VPN_DIR/server.key")
 SaveConfig = false
 EOF
 		chmod 600 "$WG_CONF"
-	elif ! grep -q "vpssh" "$WG_CONF"; then
+	elif ! grep -q "^# vpssh 隧道接口" "$WG_CONF"; then
 		# 不接管别人的 wg0：往里追加设备会改掉你原有的隧道，卸载时也分不清该不该删
 		die "$(M "${WG_CONF} 已存在且不是 vpssh 创建的（你自己的 WireGuard？）。为避免改动它，本命令已停止。" "${WG_CONF} exists and was not created by vpssh (your own WireGuard?). Stopped so it is not changed.")"
 	else

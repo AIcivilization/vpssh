@@ -203,7 +203,8 @@ fi
 ## region: 步骤 5：隧道
 
 log "$(M "步骤 5/6：移除隧道" "Step 5/6: remove the tunnel")"
-if [[ -f /etc/wireguard/wg0.conf ]] && ! grep -q "vpssh" /etc/wireguard/wg0.conf; then
+# 只认 vpssh 自己写的那行开头（同机 dsh-vps 的 wg0 开头是「# dsh-vps 隧道接口」，不能碰）
+if [[ -f /etc/wireguard/wg0.conf ]] && ! grep -q "^# vpssh 隧道接口" /etc/wireguard/wg0.conf; then
 	log "$(M "wg0.conf 不是 vpssh 创建的，保留不动" "wg0.conf was not created by vpssh; left alone")"
 elif [[ -f /etc/wireguard/wg0.conf ]]; then
 	systemctl stop wg-quick@wg0 2>/dev/null || true
