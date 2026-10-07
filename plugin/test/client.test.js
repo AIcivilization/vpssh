@@ -68,9 +68,23 @@ test('bundle 以 ModuleLoader 形式导出，并注册三个挂载点', async ()
   assert.equal(dock.descriptor.id, 'vpssh')
   assert.equal(settings.descriptor.id, 'vpssh')
 
-  // 左侧面板已删除：对话解决不了的才留在 UI 里
-  assert.equal(ctx.registered.get('sidebar.panellist'), undefined, '不该再注册侧栏面板')
-  assert.equal(ctx.registered.get('main'), undefined, '不该再注册主区域')
+  // 左栏「VPS 管理」「常用操作」：按钮和中间区域的页面用同一个 id
+  const panels = []
+  const mains = []
+  const ctx2 = {
+    slots: {
+      inject: (_name, cb) => cb(),
+      register: (descriptor, component) => {
+        if (descriptor.name === 'sidebar.panellist') panels.push(descriptor)
+        if (descriptor.name === 'main') mains.push(descriptor)
+        return () => {}
+      },
+    },
+  }
+  exported.apply(ctx2)
+  assert.deepEqual(panels.map((p) => p.id), ['vpssh-manage', 'vpssh-recipes'])
+  assert.deepEqual(mains.map((m) => m.key), ['vpssh-manage', 'vpssh-recipes'], '页面的 key 和按钮的 id 对上')
+  assert.deepEqual(panels.map((p) => p.label()), ['VPS 管理', '常用操作'])
 })
 
 test('品牌：侧栏顶部换成 vpssh，自己画的标志', async () => {
@@ -125,7 +139,8 @@ test('设置页能渲染', async () => {
   exported.apply(ctx)
   const html = renderToStaticMarkup(React.createElement(ctx.registered.get('settings.section').component))
   assert.match(html, /VPS 管理/)
-  assert.match(html, /卸载…/, '设置页底部要有卸载入口')
+  assert.match(html, /从 ~\/\.ssh\/config 导入/, '导入还在，只是放在不显眼处')
+  assert.match(html, /版本/)
 })
 
 test('设置页的反馈卡片：平时只有按钮，诊断信息和报错记录收起来，不自动展示（用户定的）', async () => {

@@ -21,7 +21,7 @@ const require = createRequire(import.meta.url)
 const VERIFIED = require('./verified-dsh.json')
 // 启动时加载的是哪个版本。插件市场可以在 DSH 运行期间装新版，磁盘上的文件变了，
 // 跑着的还是老代码：两者不一样就提示重启（见 diagnostics 的 restartNeeded）
-const LOADED_VERSION = require('../package.json').version
+export const LOADED_VERSION = require('../package.json').version
 
 export const REPO_URL = 'https://github.com/AIcivilization/vpssh'
 const KEEP_MONTHS = 3

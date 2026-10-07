@@ -41,6 +41,8 @@ import { sshCloseMaster, sshResolve } from './ssh.js'
 import { appendAudit } from './audit.js'
 import * as files from './filemgr.js'
 import { isLoopbackRequest } from './terminal-server.js'
+import qrcode from './vendor/qrcode/qrcode.mjs'
+import { LOADED_VERSION } from './health.js'
 
 const MAX_BODY = 2 * 1024 * 1024
 
@@ -157,6 +159,9 @@ export function registerRoutes(ctx, deps = {}) {
   }
 
   // —— 总览 ——
+  // 「VPS 管理」页的手机二维码：在服务器上生成，返回一条 SVG 路径（每个深色模块一个 1×1 方块）
+  route('qr', async ({ text }) => qrPath(text))
+
   route('overview', async () => {
     const [hosts, { list, errors, conflicts }] = await Promise.all([
       hostsAction({ env }),
@@ -164,6 +169,7 @@ export function registerRoutes(ctx, deps = {}) {
     ])
     return {
       ...hosts,
+      version: LOADED_VERSION,
       lanBound,
       recipes: list.map((r) => ({
         id: r.id, kind: r.kind, name: r.name, desc: r.desc, tags: r.tags,
@@ -762,4 +768,19 @@ export function registerRoutes(ctx, deps = {}) {
       }
     },
   }
+}
+
+/** 二维码矩阵转成 SVG 路径。只给页面地址用，太长的不收 */
+export function qrPath(text) {
+  const value = String(text ?? '')
+  if (!value || value.length > 512) throw new Error(L('二维码内容为空或太长', 'QR content is empty or too long'))
+  const q = qrcode(0, 'M')
+  q.addData(value)
+  q.make()
+  const n = q.getModuleCount()
+  let d = ''
+  for (let r = 0; r < n; r += 1) {
+    for (let c = 0; c < n; c += 1) if (q.isDark(r, c)) d += `M${c} ${r}h1v1h-1z`
+  }
+  return { n, d }
 }

@@ -1338,6 +1338,197 @@ window.__ModuleLoader__.load({
         info.installable && !info.canInstall ? h('div', { style: { marginTop: 4 } }, L('这个版本的 DSH 不能在这里装插件，在 DSH 终端里运行这条命令，装好后重启 DSH：', 'This DSH version cannot install plugins from here. Run this in the DSH terminal, then restart DSH:'), command(info.command)) : null)
     }
 
+    // ——————————————————————— 「VPS 管理」页：vpssh 自己的卡片（服务器那一层） ———————————————————————
+    //
+    // 数据来自同源的登录网关（gate）：/gate/health、/gate/update、/gate/password。
+    // 网关自己做登录校验；拿不到（不是经网关打开的页面）就不显示这些卡片。
+
+    /** GET 网关接口；拿不到（不是网关、没登录、断了）返回 null */
+    async function gateGet(path) {
+      try {
+        const res = await fetch(path, { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(20_000) })
+        if (!res.ok || !String(res.headers.get('content-type') || '').includes('application/json')) return null
+        return await res.json()
+      } catch {
+        return null
+      }
+    }
+
+    function useGate() {
+      return useAsync(async () => {
+        const [health, update] = await Promise.all([gateGet('/gate/health'), gateGet('/gate/update')])
+        return { health, update }
+      }, [])
+    }
+
+    const isIpHost = (host) => /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.includes(':')
+
+    /** 手机、平板：扫码打开并登录，再加到主屏幕。二维码在服务器上生成（api qr），不依赖外部服务 */
+    function HomeScreenCard({ health }) {
+      const url = `${window.location.origin}/`
+      const host = window.location.hostname
+      const qr = useAsync(() => api('qr', { text: url }), [url])
+      const small = { ...S.muted, fontSize: 12, lineHeight: 1.7 }
+      const warn = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-warning-primary, #d29922)', marginTop: 4 }
+      return h('div', { style: { ...S.card, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' } },
+        qr.data
+          ? h('svg', {
+            viewBox: `-2 -2 ${qr.data.n + 4} ${qr.data.n + 4}`, width: 112, height: 112, shapeRendering: 'crispEdges',
+            role: 'img', 'aria-label': url,
+            // 二维码始终白底黑块：深色主题下反色会让部分手机识别不了
+            style: { flex: 'none', background: '#fff', borderRadius: 6 },
+          }, h('path', { d: qr.data.d, fill: '#000' }))
+          : h('div', { style: { width: 112, height: 112, flex: 'none', borderRadius: 6, background: T.layer } }),
+        h('div', { style: { flex: '1 1 220px', minWidth: 0 } },
+          h('div', { style: { fontWeight: 600, marginBottom: 2 } }, L('手机、平板', 'Phone and tablet')),
+          h('div', { style: small },
+            h('div', null, L('手机扫码打开并登录，然后添加到主屏幕：', 'Scan with your phone, sign in, then add it to the home screen:')),
+            h('div', null, L('iPhone（Safari）：分享 → 添加到主屏幕', 'iPhone (Safari): Share → Add to Home Screen')),
+            h('div', null, L('安卓（Chrome）：菜单 ⋮ → 添加到主屏幕 / 安装应用', 'Android (Chrome): menu ⋮ → Add to Home screen / Install app')),
+            h('div', null, L('电脑：Chrome、Edge 地址栏右侧「安装」；Safari 文件 → 添加到程序坞', 'Computer: "Install" at the right of the Chrome / Edge address bar; Safari File → Add to Dock'))),
+          h('div', { style: { ...S.mono, fontSize: 11, opacity: 0.6, marginTop: 2 } }, url),
+          isIpHost(host)
+            ? h('div', { style: warn }, L('现在用 IP 访问（自签证书），手机会提示不安全，加到主屏幕后可能打不开。建议先配好域名。',
+              'You are using an IP address (self-signed certificate): phones warn, and the home-screen app may not open. Set up a domain first.'))
+            : null,
+          health?.access === 'tunnel'
+            ? h('div', { style: warn }, L('现在是「仅我的设备可访问」：手机要先连上 WireGuard 才能打开。', 'Access is limited to your devices: the phone must be connected to WireGuard first.'))
+            : null))
+    }
+
+    /** 账号与安全：管理员、修改密码（要当前密码）、访问方式 */
+    function AccountCard({ health }) {
+      const [open, setOpen] = useState(false)
+      const [form, setForm] = useState({ current: '', next: '', confirm: '' })
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const [done, setDone] = useState(false)
+      const close = () => {
+        setOpen(false)
+        setForm({ current: '', next: '', confirm: '' })
+        setError('')
+      }
+      const messages = {
+        wrong_current: L('当前密码不对。', 'The current password is wrong.'),
+        too_short: L('新密码至少 12 位。', 'The new password needs at least 12 characters.'),
+        too_long: L('新密码太长。', 'The new password is too long.'),
+        same_as_current: L('新密码和当前密码一样。', 'The new password is the same as the current one.'),
+        rate_limited: L('尝试次数过多，请稍后再试。', 'Too many attempts. Try again later.'),
+        admin_changed: L('管理员账号已在别处变更，请刷新页面。', 'The admin account changed elsewhere; reload the page.'),
+      }
+      async function submit() {
+        setError('')
+        if (form.next.length < 12) return setError(messages.too_short)
+        if (form.next !== form.confirm) return setError(L('两次输入的新密码不一致。', 'The two new passwords do not match.'))
+        setBusy(true)
+        try {
+          const res = await fetch('/gate/password', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ current: form.current, next: form.next }),
+            signal: AbortSignal.timeout(20_000),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(messages[body.error] || body.error || `HTTP ${res.status}`)
+          close()
+          setDone(true)
+        } catch (e) {
+          setError(String(e.message || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const tunnel = health?.access === 'tunnel'
+      return h('div', { style: S.card },
+        h('div', { style: S.spread },
+          h('div', { style: { ...S.h2, margin: 0 } }, L('账号与安全', 'Account and security')),
+          open ? null : h(Btn, { onClick: () => { setOpen(true); setDone(false) } }, L('修改密码', 'Change password'))),
+        h('div', { style: { ...S.row, marginTop: 6, fontSize: 12 } },
+          h('span', null, L('管理员：', 'Admin: '), h('span', { style: S.mono }, health?.admin || '—')),
+          h('span', { style: S.muted }, '·'),
+          h('span', null, L('访问方式：', 'Access: '), tunnel
+            ? L('仅我的设备（WireGuard）', 'Only my devices (WireGuard)')
+            : L('公网可访问，凭账号登录', 'Public, behind the sign-in'))),
+        done ? h('div', { style: { ...S.note, marginTop: 8 } }, L('密码已修改。这台设备保持登录；其他设备（包括手机）要用新密码重新登录。',
+          'Password changed. This device stays signed in; every other device (phones included) must sign in again with the new password.')) : null,
+        open
+          ? h('div', { style: { marginTop: 10 } },
+            h('div', { style: S.grid },
+              h(Field, { label: L('当前密码', 'Current password') }, h(Input, { type: 'password', value: form.current, onChange: (v) => setForm({ ...form, current: v }) })),
+              h(Field, { label: L('新密码（至少 12 位）', 'New password (12+ characters)') }, h(Input, { type: 'password', value: form.next, onChange: (v) => setForm({ ...form, next: v }) })),
+              h(Field, { label: L('确认新密码', 'Confirm new password') }, h(Input, { type: 'password', value: form.confirm, onChange: (v) => setForm({ ...form, confirm: v }) }))),
+            h('div', { style: { ...S.muted, fontSize: 12, marginTop: 6 } },
+              L('修改后其他设备上的登录全部失效。忘了当前密码：在服务器上执行 sudo vpssh reset-admin。',
+                'Changing it signs out every other device. Forgot the current password? Run sudo vpssh reset-admin on the server.')),
+            error ? h('div', { style: { ...S.err, marginTop: 8 } }, error) : null,
+            h('div', { style: { ...S.row, marginTop: 10 } },
+              h(Btn, { kind: 'primary', disabled: busy, onClick: submit }, busy ? L('保存中…', 'Saving…') : L('保存新密码', 'Save new password')),
+              h(Btn, { onClick: close }, L('取消', 'Cancel'))))
+          : null)
+    }
+
+    /** 版本：只显示一个 vpssh 版本；展开看里面 DSH 的版本（vpssh 每个版本固定一组组件） */
+    function VersionCard({ plugin, update }) {
+      return h(FoldCard, {
+        id: 'version',
+        title: L('版本', 'Version'),
+        summary: `vpssh ${plugin || '—'}`,
+      },
+        h('div', { style: { fontSize: 12, lineHeight: 1.9 } },
+          h('div', null, `vpssh ${plugin || '—'}`),
+          h('div', { style: S.muted }, L(`DeepSeek Harness ${update?.current || '—'}（这一版 vpssh 测过的版本）`, `DeepSeek Harness ${update?.current || '—'} (the version this vpssh release was tested with)`)),
+          h('div', { style: S.muted }, L('升级：在服务器上执行 sudo vpssh upgrade', 'To upgrade, run sudo vpssh upgrade on the server'))))
+    }
+
+    function duration(sec) {
+      if (sec < 3600) return L(`${Math.max(1, Math.round(sec / 60))} 分钟`, `${Math.max(1, Math.round(sec / 60))} min`)
+      if (sec < 86400) return L(`${Math.round(sec / 3600)} 小时`, `${Math.round(sec / 3600)} h`)
+      return L(`${Math.round(sec / 86400)} 天`, `${Math.round(sec / 86400)} d`)
+    }
+
+    /** 运行状态（诊断信息，默认收起） */
+    function RuntimeCard({ health }) {
+      if (!health) return null
+      const d = health.dsh || {}
+      const cookie = health.dshCookie
+      const kv = { display: 'grid', gridTemplateColumns: 'max-content 1fr', columnGap: 16, rowGap: 2, fontSize: 12 }
+      return h(FoldCard, {
+        id: 'runtime',
+        title: L('运行状态', 'Runtime status'),
+        summary: d.alive ? L('正常', 'Healthy') : L('有问题，点开看看', 'Something is wrong; open to see'),
+      },
+        h('div', { style: kv },
+          h('span', { style: S.muted }, L('访问地址', 'Address')), h('span', { style: S.mono }, d.trustedHost ? `https://${d.trustedHost}` : '—'),
+          h('span', { style: S.muted }, L('已运行', 'Uptime')), h('span', null, duration(health.uptimeSec || 0)),
+          h('span', { style: S.muted }, L('重启次数', 'Restarts')), h('span', null, String(d.restarts ?? 0)),
+          h('span', { style: S.muted }, L('内部会话', 'Internal session')),
+          h('span', null, cookie
+            ? L(`有效，约 ${Math.max(0, Math.round(cookie.expiresInHours / 24))} 天后自动续期`, `valid, renewed automatically in about ${Math.max(0, Math.round(cookie.expiresInHours / 24))} days`)
+            : L('尚未就绪', 'not ready'))),
+        health.lastError ? h('div', { style: { ...S.err, marginTop: 8 } }, health.lastError) : null)
+    }
+
+    /** 服务器命令：SSH 登录服务器后执行，一键复制 */
+    function ServerCommandsCard() {
+      const rows = [
+        ['sudo vpssh status', L('服务状态、版本、健康检查', 'services, versions and health')],
+        ['sudo vpssh repair', L('网页打不开时救援：拉起服务、重写站点、放行端口', 'rescue when the page does not open: restarts services, rewrites the site, opens ports')],
+        ['sudo vpssh backup', L('备份数据（保留最近 3 份）', 'back up the data (keeps the last 3)')],
+        ['sudo vpssh rollback', L('切回上一个版本', 'switch back to the previous version')],
+        ['sudo vpssh reset-admin', L('忘记管理员密码时重置', 'reset a forgotten admin password')],
+      ]
+      return h(FoldCard, {
+        id: 'commands',
+        title: L('服务器命令', 'Server commands'),
+        summary: L('网页打不开时用：sudo vpssh repair', 'If the page does not open: sudo vpssh repair'),
+      },
+        h('div', { style: { ...S.muted, fontSize: 12, marginBottom: 6 } }, L('SSH 登录服务器后执行。', 'Run these over SSH on the server.')),
+        rows.map(([cmd, note]) => h('div', { key: cmd, style: { marginBottom: 8 } },
+          h(Copyable, { text: cmd }),
+          h('div', { style: { ...S.muted, fontSize: 12, marginTop: 2 } }, note))))
+    }
+
     function SettingsSection() {
       useLang()
       const overview = useAsync(async () => {
@@ -1349,7 +1540,7 @@ window.__ModuleLoader__.load({
       const [adding, setAdding] = useState(false)
       const [importing, setImporting] = useState(null)
       const [settings, setSettings] = useState(null)
-      const upd = useUpdate()
+      const gate = useGate()
       const [msg, setMsg] = useState('')
       const [error, setError] = useState('')
       const [busy, setBusy] = useState('')
@@ -1378,23 +1569,11 @@ window.__ModuleLoader__.load({
 
       return h('div', { style: S.root },
         h('div', { style: S.spread },
-          h('div', { style: S.h1 }, L('VPS 管理', 'VPS Manager')),
-          h('div', { style: S.row },
-            h(UpdateButton, { upd }),
-            h(Btn, {
-              onClick: async () => {
-                setError('')
-                try {
-                  const res = await api('import/candidates', {})
-                  setImporting(res.candidates ?? [])
-                } catch (e) {
-                  setError(e.message)
-                }
-              },
-            }, L('从 ~/.ssh/config 导入', 'Import from ~/.ssh/config')),
-            h(Btn, { kind: 'primary', onClick: () => setAdding(true) }, L('+ 添加机器', '+ Add machine')))),
-
-        h(UpdateNotice, { upd }),
+          h('div', { style: { ...S.row, alignItems: 'baseline' } },
+            h('div', { style: { ...S.h1, margin: 0 } }, L('VPS 管理', 'VPS Manager')),
+            d?.version ? h('span', { style: { ...S.muted, fontSize: 12 } }, `vpssh ${d.version}`) : null),
+          h(Btn, { kind: 'primary', onClick: () => setAdding(true) }, L('+ 添加机器', '+ Add machine'))),
+        h('div', { style: { height: 10 } }),
         h(ErrorBar, { error: error || overview.error }),
         msg ? h('div', { style: S.note }, msg) : null,
 
@@ -1458,7 +1637,28 @@ window.__ModuleLoader__.load({
                 },
                 disabled: busy === host.alias,
               }, busy === host.alias ? L('测试中…', 'Testing…') : L('测连通', 'Test connection')),
-              h(Btn, { kind: 'primary', onClick: () => setSelected(host.alias) }, L('设置', 'Settings')))))),
+              h(Btn, { kind: 'primary', onClick: () => setSelected(host.alias) }, L('设置', 'Settings'))))),
+          // 从 ~/.ssh/config 导入：在 vpssh 里读的是服务器上 vpssh 用户的配置，基本是空的，放在不显眼处
+          h('div', { style: { marginTop: 8, fontSize: 12 } },
+            h('a', {
+              href: '#',
+              style: { ...S.muted, color: 'inherit' },
+              onClick: async (e) => {
+                e.preventDefault()
+                setError('')
+                try {
+                  const res = await api('import/candidates', {})
+                  setImporting(res.candidates ?? [])
+                } catch (err) {
+                  setError(err.message)
+                }
+              },
+            }, L('从 ~/.ssh/config 导入…', 'Import from ~/.ssh/config…')))),
+
+        // —— 服务器这一层（来自登录网关）：手机、账号、版本 ——
+        gate.data?.health ? h(HomeScreenCard, { health: gate.data.health }) : null,
+        gate.data?.health ? h(AccountCard, { health: gate.data.health }) : null,
+        h(VersionCard, { plugin: d?.version, update: gate.data?.update }),
 
         settings ? h('div', { style: S.card },
           h('div', { style: S.h2 }, L('全局', 'Global')),
@@ -1499,6 +1699,9 @@ window.__ModuleLoader__.load({
 
         settings ? h(TerminalSettingsCard, { settings, setSettings }) : null,
 
+        h(RuntimeCard, { health: gate.data?.health }),
+        gate.data?.health ? h(ServerCommandsCard) : null,
+
         // —— 怎么用：机器加完之后的下一步都在对话里，这里只留一张导览 ——
         h(FoldCard, {
           id: 'howto',
@@ -1526,9 +1729,99 @@ window.__ModuleLoader__.load({
           h('div', { style: { ...S.muted, fontSize: 12 } },
             L('hosts.yml 可以手工编辑；recipes/ 放自己的菜谱；audit/ 是操作记录', 'hosts.yml can be edited by hand; recipes/ holds your own recipes; audit/ is the activity log'))) : null,
 
-        h(FeedbackCard),
+        h(FeedbackCard))
+    }
 
-        h(UninstallCard))
+    // ——————————————————————— 左栏的两个入口：「VPS 管理」「常用操作」 ———————————————————————
+    //
+    // DSH 的全局面板：sidebar.panellist 放按钮，main 插槽同名的 key 放页面，点按钮由侧栏切换中间区域。
+    // 全局面板不属于任何对话，所以「常用操作」要用的时候先切回对话，再把命令填进输入框（不替用户发）。
+
+    const PANEL_MANAGE = 'vpssh-manage'
+    const PANEL_RECIPES = 'vpssh-recipes'
+    let layoutApi = null
+
+    /** 回到对话，把一句命令填进屏幕上那个对话的输入框；填不了就复制。返回 'draft' | 'copied' | 'none' */
+    async function goChatWith(text) {
+      try {
+        layoutApi?.selectPanel?.(null)
+      } catch {
+        // 切不回去就只复制
+      }
+      for (let i = 0; i < 40; i += 1) {
+        const sessionId = sidebarRightApi?.mounted?.getSnapshot?.()
+        const input = sessionId ? composerFor(sessionId) : null
+        if (input) {
+          input.setDraft(text)
+          input.focus?.()
+          return 'draft'
+        }
+        await new Promise((r) => setTimeout(r, 50))
+      }
+      try {
+        await navigator.clipboard.writeText(text)
+        return 'copied'
+      } catch {
+        return 'none'
+      }
+    }
+
+    const panelPage = { maxWidth: 880, margin: '0 auto' }
+
+    function ManagePage() {
+      return h('div', { style: { height: '100%', overflow: 'auto' } }, h('div', { style: panelPage }, h(SettingsSection)))
+    }
+
+    const RECIPE_KIND = {
+      get install() { return L('安装软件', 'Install software') },
+      get apps() { return L('应用', 'Apps') },
+      get system() { return L('系统维护', 'System maintenance') },
+      get query() { return L('查看信息', 'Look things up') },
+      get inspect() { return L('体检', 'Health checks') },
+    }
+
+    function RecipesPage() {
+      useLang()
+      const overview = useAsync(() => api('overview', {}), [])
+      const [msg, setMsg] = useState('')
+      const recipes = (overview.data?.recipes ?? []).filter((r) => !r.incomplete)
+      const groups = new Map()
+      for (const r of recipes) {
+        const k = r.kind || 'other'
+        if (!groups.has(k)) groups.set(k, [])
+        groups.get(k).push(r)
+      }
+      const use = async (r) => {
+        const res = await goChatWith(`/vps-install ${r.id}`)
+        setMsg(res === 'copied' ? L(`已复制 /vps-install ${r.id}，到对话里粘贴发送`, `Copied /vps-install ${r.id}; paste it into a conversation`) : res === 'none' ? L(`在对话里发送：/vps-install ${r.id}`, `Send this in a conversation: /vps-install ${r.id}`) : '')
+      }
+      return h('div', { style: { height: '100%', overflow: 'auto' } },
+        h('div', { style: { ...S.root, ...panelPage, height: 'auto' } },
+          h('div', { style: S.h1 }, L('常用操作', 'Common tasks')),
+          h('div', { style: { ...S.muted, fontSize: 12, marginBottom: 12 } },
+            L('点「用」回到对话，命令已经填好：发出去会先给你看计划，确认后才执行。别的事直接跟 AI 说。',
+              'Click "Use" to go back to the conversation with the command filled in: sending it shows the plan first, and nothing runs until you confirm. For anything else, just tell the AI.')),
+          msg ? h('div', { style: S.note }, msg) : null,
+          h(ErrorBar, { error: overview.error }),
+          overview.loading && !overview.data ? h('div', { style: S.muted }, L('读取中…', 'Loading…')) : null,
+          [...groups.entries()].map(([kind, list]) => h('div', { key: kind, style: S.card },
+            h('div', { style: { ...S.h2, marginTop: 0 } }, RECIPE_KIND[kind] ?? kind),
+            list.map((r, i) => h('div', { key: r.id, style: { ...S.spread, padding: '6px 0', borderTop: i ? line : 'none' } },
+              h('div', { style: { minWidth: 0, flex: 1 } },
+                h('div', { style: { fontWeight: 500 } }, r.name || r.id),
+                r.desc ? h('div', { style: { ...S.muted, fontSize: 12 } }, r.desc) : null),
+              h(Btn, { onClick: () => use(r) }, L('用', 'Use'))))))))
+    }
+
+    function ManageIcon({ size = 18 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('rect', { x: 3, y: 4, width: 18, height: 7, rx: 2 }), h('rect', { x: 3, y: 13, width: 18, height: 7, rx: 2 }),
+        h('path', { d: 'M7 7.5h.01M7 16.5h.01' }))
+    }
+
+    function RecipesIcon({ size = 18 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M13 2 4 14h7l-1 8 9-12h-7z' }))
     }
 
     // —— 反馈与建议：平时只有两个按钮；诊断信息（版本、注册情况、最近错误）收起来，要用时自己点开 ——
@@ -5475,6 +5768,23 @@ window.__ModuleLoader__.load({
         reportClientError('品牌注册失败', error)
       }
       try {
+        // 左栏「VPS 管理」「常用操作」：按钮 + 中间区域的页面（同名 key）
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_MANAGE, order: 10, label: () => L('VPS 管理', 'VPS Manager') }, ManageIcon))
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_RECIPES, order: 11, label: () => L('常用操作', 'Common tasks') }, RecipesIcon))
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_MANAGE }, ManagePage))
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_RECIPES }, RecipesPage))
+        ctx.inject?.(['layout'], (scope) => {
+          const layout = scope.get?.('layout') ?? scope.layout
+          layoutApi = layout
+          scope.effect?.(() => () => {
+            if (layoutApi === layout) layoutApi = null
+          }, 'vpssh: layout')
+        })
+      } catch (error) {
+        console.warn('[vpssh] 左栏入口注册失败', error)
+        reportClientError('左栏入口注册失败', error)
+      }
+      try {
         // 浏览器标签页、加到手机主屏时的名字：DSH 写的是 DeepSeek Harness，换成 vpssh（DSH 改标题时跟着换）
         const fixTitle = () => {
           if (document.title.includes('DeepSeek Harness')) document.title = document.title.replaceAll('DeepSeek Harness', 'vpssh')
@@ -5512,7 +5822,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })
