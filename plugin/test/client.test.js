@@ -82,9 +82,9 @@ test('bundle 以 ModuleLoader 形式导出，并注册三个挂载点', async ()
     },
   }
   exported.apply(ctx2)
-  assert.deepEqual(panels.map((p) => p.id), ['vpssh-manage', 'vpssh-recipes'])
-  assert.deepEqual(mains.map((m) => m.key), ['vpssh-manage', 'vpssh-recipes'], '页面的 key 和按钮的 id 对上')
-  assert.deepEqual(panels.map((p) => p.label()), ['VPS 管理', '常用操作'])
+  assert.deepEqual(panels.map((p) => p.id), ['vpssh-status', 'vpssh-manage', 'vpssh-recipes'])
+  assert.deepEqual(mains.map((m) => m.key), ['vpssh-status', 'vpssh-manage', 'vpssh-recipes'], '页面的 key 和按钮的 id 对上')
+  assert.deepEqual(panels.map((p) => p.label()), ['服务器状态', 'VPS 管理', '常用操作'])
 })
 
 test('品牌：侧栏顶部换成 vpssh，自己画的标志', async () => {
@@ -154,6 +154,25 @@ test('默认布局：手机上（右栏会盖满整屏）不自动打开，换�
   assert.deepEqual(opened, ['s1'], '转成宽屏后补上')
   off()
   delete globalThis.window.innerWidth
+})
+
+test('手机、iPad 打开时先到「服务器状态」；iPad 横屏把左栏收成一竖排；电脑不动', async () => {
+  const run = async ({ touch, width }) => {
+    const { exported } = await loadClient()
+    globalThis.window.innerWidth = width
+    globalThis.window.matchMedia = () => ({ matches: touch })
+    const calls = []
+    const layout = { selectPanel: (id) => calls.push(['select', id]), toggleSidebar: () => calls.push(['toggle']) }
+    exported.__test.landOnStatus(layout)
+    exported.__test.landOnStatus(layout) // 每次加载只做一次
+    await new Promise((r) => setTimeout(r, 5))
+    delete globalThis.window.matchMedia
+    delete globalThis.window.innerWidth
+    return calls
+  }
+  assert.deepEqual(await run({ touch: true, width: 375 }), [['select', 'vpssh-status']], '手机：左栏 DSH 自己会收')
+  assert.deepEqual(await run({ touch: true, width: 1180 }), [['select', 'vpssh-status'], ['toggle']], 'iPad 横屏：收起展开的左栏')
+  assert.deepEqual(await run({ touch: false, width: 1440 }), [], '电脑照旧进对话')
 })
 
 test('设置页能渲染', async () => {

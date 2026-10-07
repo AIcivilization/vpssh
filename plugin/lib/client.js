@@ -1648,6 +1648,50 @@ window.__ModuleLoader__.load({
               h(Btn, { onClick: () => use(r) }, L('用', 'Use'))))))))
     }
 
+    const PANEL_STATUS = 'vpssh-status'
+
+    /**
+     * 「服务器状态」页：手机、iPad 打开 vpssh 的默认页面。左边仍是 DSH 那一竖排按钮，其余全是数据，
+     * 自己定时刷新（和右侧栏同一套：看得见时每分钟采一次）。顶上的编号方块切换看哪台
+     */
+    function StatusDashboard() {
+      return h('div', { style: { height: '100%', overflow: 'hidden', display: 'flex', justifyContent: 'center' } },
+        h('div', { style: { width: '100%', maxWidth: 1200, height: '100%', minHeight: 0 } },
+          h(VpsStatusSidebar, { sessionId: '', dashboard: true })))
+    }
+
+    /** 触屏设备（手机、iPad）。iPad 的 Safari 自称是 Mac，要看触点数 */
+    function isTouchDevice() {
+      try {
+        if (window.matchMedia?.('(pointer: coarse)').matches) return true
+        return (navigator.maxTouchPoints ?? 0) > 1 && /Macintosh|iPad/.test(navigator.userAgent)
+      } catch {
+        return false
+      }
+    }
+
+    // 手机、iPad：页面打开后先到「服务器状态」，每次加载只做一次；之后用户去哪都不管
+    let landed = false
+    function landOnStatus(layout) {
+      if (landed || !isTouchDevice()) return
+      landed = true
+      setTimeout(() => {
+        try {
+          layout?.selectPanel?.(PANEL_STATUS)
+          // 1024 以上（iPad 横屏）DSH 把左栏整个展开；状态页要的是左边一竖排按钮。
+          // 布局不跨刷新保存，刚加载时一定是展开的，收一次就是细条（1024 以下 DSH 自己会收）
+          if (window.innerWidth >= 1024) layout?.toggleSidebar?.()
+        } catch (error) {
+          console.warn('[vpssh] 打开服务器状态失败', error)
+        }
+      }, 0)
+    }
+
+    function StatusIcon({ size = 18 }) {
+      return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+        h('path', { d: 'M3 12h4l3-8 4 16 3-8h4' }))
+    }
+
     function ManageIcon({ size = 18 }) {
       return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('rect', { x: 3, y: 4, width: 18, height: 7, rx: 2 }), h('rect', { x: 3, y: 13, width: 18, height: 7, rx: 2 }),
@@ -3866,15 +3910,16 @@ window.__ModuleLoader__.load({
           h('div', { style: { borderRadius: 10, border: edge, overflow: 'hidden' } },
             data.disks.map((d, i) => {
               const lv = pctLevel(d.pct ?? 0)
-              return h('div', { key: d.mount, style: { display: 'grid', gridTemplateColumns: 'minmax(64px, 1fr) minmax(90px, 2.4fr) auto', alignItems: 'center', gap: 12, padding: '9px 12px', borderTop: i ? `0.5px solid ${c.divider}` : 'none' } },
-                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0 } },
+              // 一行放不下（手机）时「剩多少」换到第二行，不截断
+              return h('div', { key: d.mount, style: { display: 'flex', flexWrap: 'wrap', alignItems: 'center', columnGap: 12, rowGap: 3, padding: '9px 12px', borderTop: i ? `0.5px solid ${c.divider}` : 'none' } },
+                h('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 7, minWidth: 0, flex: '1 1 64px' } },
                   h('span', { style: { color: c.tertiary, display: 'inline-flex', flex: '0 0 auto' } }, h(Icon, { name: 'hardDrive', size: 13 })),
                   h('span', { title: d.mount, style: { fontFamily: DS.code, fontSize: 12, color: c.text, ...ellipsis } }, d.mount)),
-                h('span', { style: { display: 'flex', alignItems: 'center', gap: 9, minWidth: 0 } },
+                h('span', { style: { display: 'flex', alignItems: 'center', gap: 9, minWidth: 0, flex: '2.4 1 90px' } },
                   h('span', { style: { flex: 1, height: 6, borderRadius: 3, background: `color-mix(in srgb, ${lv === 'ok' ? c.accent : levelColor(c, lv)} 15%, transparent)`, overflow: 'hidden' } },
                     h('span', { style: { display: 'block', width: `${Math.max(2, Math.min(100, d.pct ?? 0))}%`, height: '100%', borderRadius: 3, background: lv === 'ok' ? c.accent : levelColor(c, lv), transition: 'width .3s ease-out' } })),
                   h('span', { style: { ...NUM, fontSize: 12, fontWeight: 600, color: lv === 'ok' ? c.text : levelColor(c, lv), width: 34, textAlign: 'end', flex: '0 0 auto' } }, d.pct !== null ? `${d.pct}%` : '—')),
-                h('span', { style: { ...NUM, fontSize: 11, color: c.tertiary, whiteSpace: 'nowrap' } },
+                h('span', { style: { ...NUM, fontSize: 11, color: c.tertiary, whiteSpace: 'nowrap', flex: '0 0 auto', marginLeft: 'auto' } },
                   L(`剩 ${fmtBytes(d.avail)} / ${fmtBytes(d.size)}`, `${fmtBytes(d.avail)} free of ${fmtBytes(d.size)}`), d.inodePct !== null ? ` · inode ${d.inodePct}%` : ''))
             })))
         : null
@@ -4106,7 +4151,7 @@ window.__ModuleLoader__.load({
 
     const SIDEBAR_CHIPS = 8 // 再多就收进「更多」
     /** 右侧栏里的整页：顶上选机器，下面是那台的状态 */
-    function VpsStatusSidebar({ sessionId, useTabInfo }) {
+    function VpsStatusSidebar({ sessionId, useTabInfo, dashboard = false }) {
       useLang()
       const sid = sessionId ? String(sessionId) : ''
       const info = useTabInfo ? useTabInfo() : null
@@ -4210,7 +4255,8 @@ window.__ModuleLoader__.load({
       // 看的不是这个对话操作的那台：说清楚只是看，要换得自己点
       const boundIndex = indexOf(bound)
       const n = viewIndex + 1
-      const hint = viewAlias !== bound
+      // 「服务器状态」页不属于任何对话：没有「只是查看」这回事
+      const hint = !dashboard && viewAlias !== bound
         ? h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, margin: '10px 16px 0', padding: '6px 6px 6px 10px', borderRadius: 8, background: c.tip, fontSize: 12, color: c.secondary, minWidth: 0 } },
           h(Icon, { name: 'alert', size: 13, style: { color: c.tertiary } }),
           h('span', { style: { flex: 1, minWidth: 0 } },
@@ -5612,6 +5658,8 @@ window.__ModuleLoader__.load({
       }
       try {
         // 左栏「VPS 管理」「常用操作」：按钮 + 中间区域的页面（同名 key）
+        ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_STATUS, order: 9, label: () => L('服务器状态', 'Server status') }, StatusIcon))
+        ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_STATUS }, StatusDashboard))
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_MANAGE, order: 10, label: () => L('VPS 管理', 'VPS Manager') }, ManageIcon))
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_RECIPES, order: 11, label: () => L('常用操作', 'Common tasks') }, RecipesIcon))
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_MANAGE }, ManagePage))
@@ -5619,6 +5667,7 @@ window.__ModuleLoader__.load({
         ctx.inject?.(['layout'], (scope) => {
           const layout = scope.get?.('layout') ?? scope.layout
           layoutApi = layout
+          landOnStatus(layout)
           scope.effect?.(() => () => {
             if (layoutApi === layout) layoutApi = null
           }, 'vpssh: layout')
@@ -5665,7 +5714,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })
