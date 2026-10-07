@@ -139,9 +139,11 @@ SNAP_DIR="$ROOT/backups/snapshots"
 
 installed_vpssh() { sed -n 's/.*"vpsshVersion": *"\([^"]*\)".*/\1/p' "$ROOT/state/config.json" 2>/dev/null | head -1; }
 
+# 还没有发布、离线、被限流都返回空（不能让 set -e / pipefail 把调用方整个带走）
 latest_release_tag() {
-	curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null \
-		| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+	local json
+	json=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null) || return 0
+	printf '%s' "$json" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true
 }
 
 # 快照：升级会改的东西都在里面；DSH 各版本本身按版本号分目录保留，不进快照
