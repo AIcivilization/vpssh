@@ -212,23 +212,18 @@ window.__ModuleLoader__.load({
      * 那一行比输入框宽时，面板加上用量显示仍然放得下一行，照样挤在一起（实测）。
      */
     function dockRow(ref, child) {
-      return h(HeroDock.Consumer, null, (hero) => h('div', {
+      return h('div', {
         ref,
-        // 输入框上方那份换个标记：样式表里调整输入框下方那一栏的规则不该碰 DSH 的居中列
-        [hero ? 'data-vps-dock-hero' : 'data-vps-dock']: '',
+        'data-vps-dock': '',
         style: { width: '100%', display: 'flex', flexDirection: 'column', alignItems: 'center', boxSizing: 'border-box' },
-      }, child))
+      }, child)
     }
 
-    // 空白新对话里终端放在输入框上方（HeroVpsDock）：那里是 DSH 居中排的一列，不能动它的样式
-    const HeroDock = React.createContext(false)
-
-    /** 挂在插槽里那几个根元素上：拿到 ref 的同时把上面那件事办了（输入框上方那份不办） */
+    /** 挂在插槽里那几个根元素上：拿到 ref 的同时把上面那件事办了 */
     function useOwnRow() {
       const ref = useRef(null)
-      const hero = React.useContext(HeroDock)
       useEffect(() => {
-        if (!hero) claimOwnRow(ref.current)
+        claimOwnRow(ref.current)
       })
       return ref
     }
@@ -1786,52 +1781,6 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    /**
-     * 屏幕上是哪个对话。全局位置（不属于任何对话的插槽）用它：DSH 右侧栏的 mounted 就是「屏幕上的对话」，
-     * 右侧栏服务晚到时等一等再接上
-     */
-    function useMountedSession() {
-      const [sid, setSid] = useState(() => String(sidebarRightApi?.mounted?.getSnapshot?.() ?? ''))
-      useEffect(() => {
-        let off = () => {}
-        let timer = null
-        const attach = () => {
-          const m = sidebarRightApi?.mounted
-          if (typeof m?.subscribe !== 'function') {
-            timer = setTimeout(attach, 300)
-            return
-          }
-          const update = () => setSid(String(m.getSnapshot() ?? ''))
-          update()
-          off = m.subscribe(update)
-        }
-        attach()
-        return () => {
-          clearTimeout(timer)
-          off()
-        }
-      }, [])
-      return sid
-    }
-
-    /**
-     * 对话头部最左边的 VPS 开关（conversation.header.leading）。DSH 在新的空白对话里把头部的标题和
-     * 动作按钮整排藏起来（hideChrome），只有这个位置一直在：放在这里，打开新对话就能先选机器、开终端
-     */
-    /** 空白新对话：终端、提示放在输入框上方（输入框下方那一栏这时不存在）；有了消息就回到下方 */
-    function HeroVpsDock() {
-      const sid = useMountedSession()
-      const others = useComposerDockCount()
-      return sid && others === 0
-        ? h(HeroDock.Provider, { value: true }, h('div', { style: { width: '100%' } }, h(VpsDock, { sessionId: sid, hero: true })))
-        : null
-    }
-
-    function LeadingVpsToggle() {
-      const sid = useMountedSession()
-      return sid ? h(VpsToggle, { sessionId: sid }) : null
-    }
-
     function StatusIcon({ size = 18 }) {
       return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('path', { d: 'M3 12h4l3-8 4 16 3-8h4' }))
@@ -1947,14 +1896,8 @@ window.__ModuleLoader__.load({
         // 本地没有记录、服务器有：以服务器为准（本地有记录的由输入框下方的检测对齐）
         let alive = true
         if (sessionId && !readBinding(sessionId)) {
-          serverBindings().then(async (map) => {
-            let server = map[sessionId] ?? ''
-            // 服务器也没记录（新对话）：问一次这个对话的状态。只有一台机器、又没关过开关时，
-            // 服务器会在这一步默认绑上它（config.js sessionBinding）；两台以上或关过的照旧是空
-            if (!server && alive) {
-              server = (await api('session/status', { sessionId }).catch(() => null))?.alias ?? ''
-              if (server) serverBindingsCache = null
-            }
+          serverBindings().then((map) => {
+            const server = map[sessionId] ?? ''
             if (!alive || !server) return
             // 头部和输入框下方各有一份，谁先到谁写；写完用事件通知所有人，别让后到的那个以为「已经有了」就不更新自己
             if (!readBinding(sessionId)) writeBinding(sessionId, server)
@@ -5508,34 +5451,9 @@ window.__ModuleLoader__.load({
     }
 
     /** 输入框下方：终端（打开时）+ 状态提醒（有事时） */
-    // 输入框下方那一栏（conversation.composer.dock）在不在屏幕上。新的空白对话里 DSH 不渲染它
-    // （输入框是 hero 样式），这时由输入框上方（conversation.input.dock）的 HeroVpsDock 顶上
-    let composerDocks = 0
-    const composerDockListeners = new Set()
-    function useComposerDockCount() {
-      const [n, setN] = useState(composerDocks)
-      useEffect(() => {
-        const on = () => setN(composerDocks)
-        composerDockListeners.add(on)
-        on()
-        return () => composerDockListeners.delete(on)
-      }, [])
-      return n
-    }
-
     function VpsDock(props) {
       useLang()
       const sessionId = props?.sessionId ? String(props.sessionId) : ''
-      const inComposerDock = !props?.hero
-      useEffect(() => {
-        if (!inComposerDock) return undefined
-        composerDocks += 1
-        for (const fn of composerDockListeners) fn()
-        return () => {
-          composerDocks -= 1
-          for (const fn of composerDockListeners) fn()
-        }
-      }, [inComposerDock])
       const { alias } = useBinding(sessionId)
       const entry = useTermState(sessionId)
       const prefs = useTermPrefs()
@@ -5647,7 +5565,7 @@ window.__ModuleLoader__.load({
     const SIDE_BY_SIDE_MIN = 56 + 400 + 300
     const wideEnough = () => typeof window === 'undefined' || !(window.innerWidth < SIDE_BY_SIDE_MIN)
 
-    /** 本次打开页面后第一次看到某个对话时，在它的右栏打开「VPS 状态」（收着的也展开）。返回取消监听的函数 */
+    /** 屏幕上换到一个没见过、也没开任何页签的对话时，在它的右栏打开「VPS 状态」。返回取消监听的函数 */
     function watchDefaultLayout(right) {
       const mounted = right?.mounted
       if (typeof mounted?.subscribe !== 'function' || typeof right.openTabIn !== 'function') return () => {}
@@ -5813,7 +5731,7 @@ window.__ModuleLoader__.load({
             if (sidebarRightApi === right) sidebarRightApi = null
           }, 'vpssh: sidebar api')
           // 默认布局：右栏常驻「VPS 状态」。DSH 0.2 的右栏跟着对话走（每个对话各有自己的页签），
-          // 所以盯着屏幕上是哪个对话：本次打开页面后第一次看到它，就给它打开。
+          // 所以盯着屏幕上是哪个对话：本次打开页面后第一次看到它、它又还没有任何页签，就给它打开。
           // 每个对话只做一次：用户在这次里把它关了，就不再自作主张
           effect(() => watchDefaultLayout(right), 'vpssh: default layout')
         })
@@ -5867,10 +5785,8 @@ window.__ModuleLoader__.load({
       }
       try {
         // 对话头部：VPS 开关（打开 = 这个对话在操作这台机器）
-        ctx.slots.inject('conversation.input.dock', () =>
-          ctx.slots.register({ name: 'conversation.input.dock', id: 'vpssh', order: 40 }, HeroVpsDock))
-        ctx.slots.inject('conversation.header.leading', () =>
-          ctx.slots.register({ name: 'conversation.header.leading' }, LeadingVpsToggle))
+        ctx.slots.inject('conversation.session.header.actions', () =>
+          ctx.slots.register({ name: 'conversation.session.header.actions', id: 'vpssh', order: 40 }, VpsToggle))
       } catch (error) {
         console.warn('[vpssh] 对话头部开关注册失败', error)
         reportClientError('对话头部开关注册失败', error)
@@ -5893,7 +5809,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, AccountButton, LeadingVpsToggle, VpsToggle, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, AccountButton, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })
