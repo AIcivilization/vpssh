@@ -1722,6 +1722,63 @@ window.__ModuleLoader__.load({
       }, 0)
     }
 
+    /**
+     * 左下角「设置」旁边：vpssh 的登录账号。窄栏只显示头像（名字首字母），宽栏带名字。
+     * 点开：谁登录着、账号与安全（去「VPS 管理」页）、退出登录（网关的 /logout，回到登录页）。
+     * 不是经网关打开的页面（拿不到 /gate/health）就不显示
+     */
+    function AccountButton({ wide }) {
+      useLang()
+      const health = useAsync(() => gateGet('/gate/health'), [])
+      const [open, setOpen] = useState(false)
+      const [pos, setPos] = useState(null)
+      const ref = useRef(null)
+      // 菜单按整个窗口定位：左栏细条只有 56px 宽、超出部分会被裁掉
+      const toggle = () => {
+        if (!open && ref.current) {
+          const r = ref.current.getBoundingClientRect()
+          setPos({ left: r.left, bottom: window.innerHeight - r.top + 6 })
+        }
+        setOpen(!open)
+      }
+      useEffect(() => {
+        if (!open) return undefined
+        const close = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+        document.addEventListener('pointerdown', close)
+        return () => document.removeEventListener('pointerdown', close)
+      }, [open])
+      const user = health.data?.admin
+      if (!user) return null
+      const avatar = h('span', {
+        'aria-hidden': true,
+        style: { width: 22, height: 22, borderRadius: '50%', flex: '0 0 auto', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 600, background: T.accent, color: 'var(--primary-foreground, #fff)' },
+      }, String(user).slice(0, 1).toUpperCase())
+      const item = (label, onClick, danger) => h('button', {
+        type: 'button',
+        onClick,
+        style: { display: 'block', width: '100%', textAlign: 'left', padding: '7px 10px', border: 'none', borderRadius: 6, background: 'transparent', color: danger ? T.danger : 'inherit', fontSize: 13, cursor: 'pointer' },
+        onMouseEnter: (e) => { e.currentTarget.style.background = T.layer },
+        onMouseLeave: (e) => { e.currentTarget.style.background = 'transparent' },
+      }, label)
+      return h('div', { ref, style: { position: 'relative', display: 'inline-flex' } },
+        h('button', {
+          type: 'button',
+          title: L(`已登录：${user}`, `Signed in as ${user}`),
+          'aria-label': L(`账号 ${user}`, `Account ${user}`),
+          'aria-expanded': open,
+          onClick: toggle,
+          style: { display: 'inline-flex', alignItems: 'center', gap: 8, padding: wide ? '4px 8px 4px 4px' : 4, border: 'none', borderRadius: 8, background: open ? T.layer : 'transparent', color: 'inherit', cursor: 'pointer', fontSize: 13, maxWidth: wide ? 140 : undefined },
+        }, avatar, wide ? h('span', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, user) : null),
+        open ? h('div', {
+          role: 'menu',
+          style: { position: 'fixed', left: pos?.left ?? 8, bottom: pos?.bottom ?? 60, minWidth: 180, padding: 4, borderRadius: 10, border: line, background: T.popover, color: T.popoverText, boxShadow: '0 8px 24px rgba(0,0,0,0.18)', zIndex: 50 },
+        },
+          h('div', { style: { padding: '6px 10px 8px', fontSize: 12, opacity: 0.65, borderBottom: line, marginBottom: 4 } }, L('已登录：', 'Signed in as '), h('span', { style: { fontWeight: 600, opacity: 1 } }, user)),
+          item(L('账号与安全', 'Account and security'), () => { setOpen(false); try { layoutApi?.selectPanel?.(PANEL_MANAGE) } catch { /* 切不过去就算了 */ } }),
+          item(L('退出登录', 'Sign out'), () => { window.location.href = '/logout' }, true))
+          : null)
+    }
+
     function StatusIcon({ size = 18 }) {
       return h('svg', { width: size, height: size, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
         h('path', { d: 'M3 12h4l3-8 4 16 3-8h4' }))
@@ -5699,6 +5756,7 @@ window.__ModuleLoader__.load({
         ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({ name: 'sidebar.panellist', id: PANEL_RECIPES, order: 11, label: () => L('常用操作', 'Common tasks') }, RecipesIcon))
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_MANAGE }, ManagePage))
         ctx.slots.inject('main', () => ctx.slots.register({ name: 'main', key: PANEL_RECIPES }, RecipesPage))
+        ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({ name: 'sidebar.footer.action', id: 'vpssh-account', order: 10 }, AccountButton))
         ctx.inject?.(['layout'], (scope) => {
           const layout = scope.get?.('layout') ?? scope.layout
           layoutApi = layout
@@ -5749,7 +5807,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, AccountButton, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })
