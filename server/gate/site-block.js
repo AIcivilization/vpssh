@@ -18,7 +18,7 @@
  *
  * host 可以带端口（1.2.3.4:8443）：443 被别人占着、又没有域名时 vpssh 换到别的端口。
  *
- * CLI: node site-block.js <host> [installRoot] [gatePort] [shared:0|1]
+ * CLI: node site-block.js <host> [installRoot] [gatePort] [shared:0|1] [altPort]
  */
 
 const fs = require("node:fs");
@@ -71,6 +71,9 @@ function hostName(host) {
 
 function caddySiteBlock(host, opts = {}) {
 	const port = opts.gatePort || DEFAULT_GATE_PORT;
+	// 用域名（走 443）时也听「域名:访问端口」：带端口的旧地址照样能进（gate 会换成主地址再转给 DSH）
+	const altPort = Number(opts.altPort) || 0;
+	const address = altPort && altPort !== 443 && !isIpHost(host) && !/:\d+$/.test(String(host)) ? `${host}, ${host}:${altPort}` : host;
 	const vpn = opts.vpn || { on: false, subnet: DEFAULT_SUBNET };
 	// IP 站点：浏览器按 IP 访问时不发 SNI，Caddy 会退而按本机网卡地址找证书；
 	// 云主机网卡上多是内网地址（公网 IP 经 NAT），于是找不到证书、握手失败。
@@ -81,12 +84,12 @@ function caddySiteBlock(host, opts = {}) {
 	// 同一台机器的另一个产品若也是 IP 站点，它的 default_sni 就是同一个 IP，照样挑得到
 	const globals = ip && !opts.shared ? `{\n\tdefault_sni ${hostName(host)}\n}\n\n` : "";
 	const tls = ip ? "\ttls internal\n" : "";
-	if (!vpn.on) return `${globals}${host} {\n${tls}${proxyLines(port, "\t")}}\n`;
+	if (!vpn.on) return `${globals}${address} {\n${tls}${proxyLines(port, "\t")}}\n`;
 	// 隧道模式：非隧道来源直接断连，连响应体都不给。
 	// ACME HTTP-01 挑战由 Caddy 在路由之前处理（fall-through），不受本块影响，证书照常续期。
 	return (
 		globals +
-		`${host} {\n` +
+		`${address} {\n` +
 		tls +
 		`\t@tunnel remote_ip ${vpn.subnet}\n` +
 		`\thandle @tunnel {\n` +
@@ -97,13 +100,16 @@ function caddySiteBlock(host, opts = {}) {
 	);
 }
 
-/** 安装时记下的：是否和别人共用 Caddy（state/config.json 的 caddyShared） */
-function readShared(stateDir) {
+/** 安装时记下的：是否和别人共用 Caddy（caddyShared）、访问端口（publicPort）、是不是 --port 指定的（portForced） */
+function readConfig(stateDir) {
 	try {
-		return JSON.parse(fs.readFileSync(path.join(stateDir, "config.json"), "utf8")).caddyShared === true;
+		return JSON.parse(fs.readFileSync(path.join(stateDir, "config.json"), "utf8"));
 	} catch {
-		return false;
+		return {};
 	}
+}
+function readShared(stateDir) {
+	return readConfig(stateDir).caddyShared === true;
 }
 
 module.exports = { caddySiteBlock, readVpnEnv, readShared, isIpHost, hostName, DEFAULT_SUBNET, DEFAULT_GATE_PORT };
@@ -118,5 +124,7 @@ if (require.main === module) {
 	}
 	const state = path.join(root, "state");
 	const shared = process.argv[5] !== undefined ? process.argv[5] === "1" : readShared(state);
-	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared }));
+	const cfg = readConfig(state);
+	const altPort = process.argv[6] !== undefined ? Number(process.argv[6]) : cfg.portForced ? 0 : Number(cfg.publicPort) || 0;
+	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared, altPort }));
 }

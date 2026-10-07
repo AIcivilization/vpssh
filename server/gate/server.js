@@ -38,11 +38,40 @@ const DSH_HOST = "127.0.0.1"; // DSH 官方只允许绑回环
 const DSH_PORT = Number(process.env.DSH_PORT || 3191);
 // 浏览器访问用的端口：443 被同机别的产品占着、又没有域名时，install.sh 换成别的（如 8443）
 const PUBLIC_PORT = Number(process.env.VPSSH_PUBLIC_PORT || 443);
+// 安装时用 --port 自己指定过端口：域名、IP 都照它
+const PORT_FORCED = process.env.VPSSH_PORT_FORCED === "1";
 // 和别的产品共用一个 Caddy：站点文件里不写全局设置块（见 site-block.js）
 const CADDY_SHARED = process.env.VPSSH_CADDY_SHARED === "1";
-/** 域名/IP 加上访问端口（443 不写） */
+/**
+ * 访问地址带不带端口。只有用 IP 访问才需要换端口：浏览器按 IP 打开时不带网站名（SNI），
+ * 同一个 443 上分不清是哪个网站。用域名时 Caddy 按域名分，和同机别的网站共用 443 就行，不带端口
+ */
 function withPublicPort(host) {
-	return PUBLIC_PORT === 443 ? host : `${host}:${PUBLIC_PORT}`;
+	if (PUBLIC_PORT === 443) return host;
+	if (!PORT_FORCED && net.isIP(host) === 0) return host;
+	return `${host}:${PUBLIC_PORT}`;
+}
+
+/**
+ * 用域名（走 443）时，「域名:访问端口」（比如 :8443）也照样能进：安全组只放行了 8443、
+ * 或者习惯了带端口的地址都不受影响。Caddy 站点两个地址都听（site-block.js 的 altPort）；
+ * DSH 只认一个地址，转给它之前把备用地址换成主地址。Cookie 不分端口，两个地址登录状态通用
+ */
+function altAuthority() {
+	if (PUBLIC_PORT === 443 || PORT_FORCED || dshTrustedHost.includes(":") || net.isIP(dshTrustedHost) !== 0) return "";
+	return `${dshTrustedHost}:${PUBLIC_PORT}`;
+}
+function canonicalAuthority(authority) {
+	const alt = altAuthority();
+	return alt && authority === alt ? dshTrustedHost : authority;
+}
+/** 备用地址的 Host / Origin / Referer 换成主地址（DSH 按主地址做来源围栏） */
+function canonicalHeaderValue(key, value) {
+	const alt = altAuthority();
+	if (!alt || typeof value !== "string") return value;
+	if (key === "host") return value === alt ? dshTrustedHost : value;
+	if (key === "origin" || key === "referer") return value.replace(`https://${alt}`, `https://${dshTrustedHost}`);
+	return value;
 }
 // 向导（/setup）改域名时会在运行期更新，并同步写回 state/gate.env（供下次 systemd 启动）
 let dshTrustedHost = process.env.DSH_TRUSTED_HOST || "";
@@ -982,7 +1011,7 @@ function proxyHttp(req, res) {
 		sendDshNotReady(res, requestLang(req));
 		return;
 	}
-	const authority = requestAuthority(req.headers);
+	const authority = canonicalAuthority(requestAuthority(req.headers));
 	// 导航请求（浏览器要 HTML）：必须拿到完整 200 才能改写，否则浏览器会用本地
 	// 缓存的那份没有 ownsHost 的旧 HTML，设置页就会一直报"在此浏览器中不可用"。
 	const wantsHtml = OWNS_HOST_INJECT && String(req.headers.accept || "").includes("text/html");
@@ -993,7 +1022,7 @@ function proxyHttp(req, res) {
 		if (STRIP_FORWARDING && FORWARDING_HEADERS.has(key)) continue;
 		// 条件请求会让上游回 304（无 body 可改写），导航请求一律取全量
 		if (wantsHtml && (key === "if-none-match" || key === "if-modified-since")) continue;
-		headers[key] = value;
+		headers[key] = canonicalHeaderValue(key, value);
 	}
 	const cookie = upstreamCookieHeader(req.headers.cookie, authority);
 	if (cookie !== void 0) headers.cookie = cookie;
@@ -1087,15 +1116,15 @@ function handleUpgrade(req, socket, head) {
 		socket.destroy();
 		return;
 	}
-	const authority = requestAuthority(req.headers);
+	const authority = canonicalAuthority(requestAuthority(req.headers));
 	const upstream = net.connect(DSH_PORT, DSH_HOST, () => {
 		const cookie = upstreamCookieHeader(req.headers.cookie, authority);
 		const lines = [`${req.method} ${sanitizedPath(req.url || "/")} HTTP/1.1`];
 		for (const [key, value] of Object.entries(req.headers)) {
 			if (key === "cookie") continue;
 			if (STRIP_FORWARDING && FORWARDING_HEADERS.has(key)) continue;
-			if (Array.isArray(value)) for (const v of value) lines.push(`${key}: ${v}`);
-			else lines.push(`${key}: ${value}`);
+			if (Array.isArray(value)) for (const v of value) lines.push(`${key}: ${canonicalHeaderValue(key, v)}`);
+			else lines.push(`${key}: ${canonicalHeaderValue(key, value)}`);
 		}
 		if (cookie !== void 0) lines.push(`cookie: ${cookie}`);
 		upstream.write(lines.join("\r\n") + "\r\n\r\n");
@@ -1305,7 +1334,7 @@ function persistTrustedHost(domain) {
 // 站点块模板在 gate/site-block.js（install.sh 与 vpssh vpn 共用）。
 // 改域名时必须带上当前隧道策略，否则「仅隧道可访问」会被改域名动作悄悄抹掉。
 function siteBlock(host) {
-	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED });
+	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED, altPort: PORT_FORCED ? 0 : PUBLIC_PORT });
 }
 
 async function applyDomainChange(domain) {

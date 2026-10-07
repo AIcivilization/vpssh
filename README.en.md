@@ -22,7 +22,7 @@ curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/in
 - With a domain: point its A record at the machine first and add `-s -- --domain vps.example.com`; HTTPS certificates are issued automatically.
 - Without a domain: the public IP and a self-signed certificate, so the browser warns (you can add a domain later in the setup wizard).
 - Server in mainland China: add `-s -- --mirror cn` to download from mirrors there.
-- **Another site already on this machine** (e.g. dsh-vps with Caddy on 80/443): run the same command. vpssh shares that Caddy and only adds one line to its config; without a domain it moves to port **8443** so both keep working (with a domain it shares 443, told apart by name). Or choose a port with `-s -- --port <port>`.
+- **Another site already on this machine** (e.g. dsh-vps with Caddy on 80/443): run the same command. vpssh shares that Caddy and only adds one line to its config; without a domain it moves to port **8443** so both keep working (with a domain it shares 443, told apart by name; `https://domain:8443` works too). Or choose a port with `-s -- --port <port>`.
 - If a firewall (ufw, firewalld) is on, the installer opens the ports it needs. A cloud provider's security group lives outside the machine; open the port in its console (the installer tells you which).
 
 The installer prints an address with a one-time token. Open it, create the admin account (optional: domain, model key), sign in, and you're set. The server itself becomes machine 1 automatically.

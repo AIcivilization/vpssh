@@ -1,6 +1,6 @@
 {
   "//": "vpssh 每个版本固定用哪个 DSH，测过才发。install.sh 读这里；resolveBefore 把 DSH 子包的浮动依赖冻结在这个时间点（见 server/install.sh）。",
-  "vpssh": "0.1.9",
+  "vpssh": "0.1.10",
   "dsh": "0.2.0-rc.2",
   "resolveBefore": "2026-10-02T00:00:00Z",
   "verified_at": null

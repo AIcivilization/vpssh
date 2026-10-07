@@ -39,6 +39,7 @@ GATE_PORT=3190
 DSH_PORT=3191
 # 浏览器访问的端口：默认 443；443 被同机别的网站（Caddy）占着、又没有域名时自动换一个（见 choose_public_port）
 PUBLIC_PORT=""
+PORT_FORCED=0 # 用 --port 自己指定过：域名、IP 都照它；否则域名走 443（见 resolve_trusted_host）
 # 和别的产品共用一个 Caddy（主 Caddyfile 是别人的，只加一行 import）
 CADDY_SHARED=0
 CADDY_SITE=/etc/caddy/vpssh-site.conf
@@ -203,8 +204,9 @@ port_owner() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*"' |
 # 80/443 被 Caddy 以外的程序（nginx 等）占着：现在还共存不了，说清楚再退出
 choose_public_port() {
 	if [[ $REINSTALL -eq 1 && -z "$FORCE_PORT" ]]; then
-		PUBLIC_PORT=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1)
+		PUBLIC_PORT=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
 		PUBLIC_PORT="${PUBLIC_PORT:-443}"
+		grep -q '"portForced": *true' "$INSTALL_ROOT/state/config.json" 2>/dev/null && PORT_FORCED=1
 		return 0
 	fi
 	if [[ -n "$FORCE_PORT" ]]; then
@@ -213,6 +215,7 @@ choose_public_port() {
 			die "$(M "端口 $FORCE_PORT 已被 $(port_owner "$FORCE_PORT") 占用" "Port $FORCE_PORT is used by $(port_owner "$FORCE_PORT")")"
 		fi
 		PUBLIC_PORT="$FORCE_PORT"
+		PORT_FORCED=1
 		return 0
 	fi
 	if ! port_busy 443 && ! port_busy 80; then
@@ -554,8 +557,10 @@ step7_caddy() {
 	# 站点块由 gate/site-block.js 生成：install.sh 写初始块、gate 改域名、vpssh vpn
 	# 切换访问策略，三处共用同一份模板。重装时若 state/vpn.env 还开着隧道模式，
 	# 这里会直接沿用「仅隧道可访问」，不会把已经关上的门重新敞开。
-	local site="$TRUSTED_HOST"
-	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" "$CADDY_SHARED" \
+	local site="$TRUSTED_HOST" alt_port="$PUBLIC_PORT"
+	# 域名走 443 时也听「域名:访问端口」（带端口的地址照样能进）；--port 指定的只听那一个
+	[[ $PORT_FORCED -eq 1 ]] && alt_port=0
+	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" "$CADDY_SHARED" "$alt_port" \
 		>"$CADDY_SITE" || die "$(M "生成站点块失败" "Generating the site config failed")"
 	chown "$DSH_USER":caddy "$CADDY_SITE"
 	chmod 640 "$CADDY_SITE"
@@ -625,7 +630,11 @@ resolve_trusted_host() {
 		PUBLIC_IP=$(sed -n 's/.*"publicIp": *"\([^"]*\)".*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
 		[[ -n "$PUBLIC_IP" ]] || PUBLIC_IP=$(detect_public_ip 2>/dev/null || true)
 	fi
-	[[ "$PUBLIC_PORT" == 443 ]] || TRUSTED_HOST="$TRUSTED_HOST:$PUBLIC_PORT"
+	# 带不带端口：只有用 IP 访问才换端口（浏览器按 IP 打开时不带网站名，同一个 443 上分不清是哪个网站）；
+	# 用域名时 Caddy 按域名分，和同机别的网站共用 443，不带端口。--port 指定过的照它
+	if [[ "$PUBLIC_PORT" != 443 ]] && { [[ "$TRUSTED_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ $PORT_FORCED -eq 1 ]]; }; then
+		TRUSTED_HOST="$TRUSTED_HOST:$PUBLIC_PORT"
+	fi
 	CFG_DOMAIN="${DOMAIN:-$existing_domain}"
 }
 
@@ -647,6 +656,7 @@ VPSSH_LOCAL_USER=$LOCAL_USER
 GATE_PORT=$GATE_PORT
 DSH_PORT=$DSH_PORT
 VPSSH_PUBLIC_PORT=$PUBLIC_PORT
+VPSSH_PORT_FORCED=$PORT_FORCED
 VPSSH_CADDY_SHARED=$CADDY_SHARED
 EOF
 	chmod 600 "$INSTALL_ROOT/state/gate.env"
@@ -663,6 +673,7 @@ EOF
   "gatePort": $GATE_PORT,
   "dshPort": $DSH_PORT,
   "publicPort": $PUBLIC_PORT,
+  "portForced": $([[ $PORT_FORCED -eq 1 ]] && echo true || echo false),
   "caddyShared": $([[ $CADDY_SHARED -eq 1 ]] && echo true || echo false),
   "mirror": "${MIRROR:-default}",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -693,7 +704,9 @@ EOF
 step9_firewall() {
 	log "$(M "步骤 10/11：防火墙" "Step 10/11: firewall")"
 	# 要放行的：SSH（别把自己关在外面）、80（签发证书、跳转 HTTPS）、浏览器访问的端口
-	local ports=("${LOCAL_SSH_PORT:-22}" 80 "$PUBLIC_PORT") p opened=""
+	# 443 也放行：设了域名就走 443（和同机别的网站共用）
+	local ports=("${LOCAL_SSH_PORT:-22}" 80 443) p opened=""
+	[[ "$PUBLIC_PORT" == 443 ]] || ports+=("$PUBLIC_PORT")
 	if command -v ufw >/dev/null 2>&1; then
 		for p in "${ports[@]}"; do ufw allow "$p/tcp" >/dev/null 2>&1 || true; done
 		opened="ufw"
@@ -711,7 +724,11 @@ step9_firewall() {
 		log "$(M "这台机器没开防火墙（ufw / firewalld），不用放行" "No firewall (ufw / firewalld) is running here; nothing to open")"
 	fi
 	# 云厂商的安全组在机器外面，脚本改不了
-	log "$(M "云厂商的安全组（控制台里）也要放行 TCP $PUBLIC_PORT" "Also allow TCP $PUBLIC_PORT in your cloud provider's security group (in its console)")"
+	if [[ "$PUBLIC_PORT" == 443 ]]; then
+		log "$(M "云厂商的安全组（控制台里）也要放行 TCP 80、443" "Also allow TCP 80 and 443 in your cloud provider's security group (in its console)")"
+	else
+		log "$(M "云厂商的安全组（控制台里）也要放行 TCP $PUBLIC_PORT 和 443（用 IP 访问走 $PUBLIC_PORT，设了域名走 443）" "Also allow TCP $PUBLIC_PORT and 443 in your cloud provider's security group (in its console): $PUBLIC_PORT for the IP, 443 once a domain is set")"
+	fi
 }
 
 ## endregion
