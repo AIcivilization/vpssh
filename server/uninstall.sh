@@ -34,8 +34,20 @@ PURGE_CADDY=0
 log()  { printf '\033[1;32m[uninstall]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[uninstall]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[uninstall]\033[0m %s\n' "$*" >&2; exit 1; }
+# 输出跟系统语言：zh 开头用中文，否则英文。写法：M '中文' 'English'
+M() { case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in zh*) printf '%s' "$1" ;; *) printf '%s' "$2" ;; esac; }
 
 usage() {
+	if [[ "$(M zh en)" != zh ]]; then
+		cat <<'EOF'
+vpssh uninstaller
+Usage: sudo bash uninstall.sh [--yes] [--delete-data] [--purge-caddy]
+  --yes          Do not ask for confirmation
+  --delete-data  Also delete the data: conversations and machine list (/home/vpssh), keys (/var/lib/vpssh-keys), system users. Kept by default
+  --purge-caddy  Also remove the Caddy package and its apt source (by default only vpssh's site is removed)
+EOF
+		return
+	fi
 	cat <<'EOF'
 vpssh 卸载脚本
 用法: sudo bash uninstall.sh [--yes] [--delete-data] [--purge-caddy]
@@ -52,39 +64,51 @@ while [[ $# -gt 0 ]]; do
 	--keep-data) KEEP_DATA=1; shift ;;
 	--purge-caddy) PURGE_CADDY=1; shift ;;
 	-h | --help) usage; exit 0 ;;
-	*) die "未知参数: $1（--help 查看用法）" ;;
+	*) die "$(M "未知参数: $1（--help 查看用法）" "Unknown option: $1 (see --help)")" ;;
 	esac
 done
 
-[[ $EUID -eq 0 ]] || die "需要 root（sudo bash uninstall.sh ...）"
+[[ $EUID -eq 0 ]] || die "$(M "需要 root（sudo bash uninstall.sh ...）" "Run as root (sudo bash uninstall.sh ...)")"
 
 ## endregion
 
 ## region: 步骤 1：确认
 
 if [[ $ASSUME_YES -eq 0 ]]; then
-	cat <<EOF
+	if [[ "$(M zh en)" == zh ]]; then
+		cat <<EOF
 即将移除 vpssh：
-  - 服务        ${SERVICE}（停止并禁用，删除 ${UNIT_FILE}）
-  - 安装目录    ${INSTALL_ROOT}（含 gate 代码、state、备份）
-  - 命令        /usr/local/bin/vpssh
+  - 服务        ${SERVICE}、vpssh-keyd（停止并删除）
+  - 程序        ${INSTALL_ROOT}、/usr/local/bin/vpssh
   - Caddy 站点  $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo "（并移除 caddy 软件包）")
-  - 隧道        /etc/wireguard/wg0.conf（仅当它是 vpssh vpn 创建的；你自己的 wg0 不动）
-  - 钥匙保管    vpssh-keyd 服务
+  - 隧道        /etc/wireguard/wg0.conf（仅当它是 vpssh 创建的；你自己的 wg0 不动）
   - 本机账号    $LOCAL_ADMIN（vpssh 用它管理这台机器，连同它的免密 sudo 一起删）
   - 数据        /home/vpssh、$KEY_DIR、系统用户 $DSH_USER / $KEYS_USER$([ $KEEP_DATA -eq 1 ] && echo "（保留；要删加 --delete-data）" || echo "（删除）")
 
-删除前会先打包备份到 /root/vpssh-uninstall-<时间戳>.tar.gz
+删除前会先打包备份到 /root/vpssh-uninstall-<时间>.tar.gz
 EOF
-	read -rp "确认卸载？输入 yes 继续： " ans
-	[[ "$ans" == "yes" ]] || die "已取消"
+	else
+		cat <<EOF
+About to remove vpssh:
+  - Services       ${SERVICE}, vpssh-keyd (stopped and removed)
+  - Program        ${INSTALL_ROOT}, /usr/local/bin/vpssh
+  - Caddy site     $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo " (and the caddy package)")
+  - Tunnel         /etc/wireguard/wg0.conf (only if vpssh created it; your own wg0 is left alone)
+  - Local account  $LOCAL_ADMIN (vpssh used it to manage this machine; removed with its sudo rule)
+  - Data           /home/vpssh, $KEY_DIR, users $DSH_USER / $KEYS_USER$([ $KEEP_DATA -eq 1 ] && echo " (kept; add --delete-data to remove)" || echo " (deleted)")
+
+A backup goes to /root/vpssh-uninstall-<time>.tar.gz first.
+EOF
+	fi
+	read -rp "$(M "确认卸载？输入 yes 继续： " "Type yes to uninstall: ")" ans
+	[[ "$ans" == "yes" ]] || die "$(M "已取消" "Cancelled")"
 fi
 
 ## endregion
 
 ## region: 步骤 2：备份
 
-log "步骤 1/6：备份"
+log "$(M "步骤 1/6：备份" "Step 1/6: backup")"
 mkdir -p /root
 local_ts="vpssh-uninstall-$(date +%Y%m%d-%H%M%S).tar.gz"
 BACKUP="/root/$local_ts"
@@ -99,19 +123,19 @@ if [[ -d "$KEY_DIR" ]]; then targets+=("${KEY_DIR#/}"); fi
 if [[ -f "$CADDYFILE" ]]; then targets+=("${CADDYFILE#/}"); fi
 if [[ -f "$CADDY_SITE_FILE" ]]; then targets+=("${CADDY_SITE_FILE#/}"); fi
 if [[ ${#targets[@]} -gt 0 ]]; then
-	tar -czf "$BACKUP" -C / "${targets[@]}" 2>/dev/null || warn "部分文件无法打包（继续卸载）"
+	tar -czf "$BACKUP" -C / "${targets[@]}" 2>/dev/null || warn "$(M "部分文件无法打包（继续卸载）" "Some files could not be packed (continuing)")"
 	chmod 600 "$BACKUP"
-	log "备份完成: $BACKUP"
+	log "$(M "备份完成: $BACKUP" "Backup written: $BACKUP")"
 else
 	BACKUP=""
-	log "没有可备份的内容"
+	log "$(M "没有可备份的内容" "Nothing to back up")"
 fi
 
 ## endregion
 
 ## region: 步骤 3：停服务、移除 unit
 
-log "步骤 2/6：停止并移除 $SERVICE"
+log "$(M "步骤 2/6：停止并移除 $SERVICE" "Step 2/6: stop and remove $SERVICE")"
 systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_FILE"
@@ -132,7 +156,7 @@ pkill -u "$DSH_USER" -f "gate/server.js" 2>/dev/null || true
 
 ## region: 步骤 4：删文件
 
-log "步骤 3/6：移除安装目录与命令"
+log "$(M "步骤 3/6：移除安装目录与命令" "Step 3/6: remove the program and command")"
 rm -rf "$INSTALL_ROOT"
 rm -f /usr/local/bin/vpssh
 
@@ -140,7 +164,7 @@ rm -f /usr/local/bin/vpssh
 
 ## region: 步骤 5：Caddy
 
-log "步骤 4/6：移除 Caddy 站点块"
+log "$(M "步骤 4/6：移除 Caddy 站点块" "Step 4/6: remove the Caddy site")"
 if [[ -f "$CADDY_SITE_FILE" ]]; then
 	rm -f "$CADDY_SITE_FILE"
 fi
@@ -152,11 +176,11 @@ if [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE"; the
 		if ! grep -qF "import $CADDY_SITE_FILE" "$f"; then orig="$f"; break; fi
 	done
 	if [[ -n "$orig" ]]; then
-		cp "$orig" "$CADDYFILE" && log "已还原安装前的 Caddyfile（来自 $orig）" \
-			|| warn "Caddyfile 还原失败，请手工检查 $CADDYFILE"
+		cp "$orig" "$CADDYFILE" && log "$(M "已还原安装前的 Caddyfile（来自 $orig）" "Restored the Caddyfile from before the install ($orig)")" \
+			|| warn "$(M "Caddyfile 还原失败，请手工检查 $CADDYFILE" "Could not restore the Caddyfile; check $CADDYFILE by hand")"
 	else
 		printf '# Caddyfile 已被 vpssh 卸载脚本重置（原内容已备份进 %s）\n' "${BACKUP:-（无备份）}" >"$CADDYFILE" \
-			|| warn "Caddyfile 重置失败，请手工检查 $CADDYFILE"
+			|| warn "$(M "Caddyfile 重置失败，请手工检查 $CADDYFILE" "Could not reset the Caddyfile; check $CADDYFILE by hand")"
 	fi
 fi
 if command -v caddy >/dev/null 2>&1; then
@@ -165,56 +189,57 @@ fi
 if [[ $PURGE_CADDY -eq 1 ]]; then
 	systemctl stop caddy 2>/dev/null || true
 	systemctl disable caddy 2>/dev/null || true
-	apt-get purge -y caddy >/dev/null 2>&1 || warn "caddy 卸载失败（可能不是 apt 安装的）"
+	apt-get purge -y caddy >/dev/null 2>&1 || warn "$(M "caddy 卸载失败（可能不是 apt 安装的）" "Could not remove caddy (maybe not installed with apt)")"
 	rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-	log "已移除 caddy"
+	log "$(M "已移除 caddy" "Removed caddy")"
 fi
 
 ## endregion
 
 ## region: 步骤 5：隧道
 
-log "步骤 5/6：移除隧道"
+log "$(M "步骤 5/6：移除隧道" "Step 5/6: remove the tunnel")"
 if [[ -f /etc/wireguard/wg0.conf ]] && ! grep -q "vpssh" /etc/wireguard/wg0.conf; then
-	log "wg0.conf 不是 vpssh 创建的，保留不动"
+	log "$(M "wg0.conf 不是 vpssh 创建的，保留不动" "wg0.conf was not created by vpssh; left alone")"
 elif [[ -f /etc/wireguard/wg0.conf ]]; then
 	systemctl stop wg-quick@wg0 2>/dev/null || true
 	systemctl disable wg-quick@wg0 2>/dev/null || true
 	rm -f /etc/wireguard/wg0.conf
-	log "已移除 wg0（设备里的客户端配置请自行删掉）"
+	log "$(M "已移除 wg0（设备里的客户端配置请自行删掉）" "Removed wg0 (delete the client configs on your devices yourself)")"
 else
-	log "没有隧道，跳过"
+	log "$(M "没有隧道，跳过" "No tunnel")"
 fi
 
 ## endregion
 
 ## region: 步骤 6：本机账号与数据
 
-log "步骤 6/6：本机账号与数据"
+log "$(M "步骤 6/6：本机账号与数据" "Step 6/6: local account and data")"
 if id "$LOCAL_ADMIN" >/dev/null 2>&1; then
 	# vpssh 刚经 SSH 登录过它：登录会话（含 systemd --user）还在时 userdel 会拒绝，先结束再删
 	loginctl terminate-user "$LOCAL_ADMIN" 2>/dev/null || true
 	pkill -KILL -u "$LOCAL_ADMIN" 2>/dev/null || true
 	sleep 1
 	if userdel -f -r "$LOCAL_ADMIN" 2>/dev/null || ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
-		log "已删除本机账号 $LOCAL_ADMIN"
+		log "$(M "已删除本机账号 $LOCAL_ADMIN" "Removed the local account $LOCAL_ADMIN")"
 	else
-		warn "删除账号 $LOCAL_ADMIN 失败，请手工处理：sudo userdel -f -r $LOCAL_ADMIN"
+		warn "$(M "删除账号 $LOCAL_ADMIN 失败，请手工处理：sudo userdel -f -r $LOCAL_ADMIN" "Could not remove $LOCAL_ADMIN; run: sudo userdel -f -r $LOCAL_ADMIN")"
 	fi
 fi
 rm -f /etc/sudoers.d/vpssh-admin
 if [[ $KEEP_DATA -eq 1 ]]; then
-	log "保留数据：/home/vpssh、$KEY_DIR（要删：sudo bash uninstall.sh --delete-data）"
+	log "$(M "保留数据：/home/vpssh、$KEY_DIR（要删：sudo bash uninstall.sh --delete-data）" "Kept the data: /home/vpssh, $KEY_DIR (to remove: sudo bash uninstall.sh --delete-data)")"
 else
 	rm -rf /home/vpssh "$KEY_DIR"
 	userdel "$DSH_USER" 2>/dev/null || true
 	userdel "$KEYS_USER" 2>/dev/null || true
-	log "已删除数据与系统用户 $DSH_USER、$KEYS_USER"
+	log "$(M "已删除数据与系统用户 $DSH_USER、$KEYS_USER" "Removed the data and the users $DSH_USER, $KEYS_USER")"
 fi
 
 ## endregion
 
-cat <<EOF
+if [[ "$(M zh en)" == zh ]]; then
+	cat <<EOF
 
 卸载完成。
   备份：${BACKUP:-（无）}
@@ -226,3 +251,17 @@ cat <<EOF
   1. sudo tar -xzf ${BACKUP:-<备份文件>} -C /
   2. curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
 EOF
+else
+	cat <<EOF
+
+vpssh is uninstalled.
+  Backup: ${BACKUP:-(none)}
+
+Managed machines still have vpssh's public key (the authorized_keys line ending in vpssh@...).
+If you are done with vpssh, delete that line on each machine.
+
+To restore from the backup (data first, then install, so the account and key carry over):
+  1. sudo tar -xzf ${BACKUP:-<backup file>} -C /
+  2. curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
+EOF
+fi

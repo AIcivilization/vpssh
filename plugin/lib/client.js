@@ -1234,17 +1234,52 @@ window.__ModuleLoader__.load({
           : null)
     }
 
-    /** 版本：只显示一个 vpssh 版本；展开看里面 DSH 的版本（vpssh 每个版本固定一组组件） */
+    /**
+     * 版本与升级：只显示一个 vpssh 版本，展开看里面 DSH 的版本（vpssh 每个版本固定一组组件）。
+     * 升级 = 整体升级（gate 写请求，root 执行 vpssh upgrade：先备份、失败自动回到升级前）
+     */
     function VersionCard({ plugin, update }) {
+      const [info, setInfo] = useState(update)
+      const [busy, setBusy] = useState('')
+      const [msg, setMsg] = useState('')
+      useEffect(() => setInfo(update), [update])
+      const current = info?.current || plugin
+      const check = async () => {
+        setBusy('check')
+        setMsg('')
+        const next = await gateGet('/gate/update?refresh=1')
+        if (next) setInfo(next)
+        else setMsg(L('查不到新版本（离线？）', 'Could not check for a new version (offline?)'))
+        setBusy('')
+      }
+      const upgrade = async () => {
+        if (!window.confirm(L(`把 vpssh 升级到 ${info.latest}？\n\n升级时页面会断开 1–3 分钟；先自动备份，失败会自动回到现在的版本。`,
+          `Upgrade vpssh to ${info.latest}?\n\nThe page goes away for 1–3 minutes. A backup is taken first; on failure it returns to the current version.`))) return
+        setBusy('upgrade')
+        setMsg('')
+        try {
+          const res = await fetch('/gate/update', { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(30_000) })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+          setMsg(L('正在升级，完成后页面会自动刷新（右下角有进度）。', 'Upgrading; the page reloads when it is done (progress at the bottom right).'))
+        } catch (e) {
+          setMsg(L(`没能开始升级：${e.message}`, `Could not start the upgrade: ${e.message}`))
+          setBusy('')
+        }
+      }
       return h(FoldCard, {
         id: 'version',
         title: L('版本', 'Version'),
-        summary: `vpssh ${plugin || '—'}`,
+        summary: info?.available ? L(`vpssh ${current} · 有新版本 ${info.latest}`, `vpssh ${current} · ${info.latest} available`) : `vpssh ${current || '—'}`,
       },
         h('div', { style: { fontSize: 12, lineHeight: 1.9 } },
-          h('div', null, `vpssh ${plugin || '—'}`),
-          h('div', { style: S.muted }, L(`DeepSeek Harness ${update?.current || '—'}（这一版 vpssh 测过的版本）`, `DeepSeek Harness ${update?.current || '—'} (the version this vpssh release was tested with)`)),
-          h('div', { style: S.muted }, L('升级：在服务器上执行 sudo vpssh upgrade', 'To upgrade, run sudo vpssh upgrade on the server'))))
+          h('div', null, `vpssh ${current || '—'}`, info?.available ? h('span', { style: { marginLeft: 8, color: T.accent } }, L(`有新版本 ${info.latest}`, `${info.latest} available`)) : null),
+          h('div', { style: S.muted }, L(`DeepSeek Harness ${info?.dsh || '—'}（这一版 vpssh 测过的版本）`, `DeepSeek Harness ${info?.dsh || '—'} (the version this vpssh release was tested with)`)),
+          info ? h('div', { style: { ...S.row, marginTop: 8 } },
+            h(Btn, { disabled: Boolean(busy), onClick: check }, busy === 'check' ? L('检查中…', 'Checking…') : L('检查更新', 'Check for updates')),
+            info.available ? h(Btn, { kind: 'primary', disabled: Boolean(busy), onClick: upgrade }, L(`升级到 ${info.latest}`, `Upgrade to ${info.latest}`)) : null)
+            : h('div', { style: S.muted }, L('升级：在服务器上执行 sudo vpssh upgrade', 'To upgrade, run sudo vpssh upgrade on the server')),
+          msg ? h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } }, msg) : null))
     }
 
     function duration(sec) {

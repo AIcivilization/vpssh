@@ -108,18 +108,16 @@ const UI_SNIPPET = `<script data-vpssh="${UI_MARK}" src="/gate/ui.js" defer></sc
 const ICON_MARK = "vpssh:icon";
 const HOME_SCREEN_TAGS =
 	`<link rel="apple-touch-icon" href="/gate/apple-touch-icon.png" data-vpssh="${ICON_MARK}">` +
-	'<meta name="apple-mobile-web-app-title" content="DSH">' +
+	'<meta name="apple-mobile-web-app-title" content="vpssh">' +
 	'<meta name="apple-mobile-web-app-capable" content="yes">' +
 	'<meta name="mobile-web-app-capable" content="yes">';
 
 
-// DSH 版本检测：跟随官方最新版（npm latest 与 next 渠道中较新的一个）。页面上确认后，gate 只写 state/upgrade.request，
-// 由 root 的 vpssh-upgrade.path/.service 执行升级（gate 自身无权改 /opt/vpssh/dsh）。
-const DSH_PACKAGE = "@deepseek-ai/dsh";
+// vpssh 版本检测：看 GitHub 上 vpssh 最新的 Release（每个 vpssh 版本固定一组测过的组件，DSH 不单独升）。
+// 页面上确认后，gate 只写 state/upgrade.request，由 root 的 vpssh-upgrade.path/.service 执行整体升级
+// （sudo vpssh upgrade：备份 + 快照，失败自动回到升级前）。
+const RELEASES_API = process.env.VPSSH_RELEASES_API || "https://api.github.com/repos/AIcivilization/vpssh/releases/latest";
 const UPDATE_CHECK_INTERVAL_MS = 6 * 3_600_000;
-// 冷静期：新版本发布满这么久才提示升级。上游多次出现「主包先发、子包几小时后才补齐」
-// （0.1.5-rc.3 缺包约 7 小时；0.2.0-rc.2 发布一小时后仍 ETARGET），刚发布就升级只会装失败。
-const UPGRADE_COOLDOWN_MS = Number(process.env.GATE_UPGRADE_COOLDOWN_HOURS || 12) * 3_600_000;
 const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 // DSH 的若干特权端点（备份导出等）要求
@@ -1667,9 +1665,9 @@ async function handleSetup(req, res) {
 	res.end();
 }
 
-//#region DSH 版本检测与浏览器一键升级
+//#region vpssh 版本检测与浏览器一键升级
 
-const update = { latest: null, pending: null, checkedAt: 0, error: null };
+const update = { latest: null, checkedAt: 0, error: null };
 
 function upgradeRequestPath() {
 	return path.join(STATE_DIR, "upgrade.request");
@@ -1707,36 +1705,27 @@ function compareVersions(a, b) {
 	return 0;
 }
 
-/**
- * 官方 latest（正式）与 next（预览）两个渠道中版本号更高、且已过冷静期的一个；alpha 等内部渠道不取。
- * 返回 { version, pending }：pending 是更新但仍在冷静期内的版本 { version, availableAt }。
- */
-function newestDshVersion() {
+/** 装着的 vpssh 版本（install.sh 写在 config.json 里） */
+function currentVpsshVersion() {
+	try {
+		const v = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "config.json"), "utf8")).vpsshVersion;
+		return typeof v === "string" && SEMVER_PATTERN.test(v) ? v : null;
+	} catch {
+		return null;
+	}
+}
+
+/** GitHub 上最新的 vpssh Release 的版本号（标签去掉开头的 v）；查不到返回 null */
+function latestRelease() {
 	return new Promise((resolve) => {
-		const url = `${npmRegistry()}/${encodeURIComponent(DSH_PACKAGE).replace(/^%40/, "@")}`;
-		const req = https.get(url, { headers: { accept: "application/json" }, timeout: 20_000 }, (res) => {
+		const req = https.get(RELEASES_API, { headers: { accept: "application/vnd.github+json", "user-agent": "vpssh-gate" }, timeout: 20_000 }, (res) => {
 			const chunks = [];
 			res.on("data", (c) => chunks.push(c));
 			res.on("end", () => {
 				try {
 					if (res.statusCode !== 200) return resolve(null);
-					const doc = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-					const tags = doc["dist-tags"] || {};
-					const times = doc.time || {};
-					const candidates = [...new Set([tags.latest, tags.next])]
-						.filter((v) => typeof v === "string" && SEMVER_PATTERN.test(v))
-						.sort(compareVersions);
-					const now = Date.now();
-					const mature = candidates.filter((v) => {
-						const at = Date.parse(times[v] || "");
-						return Number.isFinite(at) && now - at >= UPGRADE_COOLDOWN_MS;
-					});
-					const version = mature.length ? mature[mature.length - 1] : null;
-					const newest = candidates[candidates.length - 1];
-					const pending = newest && newest !== version
-						? { version: newest, availableAt: Date.parse(times[newest] || "") + UPGRADE_COOLDOWN_MS || null }
-						: null;
-					resolve({ version, pending });
+					const tag = String(JSON.parse(Buffer.concat(chunks).toString("utf8")).tag_name || "").replace(/^v/, "");
+					resolve(SEMVER_PATTERN.test(tag) ? tag : null);
 				} catch {
 					resolve(null);
 				}
@@ -1747,16 +1736,15 @@ function newestDshVersion() {
 	});
 }
 
-async function checkDshLatest() {
-	const r = await newestDshVersion();
+async function checkLatest() {
+	const v = await latestRelease();
 	update.checkedAt = Date.now();
-	if (r) {
-		if (r.version && r.version !== update.latest) log(`dsh latest on registry: ${r.version} (running ${currentDshVersion() || "unknown"})`);
-		update.latest = r.version;
-		update.pending = r.pending;
+	if (v) {
+		if (v !== update.latest) log(`vpssh latest release: ${v} (installed ${currentVpsshVersion() || "unknown"})`);
+		update.latest = v;
 		update.error = null;
 	} else {
-		update.error = "无法查询 npm 最新版本";
+		update.error = "无法查询 vpssh 的最新版本";
 	}
 }
 
@@ -1779,7 +1767,7 @@ function upgradeLogTail(lines = 15) {
 }
 
 function updateInfo() {
-	const current = currentDshVersion();
+	const current = currentVpsshVersion();
 	const latest = update.latest;
 	const status = readUpgradeStatus();
 	return {
@@ -1787,9 +1775,7 @@ function updateInfo() {
 		latest,
 		available: Boolean(current && latest && compareVersions(latest, current) > 0),
 		checkedAt: update.checkedAt || null,
-		// 更新但仍在冷静期内的版本：界面上告知「X 小时后可升级」，不给升级按钮
-		pending: update.pending && current && compareVersions(update.pending.version, current) > 0 ? update.pending : null,
-		cooldownHours: UPGRADE_COOLDOWN_MS / 3_600_000,
+		dsh: currentDshVersion(), // 这一版 vpssh 带的 DSH，只用来显示
 		error: update.error,
 		requested: fs.existsSync(upgradeRequestPath()),
 		status,
@@ -1805,7 +1791,7 @@ async function handleUpdate(req, res, user) {
 	};
 	if (req.method === "GET") {
 		// 设置页的「检查更新」：立即查一次，而不是等 6 小时一次的定时检查
-		if (/[?&]refresh=1(?:&|$)/.test(req.url || "")) await checkDshLatest();
+		if (/[?&]refresh=1(?:&|$)/.test(req.url || "")) await checkLatest();
 		return json(200, updateInfo());
 	}
 	if (req.method !== "POST") return json(405, { error: "method not allowed" });
@@ -1818,7 +1804,7 @@ async function handleUpdate(req, res, user) {
 		/* 非法 Origin */
 	}
 	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross-origin request refused" });
-	await checkDshLatest(); // 以点击时的最新结果为准
+	await checkLatest(); // 以点击时的最新结果为准
 	const info = updateInfo();
 	if (info.requested || (info.status && info.status.state === "running")) return json(409, { error: "升级已在进行中" });
 	if (!info.available) return json(409, { error: "已是最新版本" });
@@ -1870,8 +1856,8 @@ const UI_JS = `(function () {
 		get().then(function (u) {
 			var st = u.status;
 			if (u.requested || (st && st.state === "running")) {
-				show(function () { return [L("正在升级 DeepSeek Harness" + (u.latest ? " 到 " + u.latest : "") + "…（约 1–3 分钟，期间页面会短暂不可用，请勿关闭）",
-					"Upgrading DeepSeek Harness" + (u.latest ? " to " + u.latest : "") + "… (about 1–3 minutes; the page is briefly unavailable — keep it open)")]; });
+				show(function () { return [L("正在升级 vpssh" + (u.latest ? " 到 " + u.latest : "") + "…（约 1–3 分钟，期间页面会短暂不可用，请勿关闭）",
+					"Upgrading vpssh" + (u.latest ? " to " + u.latest : "") + "… (about 1–3 minutes; the page is briefly unavailable — keep it open)")]; });
 				return;
 			}
 			if (st && asked && st.state === "success") {
@@ -1883,18 +1869,18 @@ const UI_JS = `(function () {
 			if (st && asked && st.state === "failed") {
 				clearInterval(timer);
 				show(function () { return [L("升级未成功，已自动回滚到 " + (st.to || st.from) + "，当前可继续使用。详情：sudo cat /opt/vpssh/state/upgrade.log",
-					"The upgrade did not succeed and was rolled back to " + (st.to || st.from) + "; DSH works normally. Details: sudo cat /opt/vpssh/state/upgrade.log"),
+					"The upgrade did not succeed and was rolled back to " + (st.to || st.from) + "; vpssh works normally. Details: sudo cat /opt/vpssh/state/upgrade.log"),
 					[{ label: L("知道了", "OK"), onClick: hide }]]; });
 				return;
 			}
 		}).catch(function () {
-			if (asked) show(function () { return [L("正在升级，DeepSeek Harness 重启中…", "Upgrading — DeepSeek Harness is restarting…")]; });
+			if (asked) show(function () { return [L("正在升级，vpssh 重启中…", "Upgrading — vpssh is restarting…")]; });
 		});
 	}
 	function start() {
 		if (busy) return;
-		if (!window.confirm(L("升级期间 DeepSeek Harness 会重启，约 1–3 分钟不可用。\\\\n升级前自动备份；新版本自检不通过会自动回滚到当前版本。\\\\n\\\\n确认升级？",
-			"DeepSeek Harness restarts during the upgrade and is unavailable for about 1–3 minutes.\\\\nA backup is taken first; if the new version fails its self-check, it rolls back automatically.\\\\n\\\\nUpgrade now?"))) return;
+		if (!window.confirm(L("升级期间 vpssh 会重启，约 1–3 分钟不可用。\\\\n升级前自动备份；新版本自检不通过会自动回滚到当前版本。\\\\n\\\\n确认升级？",
+			"vpssh restarts during the upgrade and is unavailable for about 1–3 minutes.\\\\nA backup is taken first; if the new version fails its self-check, it rolls back automatically.\\\\n\\\\nUpgrade now?"))) return;
 		busy = true;
 		fetch("/gate/update", { method: "POST", credentials: "same-origin" }).then(function (r) {
 			return r.json().then(function (b) { if (!r.ok) throw new Error(b.error || String(r.status)); return b; });
@@ -1917,7 +1903,7 @@ const UI_JS = `(function () {
 			if (u.requested || (st && st.state === "running")) { asked = true; timer = setInterval(poll, 3000); poll(); return; }
 			if (asked && st && st.at > t) { store("vpssh-update-asked", "0"); if (st.state === "failed") poll(); return; }
 			if (!u.available || store(KEY) === u.latest) return;
-			show(function () { return [L("DeepSeek Harness 有新版本 " + u.latest + "（当前 " + u.current + "）", "A new DeepSeek Harness version is available: " + u.latest + " (current " + u.current + ")"), [
+			show(function () { return [L("vpssh 有新版本 " + u.latest + "（当前 " + u.current + "）", "A new vpssh version is available: " + u.latest + " (current " + u.current + ")"), [
 				{ label: L("稍后", "Later"), onClick: function () { store(KEY, u.latest); hide(); } },
 				{ label: L("立即升级", "Upgrade now"), primary: true, onClick: start },
 			]]; });
@@ -2074,8 +2060,8 @@ function main() {
 	spawnDshWithPreflight();
 
 	// DSH 新版本检测：启动 1 分钟后查一次，之后每 6 小时一次
-	setTimeout(() => checkDshLatest().catch(() => {}), 60_000).unref();
-	setInterval(() => checkDshLatest().catch(() => {}), UPDATE_CHECK_INTERVAL_MS).unref();
+	setTimeout(() => checkLatest().catch(() => {}), 60_000).unref();
+	setInterval(() => checkLatest().catch(() => {}), UPDATE_CHECK_INTERVAL_MS).unref();
 
 	// DSH Cookie 续期：剩余有效期 < 24h 时用同一 launchToken 重新兑换
 	setInterval(() => {
