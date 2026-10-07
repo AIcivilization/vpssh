@@ -377,6 +377,19 @@ cmd_restart() {
 
 ## region: repair
 
+# 本机 sshd 的端口。不能直接 $(sshd -T | ...)：Ubuntu 新版按需启动 ssh 时 /run/sshd 可能还不存在，
+# sshd -T 会报错退出，在 set -e + pipefail 下脚本就无声退出了（用户实测）。读不到依次退回：
+# sshd 实际在听的端口 → sshd_config 里的 Port → 22
+sshd_port() {
+	local p=""
+	mkdir -p /run/sshd 2>/dev/null && chmod 755 /run/sshd 2>/dev/null || true
+	p=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+	[[ -n "$p" ]] || p=$(ss -ltnpH 2>/dev/null | awk '/"sshd"/{n=split($4,a,":"); print a[n]; exit}' || true)
+	[[ -n "$p" ]] || p=$(awk 'tolower($1)=="port"{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null || true)
+	printf '%s' "${p:-22}"
+}
+
+
 # 命令行文字跟系统语言：zh 开头用中文，否则英文。写法：M '中文' 'English'
 M() { case "${LC_ALL:-${LC_MESSAGES:-${LANG:-}}}" in zh*) printf '%s' "$1" ;; *) printf '%s' "$2" ;; esac; }
 
@@ -427,7 +440,7 @@ cmd_repair() {
 
 	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
 		local port
-		port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
+		port=$(sshd_port)
 		local pub
 		pub=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$ROOT/state/config.json" 2>/dev/null | head -1)
 		pub="${pub:-443}"

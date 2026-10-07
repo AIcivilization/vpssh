@@ -12,7 +12,7 @@
 # 顺序：备份 → 停服务 → 移除 unit 与安装目录 → 移除 Caddy 站点块 → 本机账号 → 数据（默认保留）。
 # 任何一步失败都会就地停下（set -euo pipefail），不做半吊子清理。
 
-set -euo pipefail
+set -Eeuo pipefail
 
 ## region: 常量与参数
 

@@ -12,7 +12,8 @@
 # 装什么：Node 22 → DSH（npm 原样、钉住版本）→ vpssh 插件（本仓库 plugin/）→ 登录网关 → Caddy → systemd。
 # 仓库文件：在克隆目录内运行时用本地文件；curl 管道模式先把整个仓库（VPSSH_REF 指定的分支或标签）下载下来再装。
 
-set -euo pipefail
+# -E：出错提示（trap ERR）在函数里也生效；没有它，函数里的命令失败时脚本会一声不响地退出
+set -Eeuo pipefail
 
 ## region: 常量与参数
 
@@ -343,6 +344,19 @@ step4_user() {
 
 ## region: 步骤 5：钥匙保管与本机账号
 
+# 本机 sshd 的端口。不能直接 $(sshd -T | ...)：Ubuntu 新版按需启动 ssh 时 /run/sshd 可能还不存在，
+# sshd -T 会报错退出，在 set -e + pipefail 下脚本就无声退出了（用户实测）。读不到依次退回：
+# sshd 实际在听的端口 → sshd_config 里的 Port → 22
+sshd_port() {
+	local p=""
+	mkdir -p /run/sshd 2>/dev/null && chmod 755 /run/sshd 2>/dev/null || true
+	p=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}' || true)
+	[[ -n "$p" ]] || p=$(ss -ltnpH 2>/dev/null | awk '/"sshd"/{n=split($4,a,":"); print a[n]; exit}' || true)
+	[[ -n "$p" ]] || p=$(awk 'tolower($1)=="port"{print $2; exit}' /etc/ssh/sshd_config 2>/dev/null || true)
+	printf '%s' "${p:-22}"
+}
+
+
 KEYS_USER="vpssh-keys"
 LOCAL_ADMIN="vpssh-admin"
 KEY_PUB="/var/lib/vpssh-keys/vpssh_ed25519.pub"
@@ -360,8 +374,8 @@ step5_keys() {
 	fetch_file units/vpssh-keyd.service /tmp/vpssh-keyd.service.tpl
 	sed "s|__NODE_BIN__|$(command -v node)|" /tmp/vpssh-keyd.service.tpl >/etc/systemd/system/vpssh-keyd.service
 	systemctl daemon-reload
-	systemctl enable vpssh-keyd >/dev/null 2>&1
-	systemctl restart vpssh-keyd
+	systemctl enable vpssh-keyd >/dev/null || die "$(M "启用 vpssh-keyd 失败（见上一行）" "Could not enable vpssh-keyd (see the line above)")"
+	systemctl restart vpssh-keyd || die "$(M "vpssh-keyd 起不来：journalctl -u vpssh-keyd -n 30" "vpssh-keyd does not start: journalctl -u vpssh-keyd -n 30")"
 	local i
 	for i in $(seq 1 20); do [[ -s "$KEY_PUB" && -S /run/vpssh-keys/agent.sock ]] && break; sleep 0.5; done
 	[[ -s "$KEY_PUB" ]] || die "$(M "vpssh-keyd 没有生成钥匙，见 journalctl -u vpssh-keyd -n 30" "vpssh-keyd did not create a key; see journalctl -u vpssh-keyd -n 30")"
@@ -372,8 +386,7 @@ step5_keys() {
 		apt-get install -y openssh-server >/dev/null
 	fi
 	systemctl enable --now ssh >/dev/null 2>&1 || systemctl enable --now sshd >/dev/null 2>&1 || true
-	LOCAL_SSH_PORT=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
-	LOCAL_SSH_PORT="${LOCAL_SSH_PORT:-22}"
+	LOCAL_SSH_PORT=$(sshd_port)
 
 	if ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
 		useradd --create-home --shell /bin/bash "$LOCAL_ADMIN"
@@ -393,7 +406,7 @@ step5_keys() {
 	chmod 700 "$ssh_dir"
 	chmod 600 "$ssh_dir/authorized_keys"
 	# sshd 限制了 AllowUsers / AllowGroups 时提醒（不替用户改 sshd 配置）
-	if sshd -T 2>/dev/null | grep -qiE '^(allowusers|allowgroups) '; then
+	if { sshd -T 2>/dev/null || true; } | grep -qiE '^(allowusers|allowgroups) '; then
 		warn "$(M "sshd 设了 AllowUsers/AllowGroups：请把 $LOCAL_ADMIN 加进去，否则 vpssh 管不了这台机器" "sshd uses AllowUsers/AllowGroups: add $LOCAL_ADMIN, or vpssh cannot manage this machine")"
 	fi
 	log "$(M "钥匙由 vpssh-keyd 保管；本机账号 $LOCAL_ADMIN（SSH 端口 $LOCAL_SSH_PORT）" "Key held by vpssh-keyd; local account $LOCAL_ADMIN (SSH port $LOCAL_SSH_PORT)")"
@@ -632,7 +645,7 @@ EOF
 	fetch_file units/vpssh.service /tmp/vpssh.service.tpl
 	sed "s|__NODE_BIN__|${node_bin}|" /tmp/vpssh.service.tpl >/etc/systemd/system/vpssh.service
 	systemctl daemon-reload
-	systemctl enable vpssh >/dev/null 2>&1
+	systemctl enable vpssh >/dev/null || die "$(M "启用 vpssh 服务失败（见上一行）" "Could not enable the vpssh service (see the line above)")"
 	systemctl restart vpssh
 	log "$(M "vpssh.service 已启动（DSH_TRUSTED_HOST=${trusted}）" "vpssh.service started (address: ${trusted})")"
 	# 浏览器一键升级：DSH 有新版本时页面提示，确认后由 root 服务执行升级
