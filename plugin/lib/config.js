@@ -254,8 +254,8 @@ export async function bindSession(sessionId, alias, env = process.env) {
   if (!sessionId) return null
   const state = await readState(env)
   state.sessions = state.sessions ?? {}
-  if (alias) state.sessions[sessionId] = { alias, at: new Date().toISOString() }
-  else delete state.sessions[sessionId]
+  // 关掉也记下来（off）：和「从没设过」分开，只有一台机器时新对话默认打开，关掉的不会被重新打开
+  state.sessions[sessionId] = alias ? { alias, at: new Date().toISOString() } : { off: true, at: new Date().toISOString() }
   await writeState(state, env)
   if (alias) bindingCache.set(String(sessionId), alias)
   else bindingCache.delete(String(sessionId))
@@ -296,8 +296,15 @@ export async function sessionBinding(sessionId, env = process.env) {
   if (!sessionId) return ''
   const state = await readState(env)
   const entry = state.sessions?.[sessionId]
+  const doc = await readHosts(env)
+  // 只有一台机器、这个对话又从没设过开关：默认就是它（vpssh 就是用来管服务器的，没什么可猜的）。
+  // 用户关掉过（off）就尊重，不再自作主张；两台以上照旧要用户自己选
+  if (!entry) {
+    const only = Object.keys(doc.hosts)
+    if (only.length === 1) return bindSession(sessionId, only[0], env)
+  }
   // 机器被删掉后，绑定自动失效
-  const alias = entry && (await readHosts(env)).hosts[entry.alias] ? entry.alias : ''
+  const alias = entry?.alias && doc.hosts[entry.alias] ? entry.alias : ''
   if (alias) bindingCache.set(String(sessionId), alias)
   else bindingCache.delete(String(sessionId))
   return alias

@@ -440,8 +440,9 @@ test('鉴权不过直接拒绝升级：没 token、token 错、跨站、DSH 登�
   }
 })
 
-test('没打开 VPS 开关的对话：说清原因，不启动 ssh', async () => {
+test('关掉 VPS 开关的对话：说清原因，不启动 ssh', async () => {
   const box = await sandbox()
+  await bindSession('nobody', null, box.env) // 只有一台机器时新对话默认打开；这里是用户关掉了
   try {
     const c = box.connect({ sessionId: 'nobody' })
     await c.opened

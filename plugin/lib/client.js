@@ -1130,11 +1130,13 @@ window.__ModuleLoader__.load({
     function HomeScreenCard({ health }) {
       const url = `${window.location.origin}/`
       const host = window.location.hostname
-      const qr = useAsync(() => api('qr', { text: url }), [url])
+      // 在手机上打开时不放二维码：自己扫不了自己的屏幕
+      const phone = typeof window !== 'undefined' && window.innerWidth < 600
+      const qr = useAsync(() => (phone ? Promise.resolve(null) : api('qr', { text: url })), [url, phone])
       const small = { ...S.muted, fontSize: 12, lineHeight: 1.7 }
       const warn = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-warning-primary, #d29922)', marginTop: 4 }
       return h('div', { style: { ...S.card, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' } },
-        qr.data
+        phone ? null : qr.data
           ? h('svg', {
             viewBox: `-2 -2 ${qr.data.n + 4} ${qr.data.n + 4}`, width: 112, height: 112, shapeRendering: 'crispEdges',
             role: 'img', 'aria-label': url,
@@ -1145,7 +1147,9 @@ window.__ModuleLoader__.load({
         h('div', { style: { flex: '1 1 220px', minWidth: 0 } },
           h('div', { style: { fontWeight: 600, marginBottom: 2 } }, L('手机、平板', 'Phone and tablet')),
           h('div', { style: small },
-            h('div', null, L('手机扫码打开并登录，然后添加到主屏幕：', 'Scan with your phone, sign in, then add it to the home screen:')),
+            h('div', null, phone
+              ? L('添加到主屏幕，以后像应用一样打开：', 'Add it to the home screen to open it like an app:')
+              : L('手机扫码打开并登录，然后添加到主屏幕：', 'Scan with your phone, sign in, then add it to the home screen:')),
             h('div', null, L('iPhone（Safari）：分享 → 添加到主屏幕', 'iPhone (Safari): Share → Add to Home Screen')),
             h('div', null, L('安卓（Chrome）：菜单 ⋮ → 添加到主屏幕 / 安装应用', 'Android (Chrome): menu ⋮ → Add to Home screen / Install app')),
             h('div', null, L('电脑：Chrome、Edge 地址栏右侧「安装」；Safari 文件 → 添加到程序坞', 'Computer: "Install" at the right of the Chrome / Edge address bar; Safari File → Add to Dock'))),
@@ -1207,10 +1211,9 @@ window.__ModuleLoader__.load({
         h('div', { style: S.spread },
           h('div', { style: { ...S.h2, margin: 0 } }, L('账号与安全', 'Account and security')),
           open ? null : h(Btn, { onClick: () => { setOpen(true); setDone(false) } }, L('修改密码', 'Change password'))),
-        h('div', { style: { ...S.row, marginTop: 6, fontSize: 12 } },
-          h('span', null, L('管理员：', 'Admin: '), h('span', { style: S.mono }, health?.admin || '—')),
-          h('span', { style: S.muted }, '·'),
-          h('span', null, L('访问方式：', 'Access: '), tunnel
+        h('div', { style: { marginTop: 6, fontSize: 12, lineHeight: 1.8 } },
+          h('div', null, L('管理员：', 'Admin: '), h('span', { style: S.mono }, health?.admin || '—')),
+          h('div', null, L('访问方式：', 'Access: '), tunnel
             ? L('仅我的设备（WireGuard）', 'Only my devices (WireGuard)')
             : L('公网可访问，凭账号登录', 'Public, behind the sign-in'))),
         done ? h('div', { style: { ...S.note, marginTop: 8 } }, L('密码已修改。这台设备保持登录；其他设备（包括手机）要用新密码重新登录。',
@@ -5415,6 +5418,13 @@ window.__ModuleLoader__.load({
 
     const BRAND_PRIORITY = -10
 
+    /**
+     * 右栏能和对话并排的最小窗口宽度：DSH 的左栏细条 56 + 对话最少 400 + 右栏最少 300（ui-layout columns）。
+     * 比这窄（手机），DSH 让右栏盖满整屏：这时自动打开会把对话挡住，所以不开
+     */
+    const SIDE_BY_SIDE_MIN = 56 + 400 + 300
+    const wideEnough = () => typeof window === 'undefined' || !(window.innerWidth < SIDE_BY_SIDE_MIN)
+
     /** 屏幕上换到一个没见过、也没开任何页签的对话时，在它的右栏打开「VPS 状态」。返回取消监听的函数 */
     function watchDefaultLayout(right) {
       const mounted = right?.mounted
@@ -5423,7 +5433,8 @@ window.__ModuleLoader__.load({
       const check = () => {
         try {
           const sessionId = mounted.getSnapshot()
-          if (!sessionId || seen.has(sessionId)) return
+          // 窄屏不开、也不记下：之后在宽屏上切到这个对话或刷新时还能补上
+          if (!sessionId || seen.has(sessionId) || !wideEnough()) return
           seen.add(sessionId)
           if ((right.tabsIn?.(sessionId) ?? []).length > 0) return
           right.openTabIn(sessionId, SIDEBAR_KIND)

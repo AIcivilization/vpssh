@@ -4,7 +4,7 @@ import { Readable } from 'node:stream'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { paths, readHosts, writeHosts } from '../lib/config.js'
+import { bindSession, paths, readHosts, writeHosts } from '../lib/config.js'
 import { registerRoutes } from '../lib/routes.js'
 import { runProcess } from '../lib/spawn.js'
 
@@ -277,7 +277,7 @@ test('开关换机器或关掉：对话里连着旧机器的终端结束', async
 
 test('对话状态：要求检测时现测连接，带回原因；不要求就读记下的', async () => {
   let calls = 0
-  const { call } = await sandbox({
+  const { call, env } = await sandbox({
     reachRun: async () => {
       calls += 1
       return { ok: false, hint: 'SSH 配置里找不到「hk」这台机器' }
@@ -296,6 +296,7 @@ test('对话状态：要求检测时现测连接，带回原因；不要求就�
   assert.match(plain.body.hint, /找不到/)
   assert.equal(calls, 1, '不要求检测就不连服务器')
 
+  await bindSession('nobody', null, env) // 关掉了开关的对话
   const unbound = await call('session/status', { sessionId: 'nobody', check: true })
   assert.deepEqual(unbound.body, { ok: true, alias: '' })
 })

@@ -63,8 +63,9 @@ async function sandbox() {
   return { home, env, site, routes, reg, call }
 }
 
-test('没打开 VPS 开关的对话：不给用', async () => {
+test('关掉 VPS 开关的对话：不给用', async () => {
   const s = await sandbox()
+  await bindSession('other', null, s.env) // 只有一台机器时新对话默认打开；这里是用户关掉了
   const res = await s.call('list', { path: s.site }, { sessionId: 'other' })
   assert.equal(res.ok, false)
   assert.match(res.error, /还没打开 VPS 开关/)

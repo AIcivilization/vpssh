@@ -133,6 +133,29 @@ test('默认布局：每个对话第一次出现在屏幕上、又没开页签�
   assert.equal(listeners.size, 0)
 })
 
+test('默认布局：手机上（右栏会盖满整屏）不自动打开，换成宽屏时再补上', async () => {
+  const { exported } = await loadClient()
+  let current = 's1'
+  const listeners = new Set()
+  const opened = []
+  const right = {
+    mounted: { getSnapshot: () => current, subscribe: (fn) => { listeners.add(fn); return () => listeners.delete(fn) } },
+    tabsIn: () => [],
+    openTabIn: (id) => opened.push(id),
+  }
+  globalThis.window.innerWidth = 375
+  const off = exported.__test.watchDefaultLayout(right)
+  await new Promise((r) => setTimeout(r, 5))
+  assert.deepEqual(opened, [], '手机上不挡住对话')
+  globalThis.window.innerWidth = 1280
+  current = 's1'
+  for (const fn of listeners) fn()
+  await new Promise((r) => setTimeout(r, 5))
+  assert.deepEqual(opened, ['s1'], '转成宽屏后补上')
+  off()
+  delete globalThis.window.innerWidth
+})
+
 test('设置页能渲染', async () => {
   const { exported } = await loadClient()
   const ctx = fakeSlots()

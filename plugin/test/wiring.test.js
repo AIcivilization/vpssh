@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { writeHosts } from '../lib/config.js'
+import { bindSession, writeHosts } from '../lib/config.js'
 import { registerCommands } from '../lib/commands.js'
 import { _resetInstanceGuard, apply } from '../lib/index.js'
 import { runProcess } from '../lib/spawn.js'
@@ -240,14 +240,15 @@ test('命令层：查询命令直接出结果，抬头写清楚是哪台机器',
   assert.match(res.text, /系统:/)
 
   const list = registered.find((c) => c.name === 'vps-list')
-  // ★ 标的是「这个对话绑定的」，不是全局当前机器（没绑定就没有 ★）
-  const unbound = await list.handler({ rawInput: '', agent: { session: { id: 'sess-list' } } })
-  assert.equal(unbound.text.split('\n')[0], '1 台机器 · 这个对话没有绑定机器')
-  assert.doesNotMatch(unbound.text, /★/)
-  await registered.find((c) => c.name === 'vps-use').handler({ rawInput: 'hk', agent: { session: { id: 'sess-list' } } })
+  // ★ 标的是「这个对话绑定的」。只有一台机器时新对话默认就是它
   const listed = await list.handler({ rawInput: '', agent: { session: { id: 'sess-list' } } })
   assert.equal(listed.text.split('\n')[0], '1 台机器 · 这个对话绑定 hk（★）')
   assert.match(listed.text, /★ .*hk/)
+  // 关掉开关就没有 ★
+  await registered.find((c) => c.name === 'vps-use').handler({ rawInput: 'off', agent: { session: { id: 'sess-list' } } })
+  const unbound = await list.handler({ rawInput: '', agent: { session: { id: 'sess-list' } } })
+  assert.equal(unbound.text.split('\n')[0], '1 台机器 · 这个对话没有绑定机器')
+  assert.doesNotMatch(unbound.text, /★/)
 })
 
 test('命令层：/vps-install 不加 --yes 只出计划，不执行', async () => {
@@ -302,7 +303,7 @@ test('/vps-help 必须列出全部命令（新增命令漏写会在这里失败�
   assert.doesNotMatch(help.text, /左边栏|应用商店/)
 })
 
-test('开关关着时命令不执行；绑定后才有默认机器（用户实测发现的漏洞）', async () => {
+test('只有一台机器：新对话默认打开；关掉后命令不执行，关掉的不会被自动重新打开（开关不能是摆设）', async () => {
   const { env, runner, sshOptions } = await sandbox() // hosts.yml 里 current 就是 hk
   const registered = []
   registerCommands({ commands: { register: (d) => { registered.push(d); return () => {} } } }, { env, runner, sshOptions })
@@ -310,7 +311,11 @@ test('开关关着时命令不执行；绑定后才有默认机器（用户实�
   const use = registered.find((c) => c.name === 'vps-use')
   const inv = { rawInput: '', agent: { session: { id: 'sess-1' } } }
 
-  // 没打开开关：即使 hosts.yml 里有「当前机器」，也不许拿它当默认
+  // 只有一台机器、从没动过开关：默认就是它
+  assert.equal((await ping.handler(inv)).kind, 'success')
+
+  // 关掉：即使只有一台、hosts.yml 里有「当前机器」，也不许再拿它当默认
+  await use.handler({ ...inv, rawInput: 'off' })
   const denied = await ping.handler(inv)
   assert.equal(denied.kind, 'error')
   assert.match(denied.text, /未开 VPS 开关/)
@@ -341,17 +346,19 @@ test('别的对话不受影响：绑定是会话级的', async () => {
   const use = registered.find((c) => c.name === 'vps-use')
 
   await use.handler({ rawInput: 'hk', agent: { session: { id: 'sess-A' } } })
+  await use.handler({ rawInput: 'off', agent: { session: { id: 'sess-B' } } })
   const a = await ping.handler({ rawInput: '', agent: { session: { id: 'sess-A' } } })
   const b = await ping.handler({ rawInput: '', agent: { session: { id: 'sess-B' } } })
 
   assert.equal(a.kind, 'success', 'A 对话绑定了，能跑')
-  assert.equal(b.kind, 'error', 'B 对话没绑定，不该被 A 影响')
+  assert.equal(b.kind, 'error', 'B 对话关掉了，不该被 A 影响')
 })
 
 test('AI 工具同样受开关约束：没绑定又没写 host 就报错', async () => {
   const { env, runner } = await sandbox()
   const defs = await buildToolDefinitions(hostWithApproval(async () => 'allowed-once'), { env, runner })
   const exec = defs.find((d) => d.name === 'vps_exec')
+  await bindSession('sess-none', null, env) // 关掉了开关的对话
 
   await assert.rejects(
     exec.execute({ script: 'echo hi', intent: 'read' }, { agent: { session: { id: 'sess-none' } }, callId: 'c1' }),
@@ -369,6 +376,7 @@ test('提示的第一行必须自带答案（DSH 只显示第一行）', async (
   registerCommands({ commands: { register: (d) => { registered.push(d); return () => {} } } }, { env, runner })
   const inv = { rawInput: '', agent: { session: { id: 'sess-msg' } } }
   const firstLine = (res) => res.text.split('\n')[0]
+  await bindSession('sess-msg', null, env) // 关掉了开关的对话
 
   // 没开开关：第一行就要说清怎么办，不能被「三选一：」这类铺垫占掉
   const denied = firstLine(await registered.find((c) => c.name === 'vps-ping').handler(inv))

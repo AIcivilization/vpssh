@@ -187,6 +187,7 @@ test('接口：只看这个对话绑定的那台；get 先给本机缓存，coll
     await routes.get(`/api-vpssh/${path}`)(req, { writeHead() {}, end: (t) => { out.body = JSON.parse(t) } })
     return out.body
   }
+  await bindSession('other', null, env) // 关掉了开关的对话
   assert.match((await call('status/get', { sessionId: 'other' })).error, /还没打开 VPS 开关/)
   assert.equal((await call('status/get', { sessionId: 's1' })).status, null, '还没采过')
   const fresh = await call('status/collect', { sessionId: 's1' })
