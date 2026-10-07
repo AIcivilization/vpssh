@@ -599,6 +599,7 @@ detect_public_ip() {
 # 域名优先；重装且未传 --domain 时沿用已有配置（含向导改过的域名）；最后回退公网 IP。
 TRUSTED_HOST=""
 CFG_DOMAIN=""
+PUBLIC_IP=""
 resolve_trusted_host() {
 	TRUSTED_HOST="${DOMAIN:-}"
 	local existing_domain=""
@@ -617,6 +618,13 @@ resolve_trusted_host() {
 	fi
 	# 访问端口不是 443 就写进地址里（DSH 的 trusted host、Caddy 站点、打印的链接都用它）
 	TRUSTED_HOST="${TRUSTED_HOST%:*}"
+	# 记下这台机器的公网 IP：设置页里改域名时拿它核对域名解析，改回 IP 访问时也用它
+	if [[ "$TRUSTED_HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+		PUBLIC_IP="$TRUSTED_HOST"
+	else
+		PUBLIC_IP=$(sed -n 's/.*"publicIp": *"\([^"]*\)".*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
+		[[ -n "$PUBLIC_IP" ]] || PUBLIC_IP=$(detect_public_ip 2>/dev/null || true)
+	fi
 	[[ "$PUBLIC_PORT" == 443 ]] || TRUSTED_HOST="$TRUSTED_HOST:$PUBLIC_PORT"
 	CFG_DOMAIN="${DOMAIN:-$existing_domain}"
 }
@@ -651,6 +659,7 @@ EOF
   "dshVersion": "$DSH_VERSION",
   "domain": "$cfg_domain",
   "trustedHost": "$trusted",
+  "publicIp": "$PUBLIC_IP",
   "gatePort": $GATE_PORT,
   "dshPort": $DSH_PORT,
   "publicPort": $PUBLIC_PORT,

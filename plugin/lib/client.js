@@ -1163,6 +1163,69 @@ window.__ModuleLoader__.load({
             : null))
     }
 
+    /**
+     * 访问地址：装好以后再设域名（初始向导没填的话），或者改回用 IP。网关先核对域名解析，
+     * 没解析到这台机器就不切；Caddy 没换上新配置也不切（见 gate/server.js handleDomain）
+     */
+    function AddressRow({ health }) {
+      const current = health?.dsh?.trustedHost || ''
+      const host = current.replace(/:\d+$/, '')
+      const usingIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host)
+      const [open, setOpen] = useState(false)
+      const [domain, setDomain] = useState('')
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const [done, setDone] = useState('')
+      const submit = async (value) => {
+        setError('')
+        setBusy(true)
+        try {
+          const res = await fetch('/gate/domain', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ domain: value }),
+            signal: AbortSignal.timeout(60_000),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            const msg = {
+              bad_domain: L('域名格式不对。', 'That is not a valid domain.'),
+              dns_none: L(`查不到 ${body.domain} 的解析。先在域名服务商那里加一条 A 记录指向这台服务器，等生效后再来。`, `${body.domain} does not resolve yet. Add an A record pointing to this server at your DNS provider, wait for it to take effect, then try again.`),
+              dns_mismatch: L(`${body.domain} 解析到的是 ${(body.ips || []).join('、')}，不是这台服务器（${body.serverIp}）。改好 A 记录、等生效后再来；用 Cloudflare 的话先关掉代理（灰色云朵）。`, `${body.domain} points to ${(body.ips || []).join(', ')}, not this server (${body.serverIp}). Fix the A record and wait for it to take effect; with Cloudflare, turn the proxy off (grey cloud) first.`),
+              no_ip: L('不知道这台服务器的 IP，没法改回 IP 访问。在服务器上执行：sudo bash install.sh --ip <IP>', 'The server IP is unknown, so it cannot switch back to the IP. On the server run: sudo bash install.sh --ip <IP>'),
+              caddy: L(`Caddy 没能换上新地址，什么都没改：${body.detail || ''}`, `Caddy could not switch to the new address; nothing was changed: ${body.detail || ''}`),
+            }[body.error] || body.error || `HTTP ${res.status}`
+            throw new Error(msg)
+          }
+          setDone(body.url)
+          setOpen(false)
+        } catch (e) {
+          setError(String(e.message || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+      if (done) {
+        return h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } },
+          L('已切换。打开新地址重新登录：', 'Switched. Open the new address and sign in again: '),
+          h('a', { href: done, style: { color: T.accent } }, done),
+          h('div', { style: { ...S.muted, fontSize: 12 } }, L('用域名时第一次打开要等几十秒签发证书。', 'With a domain, the first visit waits a few tens of seconds for the certificate.')))
+      }
+      return h('div', { style: { marginTop: 4 } },
+        h('div', { style: { ...S.row, gap: 8 } },
+          h('span', null, L('访问地址：', 'Address: '), h('span', { style: S.mono }, current ? `https://${current}/` : '—')),
+          open ? null : h(Btn, { onClick: () => { setOpen(true); setError('') } }, usingIp ? L('设置域名', 'Set a domain') : L('换域名', 'Change domain')),
+          !usingIp && !open ? h(Btn, { disabled: busy, onClick: () => window.confirm(L('改回用 IP 访问？之后浏览器会提示证书不安全。', 'Switch back to the IP? Browsers will then warn about the certificate.')) && submit('') }, L('改回用 IP', 'Use the IP')) : null),
+        open ? h('div', { style: { marginTop: 8, maxWidth: 420 } },
+          h(Field, { label: L('域名', 'Domain'), hint: L('先在域名服务商那里把 A 记录指向这台服务器；云服务商安全组放行 80、443 和访问端口。保存后旧地址就不用了，要在新地址重新登录。', 'First point its A record at this server, and allow 80, 443 and the access port in your cloud security group. After saving, the old address stops being used; sign in again at the new one.') },
+            h(Input, { value: domain, onChange: setDomain, placeholder: 'vps.example.com' })),
+          h('div', { style: { ...S.row, marginTop: 8 } },
+            h(Btn, { kind: 'primary', disabled: busy || !domain.trim(), onClick: () => submit(domain.trim()) }, busy ? L('检查并切换中…', 'Checking and switching…') : L('保存', 'Save')),
+            h(Btn, { onClick: () => { setOpen(false); setError('') } }, L('取消', 'Cancel')))) : null,
+        error ? h('div', { style: { ...S.err, marginTop: 8, marginBottom: 0 } }, error) : null)
+    }
+
     /** 账号与安全：管理员、修改密码（要当前密码）、访问方式 */
     function AccountCard({ health }) {
       const [open, setOpen] = useState(false)
@@ -1213,6 +1276,7 @@ window.__ModuleLoader__.load({
           open ? null : h(Btn, { onClick: () => { setOpen(true); setDone(false) } }, L('修改密码', 'Change password'))),
         h('div', { style: { marginTop: 6, fontSize: 12, lineHeight: 1.8 } },
           h('div', null, L('管理员：', 'Admin: '), h('span', { style: S.mono }, health?.admin || '—')),
+          h(AddressRow, { health }),
           h('div', null, L('访问方式：', 'Access: '), tunnel
             ? L('仅我的设备（WireGuard）', 'Only my devices (WireGuard)')
             : L('公网可访问，凭账号登录', 'Public, behind the sign-in'))),

@@ -18,6 +18,7 @@
 const http = require("node:http");
 const https = require("node:https");
 const net = require("node:net");
+const dns = require("node:dns").promises;
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -1376,6 +1377,66 @@ async function handlePassword(req, res, user) {
 }
 
 /**
+ * 设置页「访问地址」：装好以后再设域名（初始向导没填的话），或者改回用 IP。
+ * 设域名前先查解析：没解析到这台机器就不切——切了新地址打不开、旧地址也进不去。
+ * 真正的切换和向导是同一条路（applyDomainChange：Caddy 没换上就什么都不改）。
+ */
+async function handleDomain(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	const origin = req.headers.origin;
+	let sameOrigin = false;
+	try {
+		sameOrigin = origin !== void 0 && new URL(origin).host === requestAuthority(req.headers);
+	} catch {
+		/* 非法 Origin */
+	}
+	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross_origin" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	const domain = String(body?.domain ?? "").trim().toLowerCase();
+	let cfg = {};
+	try {
+		cfg = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "config.json"), "utf8"));
+	} catch {
+		/* 没有 config.json */
+	}
+	const currentHost = dshTrustedHost.replace(/:\d+$/, "");
+	const serverIp = cfg.publicIp || (net.isIP(currentHost) === 4 ? currentHost : "");
+	let target;
+	if (domain === "") {
+		if (!serverIp) return json(400, { error: "no_ip" });
+		target = serverIp;
+	} else {
+		if (!DOMAIN_PATTERN.test(domain)) return json(400, { error: "bad_domain" });
+		let ips = [];
+		try {
+			ips = await dns.resolve4(domain);
+		} catch {
+			return json(400, { error: "dns_none", domain });
+		}
+		if (serverIp && !ips.includes(serverIp)) return json(400, { error: "dns_mismatch", domain, ips, serverIp });
+		target = domain;
+	}
+	const site = withPublicPort(target);
+	if (site === dshTrustedHost) return json(200, { ok: true, unchanged: true, url: `https://${site}/` });
+	try {
+		await applyDomainChange(site);
+	} catch (err) {
+		return json(500, { error: "caddy", detail: String(err && err.message).slice(0, 300) });
+	}
+	log(`access address changed by ${user} to ${site}`);
+	return json(200, { ok: true, url: `https://${site}/` });
+}
+
+/**
  * 网页上的「卸载」：核对管理员密码后只写 state/uninstall.request，由 root 的 vpssh-uninstall.path
  * 接手执行 uninstall.sh（gate 没有 root 权限，也不该有）。卸载会让这个页面当场打不开。
  */
@@ -2064,6 +2125,7 @@ function main() {
 				if (pathname === "/gate/update") return handleUpdate(req, res, user);
 				if (pathname === "/gate/password") return handlePassword(req, res, user);
 				if (pathname === "/gate/uninstall") return handleUninstall(req, res, user);
+				if (pathname === "/gate/domain") return handleDomain(req, res, user);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {
