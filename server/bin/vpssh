@@ -23,7 +23,9 @@ set -Eeuo pipefail
 trap 'printf "\033[1;31m[vpssh]\033[0m 意外退出：第 %s 行 \`%s\` 返回 %s\n" "$LINENO" "$BASH_COMMAND" "$?" >&2' ERR
 
 ROOT="${VPSSH_ROOT:-/opt/vpssh}"
-GATE_PORT="${GATE_PORT:-3100}"
+# 网关端口以安装时记下的为准（新装 3190，0.1.0 装的是 3100）
+GATE_PORT="${GATE_PORT:-$(sed -n 's/.*"gatePort": *\([0-9]*\).*/\1/p' "$ROOT/state/config.json" 2>/dev/null | head -1)}"
+GATE_PORT="${GATE_PORT:-3190}"
 HEALTH_URL="http://127.0.0.1:$GATE_PORT/gate/health"
 SELFCHECK_URL="http://127.0.0.1:$GATE_PORT/gate/selfcheck"
 DSH_HOME_DIR="${DSH_HOME:-/home/vpssh/.dsh}"
@@ -426,8 +428,11 @@ cmd_repair() {
 	if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "^Status: active"; then
 		local port
 		port=$(sshd -T 2>/dev/null | awk '$1=="port"{print $2; exit}')
-		ufw allow 80/tcp >/dev/null; ufw allow 443/tcp >/dev/null; ufw allow "${port:-22}/tcp" >/dev/null
-		log "$(M "ufw 已放行 80、443、${port:-22}" "ufw now allows 80, 443 and ${port:-22}")"
+		local pub
+		pub=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$ROOT/state/config.json" 2>/dev/null | head -1)
+		pub="${pub:-443}"
+		ufw allow 80/tcp >/dev/null; ufw allow "$pub/tcp" >/dev/null; ufw allow "${port:-22}/tcp" >/dev/null
+		log "$(M "ufw 已放行 80、$pub、${port:-22}" "ufw now allows 80, $pub and ${port:-22}")"
 	fi
 
 	local i ok=0 body

@@ -31,10 +31,18 @@ const { caddySiteBlock, readVpnEnv } = require("./site-block.js");
 const GATE_HOME = process.env.GATE_HOME || path.resolve(__dirname, "..");
 const STATE_DIR = path.join(GATE_HOME, "state");
 const GATE_HOST = process.env.GATE_HOST || "127.0.0.1";
-const GATE_PORT = Number(process.env.GATE_PORT || 3100);
+const GATE_PORT = Number(process.env.GATE_PORT || 3190); // 不和同机的 dsh-vps（3100/3080）撞
 const DSH_BIN = process.env.DSH_BIN || path.join(GATE_HOME, "dsh", "current", "node_modules", "@deepseek-ai", "dsh", "lib", "bin.js");
 const DSH_HOST = "127.0.0.1"; // DSH 官方只允许绑回环
-const DSH_PORT = Number(process.env.DSH_PORT || 3080);
+const DSH_PORT = Number(process.env.DSH_PORT || 3191);
+// 浏览器访问用的端口：443 被同机别的产品占着、又没有域名时，install.sh 换成别的（如 8443）
+const PUBLIC_PORT = Number(process.env.VPSSH_PUBLIC_PORT || 443);
+// 和别的产品共用一个 Caddy：站点文件里不写全局设置块（见 site-block.js）
+const CADDY_SHARED = process.env.VPSSH_CADDY_SHARED === "1";
+/** 域名/IP 加上访问端口（443 不写） */
+function withPublicPort(host) {
+	return PUBLIC_PORT === 443 ? host : `${host}:${PUBLIC_PORT}`;
+}
 // 向导（/setup）改域名时会在运行期更新，并同步写回 state/gate.env（供下次 systemd 启动）
 let dshTrustedHost = process.env.DSH_TRUSTED_HOST || "";
 // 登录有效期：勾「保持登录」30 天（手机桌面应用里不用老是重新登录）；不勾则是浏览器会话 Cookie，
@@ -432,7 +440,7 @@ function looksLikePortConflict(text) {
 	return /EADDRINUSE|address already in use|端口已被占用/i.test(text);
 }
 
-/** 启动前探一下 3080：已被占用说明有残留/外部 DSH，我们的子进程会拿不到端口。 */
+/** 启动前探一下 DSH 的端口：已被占用说明有残留/外部 DSH，我们的子进程会拿不到端口。 */
 function probePortBusy() {
 	return new Promise((resolve) => {
 		const socket = net.connect(DSH_PORT, DSH_HOST);
@@ -511,7 +519,7 @@ function spawnDsh() {
 				if (dsh.crashStreak >= 3) {
 					const errLine = (dsh.outputTail.match(/^\s*(?:[A-Za-z]*Error|error):.*$/gm) || []).pop();
 					if (errLine && !dsh.lastError) dsh.lastError = `DSH 连续 ${dsh.crashStreak} 次启动失败：${errLine.trim()}。详见 journalctl -u vpssh -n 100`;
-					dsh.lastError = dsh.lastError || `DSH 连续 ${dsh.crashStreak} 次快速退出（最近一次 code=${code} signal=${signal}，存活 ${uptimeMs}ms）。常见原因：3080 端口被占用、DSH_BIN 路径失效、DSH_HOME 权限问题。详见 journalctl -u vpssh -n 100`;
+					dsh.lastError = dsh.lastError || `DSH 连续 ${dsh.crashStreak} 次快速退出（最近一次 code=${code} signal=${signal}，存活 ${uptimeMs}ms）。常见原因：${DSH_PORT} 端口被占用、DSH_BIN 路径失效、DSH_HOME 权限问题。详见 journalctl -u vpssh -n 100`;
 				}
 				setTimeout(spawnDsh, delay);
 			}
@@ -864,7 +872,7 @@ function sendDshNotReady(res, lang = "zh") {
 </table>
 <p id="s-err" style="margin:16px 0 0;padding:10px 12px;border-radius:8px;background:#2a2112;color:#fbbf24;font-size:13px;${state.error ? "" : "display:none"}">${esc(state.error || "")}</p>
 <p id="s-wait" style="color:#7d8a9c;font-size:13px;margin:16px 0 0">${L("已等待", "Waited")} <span id="s-sec">0</span> ${L("秒…", "s…")} <button onclick="location.reload()" style="margin-left:8px;padding:4px 10px;border:1px solid #2a3547;border-radius:6px;background:#0d1219;color:#dbe2ea;cursor:pointer">${L("立即刷新", "Reload now")}</button></p>
-<p style="color:#5c6b7e;font-size:12px;margin:20px 0 0">${L("超过 2 分钟仍未就绪，多半是 3080 端口被残留进程占用或 DSH 启动失败：", "Still not ready after 2 minutes? Port 3080 is probably held by a leftover process, or DSH failed to start: ")}<code>journalctl -u vpssh -n 100</code>${L("，然后 ", ", then ")}<code>systemctl restart vpssh</code>${L("。", ".")}</p>
+<p style="color:#5c6b7e;font-size:12px;margin:20px 0 0">${L(`超过 2 分钟仍未就绪，多半是 ${DSH_PORT} 端口被残留进程占用或 DSH 启动失败：`, `Still not ready after 2 minutes? Port ${DSH_PORT} is probably held by a leftover process, or DSH failed to start: `)}<code>journalctl -u vpssh -n 100</code>${L("，然后 ", ", then ")}<code>systemctl restart vpssh</code>${L("。", ".")}</p>
 ${repoLinkInline()}
 <script>
 var W=${JSON.stringify(W)};
@@ -1294,7 +1302,7 @@ function persistTrustedHost(domain) {
 // 站点块模板在 gate/site-block.js（install.sh 与 vpssh vpn 共用）。
 // 改域名时必须带上当前隧道策略，否则「仅隧道可访问」会被改域名动作悄悄抹掉。
 function siteBlock(host) {
-	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR) });
+	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED });
 }
 
 async function applyDomainChange(domain) {
@@ -1610,9 +1618,10 @@ async function handleSetup(req, res) {
 	writeAdminRecord(username, password);
 
 	const warnings = [];
-	if (domain && domain !== dshTrustedHost) {
+	const site = domain ? withPublicPort(domain) : "";
+	if (site && site !== dshTrustedHost) {
 		try {
-			await applyDomainChange(domain);
+			await applyDomainChange(site);
 		} catch (err) {
 			log(`setup: domain change failed: ${err.message}`);
 			sendHtml(res, 200, setupPage({
@@ -1645,7 +1654,7 @@ async function handleSetup(req, res) {
 		sendHtml(res, 200, setupPage({ warnings, username, domain, token, lang, req }));
 		return;
 	}
-	if (domain && domain !== requestAuthority(req.headers)) {
+	if (site && site !== requestAuthority(req.headers)) {
 		// 域名已切换：引导用户到新地址登录（旧 host 的会话不再适用）
 		sendHtml(
 			res,
@@ -1655,7 +1664,7 @@ async function handleSetup(req, res) {
 <div style="max-width:420px;padding:32px;border:1px solid #1f2733;border-radius:12px;background:#11161f">
 <h2 style="margin-top:0">${L("设置完成", "Setup complete")}</h2>
 <p>${L("请在新地址打开并登录：", "Open the new address and sign in:")}</p>
-<p><a href="https://${esc(domain)}/" style="color:#60a5fa">https://${esc(domain)}/</a></p>
+<p><a href="https://${esc(site)}/" style="color:#60a5fa">https://${esc(site)}/</a></p>
 <p style="color:#7d8a9c;font-size:13px">${L("证书签发需要几十秒；若暂不可访问请稍候重试。", "Issuing the certificate takes a few tens of seconds; if it does not open yet, retry shortly.")}</p>
 </div></body>`,
 		);

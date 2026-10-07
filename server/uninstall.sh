@@ -168,7 +168,11 @@ log "$(M "步骤 4/6：移除 Caddy 站点块" "Step 4/6: remove the Caddy site"
 if [[ -f "$CADDY_SITE_FILE" ]]; then
 	rm -f "$CADDY_SITE_FILE"
 fi
-if [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE"; then
+if [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE" && ! grep -q "vpssh 主 Caddyfile" "$CADDYFILE"; then
+	# 和别的网站共用 Caddy（主 Caddyfile 是别人的）：只去掉 vpssh 加的那一行和它的说明，别的一字不动
+	sed -i "\|^# vpssh：只加了下面这一行|d; \|^import $CADDY_SITE_FILE\$|d" "$CADDYFILE"
+	log "$(M "Caddy 和别的网站共用：只去掉了 vpssh 加的那一行 import" "Caddy is shared with another site: removed only vpssh's import line")"
+elif [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE"; then
 	# install.sh 覆盖前留下的原文件（Caddyfile.bak.<时间戳>）：取最新一份不含本产品 import 的还原；
 	# 没有则换成占位文件，避免 Caddy 因 import 缺失而启动失败。
 	orig=""

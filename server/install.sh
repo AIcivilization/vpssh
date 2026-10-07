@@ -33,14 +33,21 @@ DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-10-02T00:00:00Z}"
 INSTALL_ROOT="/opt/vpssh"
 DSH_USER="vpssh"
 DSH_HOME_DIR="/home/vpssh/.dsh"
-GATE_PORT=3100
-DSH_PORT=3080
+# 内部端口（只听 127.0.0.1）：避开同机 dsh-vps 的 3100/3080
+GATE_PORT=3190
+DSH_PORT=3191
+# 浏览器访问的端口：默认 443；443 被同机别的网站（Caddy）占着、又没有域名时自动换一个（见 choose_public_port）
+PUBLIC_PORT=""
+# 和别的产品共用一个 Caddy（主 Caddyfile 是别人的，只加一行 import）
+CADDY_SHARED=0
+CADDY_SITE=/etc/caddy/vpssh-site.conf
 # 仓库来源：curl 管道模式下载这个分支或标签的整个仓库
 REPO_TARBALL="${VPSSH_TARBALL:-https://codeload.github.com/AIcivilization/vpssh/tar.gz/${VPSSH_REF:-main}}"
 
 DOMAIN=""
 MIRROR=""
 FORCE_IP=""
+FORCE_PORT=""
 
 log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }
@@ -56,6 +63,7 @@ vpssh 安装脚本
   --domain <域名>   访问域名（需已解析到本机）。不传则用公网 IP + 自签证书
   --mirror cn       国内镜像：Node 和 DSH 都从 npmmirror 下载
   --ip <IP>         不传 --domain 时用这个 IP 访问（默认自动探测公网 IP；内网、多 IP、测试机时用）
+  --port <端口>     浏览器访问的端口（默认 443；443 被同机别的网站占着时自动换成 8443）
 EOF
 	else
 		cat <<'EOF'
@@ -64,6 +72,7 @@ Usage: sudo bash install.sh [--domain <domain>] [--mirror cn] [--ip <IP>]
   --domain <domain>  Address to use (its A record must point here). Without it: the public IP and a self-signed certificate
   --mirror cn        Download Node and DSH from npmmirror (mainland China)
   --ip <IP>          Without --domain, use this IP (default: detect the public IP; for private networks, several IPs, test machines)
+  --port <port>      Port the browser uses (default 443; switches to 8443 when another site on this machine holds 443)
 EOF
 	fi
 }
@@ -73,6 +82,7 @@ while [[ $# -gt 0 ]]; do
 	--domain) DOMAIN="${2:?--domain 需要一个值}"; shift 2 ;;
 	--mirror) MIRROR="${2:?--mirror 需要一个值}"; shift 2 ;;
 	--ip) FORCE_IP="${2:?--ip 需要一个值}"; shift 2 ;;
+	--port) FORCE_PORT="${2:?--port 需要一个值}"; shift 2 ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "$(M "未知参数: $1（--help 查看用法）" "Unknown option: $1 (see --help)")" ;;
 	esac
@@ -158,18 +168,74 @@ step1_prechecks() {
 
 	# 幂等判定：已有安装则进入修复/更新模式（不碰 state/ 内的凭据与 setup.lock）
 	[[ -f "$INSTALL_ROOT/state/config.json" ]] && REINSTALL=1
+	# 已有安装沿用它原来的内部端口：升级是由旧版的 vpssh 命令执行的，它按原来的端口做健康检查；
+	# 换了端口它会以为升级失败、自动回滚（0.1.0 用的是 3100/3080）
+	if [[ $REINSTALL -eq 1 ]]; then
+		local gp dp
+		gp=$(sed -n 's/.*"gatePort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" | head -1)
+		dp=$(sed -n 's/.*"dshPort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" | head -1)
+		[[ -n "$gp" ]] && GATE_PORT="$gp"
+		[[ -n "$dp" ]] && DSH_PORT="$dp"
+	fi
 
 	# 端口检查（重装时本机服务已占用这些端口，跳过）
 	if [[ $REINSTALL -eq 0 ]]; then
 		local p
-		for p in 80 443 "$DSH_PORT" "$GATE_PORT"; do
-			if ss -ltn 2>/dev/null | awk '{print $4}' | grep -qE "[:.]${p}$"; then
-				die "$(M "端口 $p 已被占用，请先释放（重装场景请保留 $INSTALL_ROOT 后重跑）" "Port $p is in use; free it first (to reinstall, keep $INSTALL_ROOT and run again)")"
+		for p in "$DSH_PORT" "$GATE_PORT"; do
+			if port_busy "$p"; then
+				die "$(M "端口 $p 已被 $(port_owner "$p") 占用，请先释放" "Port $p is used by $(port_owner "$p"); free it first")"
 			fi
 		done
 	else
 		log "$(M "检测到已有安装（${INSTALL_ROOT}），进入修复/更新模式（保留 state/）" "Found an existing install (${INSTALL_ROOT}); repairing/updating it (state/ is kept)")"
 	fi
+	choose_public_port
+}
+
+port_busy() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
+# 占着端口的程序名（root 才看得到）；没人占返回空
+port_owner() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | sed 's/users:(("//; s/"$//'; }
+
+# 浏览器访问的端口。同一台机器上已经有别的网站（比如 dsh-vps）用 Caddy 占着 80/443 时，两边共用这个 Caddy：
+#   - 有域名：照样用 443，Caddy 按域名区分两个网站
+#   - 没有域名（IP 访问分不出是哪个网站）：换到 8443（被占就往后找）
+# 80/443 被 Caddy 以外的程序（nginx 等）占着：现在还共存不了，说清楚再退出
+choose_public_port() {
+	if [[ $REINSTALL -eq 1 && -z "$FORCE_PORT" ]]; then
+		PUBLIC_PORT=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1)
+		PUBLIC_PORT="${PUBLIC_PORT:-443}"
+		return 0
+	fi
+	if [[ -n "$FORCE_PORT" ]]; then
+		[[ "$FORCE_PORT" =~ ^[0-9]+$ && "$FORCE_PORT" -ge 1 && "$FORCE_PORT" -le 65535 ]] || die "$(M "--port 不是合法端口: $FORCE_PORT" "--port is not a valid port: $FORCE_PORT")"
+		if port_busy "$FORCE_PORT" && [[ "$(port_owner "$FORCE_PORT")" != caddy ]]; then
+			die "$(M "端口 $FORCE_PORT 已被 $(port_owner "$FORCE_PORT") 占用" "Port $FORCE_PORT is used by $(port_owner "$FORCE_PORT")")"
+		fi
+		PUBLIC_PORT="$FORCE_PORT"
+		return 0
+	fi
+	if ! port_busy 443 && ! port_busy 80; then
+		PUBLIC_PORT=443
+		return 0
+	fi
+	local p owner
+	for p in 80 443; do
+		port_busy "$p" || continue
+		owner=$(port_owner "$p")
+		if [[ "$owner" != caddy ]]; then
+			die "$(M "端口 $p 被 ${owner:-别的程序} 占用。vpssh 现在只能和 Caddy 共用 80/443（比如同机装着 dsh-vps）；可以先停掉它，或者换一台机器" "Port $p is used by ${owner:-another program}. vpssh can currently share 80/443 only with Caddy (e.g. dsh-vps on the same machine); stop it first, or use another machine")"
+		fi
+	done
+	if [[ -n "$DOMAIN" ]]; then
+		PUBLIC_PORT=443
+		log "$(M "80/443 由同机的 Caddy 在用（别的网站）；vpssh 有域名，照样用 443，Caddy 按域名区分" "Caddy on this machine already serves 80/443 for another site; vpssh has a domain, so it shares 443 (Caddy tells them apart by name)")"
+		return 0
+	fi
+	for p in 8443 9443 10443 18443; do
+		if ! port_busy "$p"; then PUBLIC_PORT="$p"; break; fi
+	done
+	[[ -n "$PUBLIC_PORT" ]] || die "$(M "找不到空闲端口（8443、9443、10443、18443 都被占了），用 --port 指定一个" "No free port (8443, 9443, 10443, 18443 are all taken); pick one with --port")"
+	log "$(M "443 已被同机的另一个网站（Caddy）使用；vpssh 用 $PUBLIC_PORT 端口，两边同时可用" "Another site on this machine (Caddy) uses 443; vpssh uses port $PUBLIC_PORT, and both keep working")"
 }
 
 ## endregion
@@ -416,19 +482,35 @@ step7_caddy() {
 	if ! command -v caddy >/dev/null 2>&1; then
 		apt-get install -y debian-keyring debian-archive-keyring apt-transport-https gpg >/dev/null
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-			| gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+			| gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 			>/etc/apt/sources.list.d/caddy-stable.list
 		apt-get update -y >/dev/null
 		apt-get install -y caddy >/dev/null
 	fi
 
-	# 主 Caddyfile（静态，import 站点文件）+ 站点文件（向导改域名时由 gate 重写）
+	# 主 Caddyfile：
+	#   - 没有、或是 Caddy 装好时自带的样例、或本来就是 vpssh 的：写 vpssh 的（只 import 站点文件）
+	#   - 是别的产品的（比如同机的 dsh-vps）：一字不改，只在末尾加一行 import，两边共用这个 Caddy
+	local main=/etc/caddy/Caddyfile backup=""
 	fetch_file caddy/Caddyfile.template /tmp/Caddyfile.vpssh
-	if [[ -f /etc/caddy/Caddyfile ]] && ! cmp -s /etc/caddy/Caddyfile /tmp/Caddyfile.vpssh; then
-		cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.bak.$(date +%s)"
+	if [[ -f "$main" ]] && ! grep -q "vpssh 主 Caddyfile" "$main" && ! grep -q "/usr/share/caddy" "$main"; then
+		CADDY_SHARED=1
+		if ! grep -qxF "import $CADDY_SITE" "$main"; then
+			backup="$main.bak.$(date +%s)"
+			cp "$main" "$backup"
+			# 只追加这两行（不加空行），卸载时删掉它们，文件就和原来一字不差
+			[[ -z "$(tail -c1 "$main")" ]] || printf '\n' >>"$main"
+			printf '# vpssh：只加了下面这一行（卸载 vpssh 时会去掉）\nimport %s\n' "$CADDY_SITE" >>"$main"
+		fi
+		log "$(M "Caddy 由同机的别的网站在用：不改它的配置，只加了一行 import" "Caddy is shared with another site on this machine: its config is untouched, one import line added")"
+	else
+		if [[ -f "$main" ]] && ! cmp -s "$main" /tmp/Caddyfile.vpssh; then
+			backup="$main.bak.$(date +%s)"
+			cp "$main" "$backup"
+		fi
+		install -m 644 /tmp/Caddyfile.vpssh "$main"
 	fi
-	install -m 644 /tmp/Caddyfile.vpssh /etc/caddy/Caddyfile
 
 	# 站点块：有域名写域名块（自动 HTTPS），无则按公网 IP 写站点、Caddy 内置 CA 自签过渡
 	# 属主 vpssh（向导重写）、组 caddy（Caddy 读取）、640
@@ -436,10 +518,17 @@ step7_caddy() {
 	# 切换访问策略，三处共用同一份模板。重装时若 state/vpn.env 还开着隧道模式，
 	# 这里会直接沿用「仅隧道可访问」，不会把已经关上的门重新敞开。
 	local site="$TRUSTED_HOST"
-	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" \
-		>/etc/caddy/vpssh-site.conf || die "$(M "生成站点块失败" "Generating the site config failed")"
-	chown "$DSH_USER":caddy /etc/caddy/vpssh-site.conf
-	chmod 640 /etc/caddy/vpssh-site.conf
+	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" "$CADDY_SHARED" \
+		>"$CADDY_SITE" || die "$(M "生成站点块失败" "Generating the site config failed")"
+	chown "$DSH_USER":caddy "$CADDY_SITE"
+	chmod 640 "$CADDY_SITE"
+
+	# 生效前先校验：不通过就把主 Caddyfile 放回原样再退出，绝不能把同机别的网站弄坏
+	if ! caddy validate --config "$main" --adapter caddyfile >/tmp/vpssh-caddy-validate.log 2>&1; then
+		[[ -n "$backup" ]] && cp "$backup" "$main"
+		[[ $CADDY_SHARED -eq 1 ]] && rm -f "$CADDY_SITE"
+		die "$(M "Caddy 配置校验没通过，已把原来的配置放回去（别的网站不受影响）。详情：/tmp/vpssh-caddy-validate.log" "The Caddy config did not validate; the original config was put back (other sites are unaffected). Details: /tmp/vpssh-caddy-validate.log")"
+	fi
 
 	systemctl enable --now caddy >/dev/null 2>&1 || true
 	systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy
@@ -489,6 +578,9 @@ resolve_trusted_host() {
 	if [[ -z "$TRUSTED_HOST" ]]; then
 		TRUSTED_HOST=$(detect_public_ip)
 	fi
+	# 访问端口不是 443 就写进地址里（DSH 的 trusted host、Caddy 站点、打印的链接都用它）
+	TRUSTED_HOST="${TRUSTED_HOST%:*}"
+	[[ "$PUBLIC_PORT" == 443 ]] || TRUSTED_HOST="$TRUSTED_HOST:$PUBLIC_PORT"
 	CFG_DOMAIN="${DOMAIN:-$existing_domain}"
 }
 
@@ -506,6 +598,10 @@ DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
 DSH_HOME=$DSH_HOME_DIR
 DSH_TRUSTED_HOST=$trusted
 VPSSH_LOCAL_PORT=$LOCAL_SSH_PORT
+GATE_PORT=$GATE_PORT
+DSH_PORT=$DSH_PORT
+VPSSH_PUBLIC_PORT=$PUBLIC_PORT
+VPSSH_CADDY_SHARED=$CADDY_SHARED
 EOF
 	chmod 600 "$INSTALL_ROOT/state/gate.env"
 	chown "$DSH_USER" "$INSTALL_ROOT/state/gate.env"
@@ -519,6 +615,8 @@ EOF
   "trustedHost": "$trusted",
   "gatePort": $GATE_PORT,
   "dshPort": $DSH_PORT,
+  "publicPort": $PUBLIC_PORT,
+  "caddyShared": $([[ $CADDY_SHARED -eq 1 ]] && echo true || echo false),
   "mirror": "${MIRROR:-default}",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -547,14 +645,26 @@ EOF
 
 step9_firewall() {
 	log "$(M "步骤 10/11：防火墙" "Step 10/11: firewall")"
+	# 要放行的：SSH（别把自己关在外面）、80（签发证书、跳转 HTTPS）、浏览器访问的端口
+	local ports=("${LOCAL_SSH_PORT:-22}" 80 "$PUBLIC_PORT") p opened=""
 	if command -v ufw >/dev/null 2>&1; then
-		ufw allow 22/tcp >/dev/null
-		ufw allow 80/tcp >/dev/null
-		ufw allow 443/tcp >/dev/null
-		log "$(M "ufw 已放行 22/80/443" "ufw now allows 22/80/443")"
-	else
-		log "$(M "未检测到 ufw，跳过（请自行确认云厂商安全组放行 80/443）" "No ufw; make sure your provider's firewall allows 80/443")"
+		for p in "${ports[@]}"; do ufw allow "$p/tcp" >/dev/null 2>&1 || true; done
+		opened="ufw"
 	fi
+	if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
+		for p in "${ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null 2>&1 || true; done
+		firewall-cmd --reload >/dev/null 2>&1 || true
+		opened="${opened:+$opened、}firewalld"
+	fi
+	local list
+	list=$(printf '%s ' "${ports[@]}" | sed 's/ $//; s/ /、/g')
+	if [[ -n "$opened" ]]; then
+		log "$(M "$opened 已放行 TCP $list" "$opened now allows TCP $list")"
+	else
+		log "$(M "这台机器没开防火墙（ufw / firewalld），不用放行" "No firewall (ufw / firewalld) is running here; nothing to open")"
+	fi
+	# 云厂商的安全组在机器外面，脚本改不了
+	log "$(M "云厂商的安全组（控制台里）也要放行 TCP $PUBLIC_PORT" "Also allow TCP $PUBLIC_PORT in your cloud provider's security group (in its console)")"
 }
 
 ## endregion
