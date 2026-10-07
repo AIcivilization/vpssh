@@ -27,6 +27,7 @@ DSH_VERSION="0.2.0-rc.2" # 钉住版本（设计文档 §10 已验证版本表�
 # 之后升到 0.1.7-rc.1（npm next 渠道），冻结点 2026-09-24T08:20Z——该时刻解析出的依赖树已逐包比对、实测通过。
 # vpssh 换到 0.2.0-rc.2（右侧栏从 0.2 起才有）。冻结点 2026-10-02T00:00Z：rc.2 发布（09-29）三天后、0.2.1-alpha 波次（10-03）之前。
 # 设为 none 可关闭冻结。
+VPSSH_VERSION=""
 DSH_RESOLVE_BEFORE_SET="${DSH_RESOLVE_BEFORE:+1}" # 用户显式指定过就不被 manifest 覆盖
 DSH_RESOLVE_BEFORE="${DSH_RESOLVE_BEFORE:-2026-10-02T00:00:00Z}"
 INSTALL_ROOT="/opt/vpssh"
@@ -99,6 +100,7 @@ read_manifest() {
 	[[ -f "$m" ]] || return 0
 	v=$(sed -n 's/^ *"dsh": *"\([^"]*\)".*/\1/p' "$m" | head -1)
 	rb=$(sed -n 's/^ *"resolveBefore": *"\([^"]*\)".*/\1/p' "$m" | head -1)
+	VPSSH_VERSION=$(sed -n 's/^ *"vpssh": *"\([^"]*\)".*/\1/p' "$m" | head -1)
 	[[ -n "$v" ]] && DSH_VERSION="$v"
 	[[ -n "$rb" && -z "${DSH_RESOLVE_BEFORE_SET:-}" ]] && DSH_RESOLVE_BEFORE="$rb"
 	return 0
@@ -253,7 +255,9 @@ step4_user() {
 		useradd --system --shell /usr/sbin/nologin --home-dir /home/vpssh --create-home "$DSH_USER"
 	fi
 	mkdir -p "$DSH_HOME_DIR"
-	chown -R "$DSH_USER" "$DSH_HOME_DIR"
+	# 从备份恢复时文件先放回来、用户后建，uid 可能对不上：整个家目录交还给 vpssh
+	chown -R "$DSH_USER:" /home/vpssh
+	if [[ -d "$INSTALL_ROOT/state" ]]; then chown -R "$DSH_USER:" "$INSTALL_ROOT/state"; fi
 	chmod 700 "$DSH_HOME_DIR"
 }
 
@@ -378,6 +382,8 @@ step6_gate() {
 	fetch_file gate/site-block.js "$INSTALL_ROOT/gate/site-block.js"
 	node --check "$INSTALL_ROOT/gate/site-block.js" || die "gate/site-block.js 语法检查失败"
 	fetch_file bin/vpssh "$INSTALL_ROOT/bin/vpssh"
+	# 卸载脚本留一份在服务器上：sudo vpssh uninstall、网页上的「卸载」都用它
+	fetch_file uninstall.sh "$INSTALL_ROOT/uninstall.sh"
 	chmod 755 "$INSTALL_ROOT/bin/vpssh"
 	bash -n "$INSTALL_ROOT/bin/vpssh" || die "bin/vpssh 语法检查失败"
 	ln -sfn "$INSTALL_ROOT/bin/vpssh" /usr/local/bin/vpssh
@@ -495,6 +501,7 @@ EOF
 	# config.json：安装元数据
 	cat >"$INSTALL_ROOT/state/config.json" <<EOF
 {
+  "vpsshVersion": "${VPSSH_VERSION:-}",
   "dshVersion": "$DSH_VERSION",
   "domain": "$cfg_domain",
   "trustedHost": "$trusted",
@@ -616,6 +623,8 @@ step10_verify() {
 		echo " 令牌只此一份，链接丢了随时重取：sudo vpssh setup-url"
 	fi
 	echo "============================================================"
+	# 没就绪时返回非零：vpssh upgrade 据此自动回到升级前
+	[[ $healthy -eq 1 ]] || exit 3
 }
 
 ## endregion

@@ -1100,243 +1100,6 @@ window.__ModuleLoader__.load({
         open ? h('div', { style: { marginTop: 8 } }, children) : null)
     }
 
-    function UninstallCard() {
-      const [open, setOpen] = useState(false)
-      const [preview, setPreview] = useState(null)
-      const [choices, setChoices] = useState({ plugin: true, remoteCache: false, revokeKey: false, sshConfig: true, key: false, data: false })
-      const [stage, setStage] = useState('idle') // idle | confirm | running | done
-      const [result, setResult] = useState(null)
-      const [error, setError] = useState('')
-      const [restartMsg, setRestartMsg] = useState('')
-
-      const expand = async () => {
-        setOpen(true)
-        setError('')
-        try {
-          setPreview(await api('uninstall/preview', {}))
-        } catch (e) {
-          setError(e.message)
-        }
-      }
-
-      const selected = preview
-        ? Object.keys(UNINSTALL_ITEMS).filter((id) => choices[id] && uninstallVisible(id, preview))
-        : []
-
-      const run = async () => {
-        setStage('running')
-        setError('')
-        let res = null
-        try {
-          const picked = Object.fromEntries(selected.map((id) => [id, true]))
-          // 卸载要在服务器上撤钥匙、清目录，给足时间
-          res = await api('uninstall/run', { choices: picked }, { timeoutMs: 600_000 })
-          setResult(res)
-        } catch (e) {
-          // 插件移除后自己的接口可能随之消失，请求就断了——多半已经卸载成功
-          setResult(null)
-          setError(L(`没收到结果（${e.message}）。插件可能已经卸载，请重启 DSH 后确认`, `No result received (${e.message}). The plugin may already be uninstalled; restart DSH to check`))
-        }
-        setStage('done')
-        // 最后一步交给 DSH 的插件管理器：它会当场卸下插件，这一页随之消失，所以先把前面各项的结果摆出来
-        if (res?.removeVia === 'manager') {
-          const setPlugin = (patch) => setResult((r) => (r ? { ...r, steps: r.steps.map((s) => (s.id === 'plugin' ? { ...s, ...patch } : s)) } : r))
-          try {
-            const out = await api('uninstall/remove-plugin', {}, { timeoutMs: 600_000 })
-            setPlugin({ ok: out.removed, pending: false, text: out.text })
-          } catch {
-            setPlugin({ ok: true, pending: false, text: L('已交给 DSH 移除插件。这个设置页消失就说明移除好了；完全退出 DSH 再打开确认一下', 'Handed the plugin to DSH for removal. When this settings page disappears it is done; quit DSH completely and reopen it to confirm') })
-          }
-        }
-      }
-
-      const restart = async () => {
-        setRestartMsg(L('正在重启 DSH…', 'Restarting DSH…'))
-        try {
-          await api('desktop/restart', {})
-        } catch (e) {
-          setRestartMsg(L(`没能自动重启（${e.message}），请手动重启 DSH`, `Could not restart automatically (${e.message}); please restart DSH yourself`))
-        }
-      }
-
-      if (!open) {
-        return h('div', { style: S.card },
-          h('div', { style: S.spread },
-            h('div', null,
-              h('div', { style: { ...S.h2, margin: 0 } }, L('卸载', 'Uninstall')),
-              h('div', { style: { ...S.muted, fontSize: 12 } }, L('移除插件，并选择清理它在本机和服务器上留下的东西', 'Remove the plugin, and choose what it left on this computer and the servers to clean up'))),
-            h(Btn, { onClick: expand }, L('卸载…', 'Uninstall…'))))
-      }
-
-      const pluginStep = result?.steps?.find((s) => s.id === 'plugin')
-
-      return h('div', { style: { ...S.card, borderColor: T.danger } },
-        h('div', { style: S.spread },
-          h('div', { style: { ...S.h2, margin: 0 } }, L('卸载', 'Uninstall')),
-          stage === 'running' ? null : h(Btn, { onClick: () => { setOpen(false); setStage('idle'); setResult(null); setError('') } }, L('收起', 'Collapse'))),
-        h(ErrorBar, { error }),
-        !preview && !error ? h('div', { style: S.muted }, L('读取中…', 'Loading…')) : null,
-
-        preview && stage !== 'done'
-          ? h('div', null,
-              UNINSTALL_GROUPS.map(([title, ids]) => {
-                const items = ids.filter((id) => uninstallVisible(id, preview))
-                if (!items.length) return null
-                return h('div', { key: ids[0], style: { marginTop: 10 } },
-                  h('div', { style: { ...S.muted, fontSize: 12, marginBottom: 4 } }, title()),
-                  items.map((id) => {
-                    const item = UNINSTALL_ITEMS[id]
-                    return h('label', { key: id, style: { display: 'flex', gap: 8, alignItems: 'flex-start', padding: '4px 0', cursor: 'pointer' } },
-                      h('input', {
-                        type: 'checkbox',
-                        checked: Boolean(choices[id]),
-                        disabled: stage !== 'idle',
-                        onChange: (e) => setChoices({ ...choices, [id]: e.target.checked }),
-                        style: { marginTop: 3 },
-                      }),
-                      h('span', null,
-                        h('span', { style: { fontWeight: 600 } }, item.label),
-                        h('div', { style: { ...S.muted, fontSize: 12 } }, item.detail(preview)),
-                        item.warn ? h('div', { style: { color: T.danger, fontSize: 12 } }, `⚠ ${item.warn}`) : null))
-                  }))
-              }),
-              h('div', { style: { ...S.row, marginTop: 12 } },
-                stage === 'idle'
-                  ? h(Btn, { kind: 'danger', disabled: selected.length === 0, onClick: () => setStage('confirm') }, L('开始卸载', 'Start uninstalling'))
-                  : null,
-                stage === 'confirm'
-                  ? [
-                      h('span', { key: 't', style: { color: T.danger } }, L(`确定执行这 ${selected.length} 项？勾了删除的项不能撤销`, `Run these ${selected.length} items? Deletions cannot be undone`)),
-                      h(Btn, { key: 'y', kind: 'danger', onClick: run }, L('确认卸载', 'Confirm uninstall')),
-                      h(Btn, { key: 'n', onClick: () => setStage('idle') }, L('取消', 'Cancel')),
-                    ]
-                  : null,
-                stage === 'running' ? h('span', { style: S.muted }, L('卸载中…（要连服务器的项会慢一些）', 'Uninstalling… (items that reach the servers take longer)')) : null))
-          : null,
-
-        stage === 'done' && result
-          ? h('div', { style: { marginTop: 10 } },
-              result.steps.map((s, i) => h('div', { key: i, style: { display: 'flex', gap: 8, padding: '3px 0' } },
-                s.pending
-                  ? h('span', { style: { opacity: 0.6, fontWeight: 600, animation: 'dshVpsPulse 1s ease-in-out infinite' } }, '…')
-                  : h('span', { style: { color: s.ok ? T.ok : T.danger, fontWeight: 600 } }, s.ok ? '✓' : '✗'),
-                h('span', null, h('span', { style: S.muted }, L(`${UNINSTALL_ITEMS[s.id]?.label ?? s.id}：`, `${UNINSTALL_ITEMS[s.id]?.label ?? s.id}: `)), s.text))),
-              pluginStep?.ok && !pluginStep.pending && result.removeVia !== 'manager'
-                ? h('div', { style: { ...S.row, marginTop: 10 } },
-                    result.canRestart ? h(Btn, { kind: 'primary', onClick: restart }, L('重启 DSH', 'Restart DSH')) : h('span', null, L('请重启 DSH 完成卸载', 'Restart DSH to finish uninstalling')),
-                    restartMsg ? h('span', { style: S.muted }, restartMsg) : null)
-                : null)
-          : null)
-    }
-
-    // —— 插件自己的更新（设置页右上角）——
-
-    const UPDATE_FAIL_TEXT = {
-      'incompatible-version': () => L('新版要求的 DSH 版本和你现在用的对不上，先升级 DSH 再更新', 'The new version needs a different DSH version; update DSH first'),
-      'no-manager': () => L('这个版本的 DSH 不能在这里装插件', 'This DSH version cannot install plugins from here'),
-      timeout: () => L('下载超时了', 'The download timed out'),
-      cancelled: () => L('更新被取消了', 'The update was cancelled'),
-      'invalid-spec': () => L('版本号不对', 'Invalid version'),
-    }
-
-    /** 按钮长什么样：看查到的结果和当前在做什么（单独写出来好测） */
-    function updateView(info, phase, elapsed = 0) {
-      if (phase === 'updating') return { label: L(`正在更新…（${elapsed} 秒）`, `Updating… (${elapsed}s)`), kind: 'default', disabled: true }
-      if (phase === 'done') return { label: L('已更新，重启后生效', 'Updated; restart to apply'), kind: 'default', disabled: true }
-      if (!info) return { label: phase === 'checking' ? L('检查更新…', 'Checking…') : L('检查更新', 'Check for updates'), kind: 'default', disabled: phase === 'checking' }
-      if (info.restartPending) return { label: L(`v${info.restartPending} 已装好，重启后生效`, `v${info.restartPending} installed; restart to apply`), kind: 'default', disabled: true }
-      if (info.available && info.installable) return { label: L(`更新到 v${info.installable}`, `Update to v${info.installable}`), kind: 'primary', disabled: false, action: 'run' }
-      if (info.available) return { label: L(`v${info.latest} 即将可更新`, `v${info.latest} coming soon`), kind: 'default', disabled: true, title: L('GitHub 上已经发布，npm 上还没同步好，过一会儿再来', 'Released on GitHub but not on npm yet; check back in a while') }
-      return { label: phase === 'checking' ? L('检查更新…', 'Checking…') : L('检查更新', 'Check for updates'), kind: 'default', disabled: phase === 'checking', action: 'check' }
-    }
-
-    function useUpdate() {
-      const [state, setState] = useState({ info: null, phase: 'checking', result: null, asked: false })
-      const elapsed = useElapsed(state.phase === 'updating')
-      const check = useCallback(async (force) => {
-        setState((s) => ({ ...s, phase: 'checking', asked: s.asked || force }))
-        try {
-          const info = await api('update/check', { force })
-          setState((s) => ({ ...s, info, phase: 'idle', result: null }))
-        } catch {
-          // 查不到（没网、老服务端）：不弹错，按钮还在
-          setState((s) => ({ ...s, phase: 'idle' }))
-        }
-      }, [])
-      useEffect(() => {
-        check(false)
-      }, [check])
-      const run = async () => {
-        const version = state.info?.installable
-        if (!version) return
-        setState((s) => ({ ...s, phase: 'updating', result: null }))
-        try {
-          const result = await api('update/run', { version }, { timeoutMs: 15 * 60_000 })
-          setState((s) => ({ ...s, phase: result.updated ? 'done' : 'failed', result }))
-        } catch (e) {
-          setState((s) => ({ ...s, phase: 'failed', result: { updated: false, code: 'failed', detail: e.message, command: `dsh plugin add vpssh@${version}` } }))
-        }
-      }
-      return { ...state, elapsed, check, run }
-    }
-
-    function UpdateButton({ upd }) {
-      const v = updateView(upd.info, upd.phase, upd.elapsed)
-      return h('span', { style: { ...S.row, gap: 8 } },
-        upd.info?.running ? h('span', { style: { ...S.muted, fontSize: 12, whiteSpace: 'nowrap' } },
-          `v${upd.info.running}`,
-          upd.asked && upd.phase === 'idle' && !upd.info.available && !upd.info.restartPending ? (upd.info.offline ? L(' · 查不到更新（网络）', ' · could not check (network)') : L(' · 已是最新', ' · up to date')) : '') : null,
-        h(Btn, { kind: v.kind, disabled: v.disabled, title: v.title, onClick: () => (v.action === 'run' ? upd.run() : upd.check(true)) }, v.label))
-    }
-
-    function UpdateNotice({ upd }) {
-      const { info, phase, result } = upd
-      const [copied, setCopied] = useState(false)
-      const copy = async (text) => {
-        try {
-          await navigator.clipboard.writeText(text)
-          setCopied(true)
-          setTimeout(() => setCopied(false), 1600)
-        } catch {
-          // 复制不了，命令就在眼前
-        }
-      }
-      const command = (text) => h('span', { style: { ...S.row, gap: 6, marginTop: 6 } },
-        h('code', { style: { ...S.mono, background: T.layer, borderRadius: 5, padding: '2px 6px' } }, text),
-        h(Btn, { onClick: () => copy(text) }, copied ? L('已复制', 'Copied') : L('复制', 'Copy')))
-      const notes = info?.github?.url || info?.releasesUrl
-      const link = notes ? h('a', { href: notes, target: '_blank', rel: 'noreferrer', style: { color: T.accent, marginLeft: 6 } }, L('查看更新内容 ↗', 'What\'s new ↗')) : null
-      const restart = async () => {
-        try {
-          await api('desktop/restart', {})
-        } catch {
-          // 重启不了就照提示手动来
-        }
-      }
-      if (phase === 'done' && result?.updated) {
-        return h('div', { style: { ...S.note, borderColor: T.ok } },
-          h('span', null, L(`已更新到 v${result.version}。完全退出 DSH 再打开就生效。`, `Updated to v${result.version}. Quit DSH completely and reopen it to apply.`)),
-          result.canRestart ? h('span', { style: { marginLeft: 8 } }, h(Btn, { kind: 'primary', onClick: restart }, L('重启 DSH', 'Restart DSH'))) : null)
-      }
-      if (phase === 'failed' && result) {
-        const reason = UPDATE_FAIL_TEXT[result.code]?.() ?? (result.code ? L(`原因：${result.code}`, `Reason: ${result.code}`) : '')
-        return h('div', { style: S.err },
-          h('div', null, L('更新没成功。', 'The update did not finish. '), reason),
-          result.detail ? h('pre', { style: { ...S.pre, maxHeight: 120, margin: '6px 0 0', color: 'inherit' } }, result.detail) : null,
-          h('div', { style: { marginTop: 6, color: 'inherit' } }, L('也可以在 DSH 终端里运行这条命令来更新，装好后重启 DSH：', 'You can also run this in the DSH terminal, then restart DSH:')),
-          command(result.command))
-      }
-      if (!info || phase === 'updating') return null
-      if (info.restartPending) {
-        return h('div', { style: S.note }, L(`新版 v${info.restartPending} 已经装好，现在跑的还是 v${info.running}。完全退出 DSH 再打开就生效。`, `v${info.restartPending} is installed but v${info.running} is still running. Quit DSH completely and reopen it to apply.`))
-      }
-      if (!info.available) return null
-      return h('div', { style: S.note },
-        h('span', null, L(`有新版本 v${info.latest}（现在是 v${info.running}）。`, `A new version, v${info.latest}, is available (you have v${info.running}).`)),
-        link,
-        !info.installable ? h('div', { style: { ...S.muted, marginTop: 4 } }, L('GitHub 上已经发布，npm 上还没同步好，过一会儿就能点「更新」。', 'It is released on GitHub but not on npm yet; you can update in a while.')) : null,
-        info.installable && !info.canInstall ? h('div', { style: { marginTop: 4 } }, L('这个版本的 DSH 不能在这里装插件，在 DSH 终端里运行这条命令，装好后重启 DSH：', 'This DSH version cannot install plugins from here. Run this in the DSH terminal, then restart DSH:'), command(info.command)) : null)
-    }
 
     // ——————————————————————— 「VPS 管理」页：vpssh 自己的卡片（服务器那一层） ———————————————————————
     //
@@ -1527,6 +1290,73 @@ window.__ModuleLoader__.load({
         rows.map(([cmd, note]) => h('div', { key: cmd, style: { marginBottom: 8 } },
           h(Copyable, { text: cmd }),
           h('div', { style: { ...S.muted, fontSize: 12, marginTop: 2 } }, note))))
+    }
+
+    /**
+     * 卸载整个 vpssh（不是卸载插件）：服务、网关、Caddy 站点、本机账号都移除，先打包备份到 /root。
+     * 默认保留数据，勾上才删。这个页面会当场打不开，所以先讲清楚，再要管理员密码确认。
+     */
+    function ProductUninstallCard() {
+      const [open, setOpen] = useState(false)
+      const [password, setPassword] = useState('')
+      const [deleteData, setDeleteData] = useState(false)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const [started, setStarted] = useState(false)
+      async function submit() {
+        setError('')
+        setBusy(true)
+        try {
+          const res = await fetch('/gate/uninstall', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ password, deleteData }),
+            signal: AbortSignal.timeout(20_000),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) {
+            throw new Error(body.error === 'wrong_password' ? L('管理员密码不对。', 'The admin password is wrong.')
+              : body.error === 'rate_limited' ? L('尝试次数过多，请稍后再试。', 'Too many attempts. Try again later.')
+                : body.error || `HTTP ${res.status}`)
+          }
+          setStarted(true)
+        } catch (e) {
+          setError(String(e.message || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const restore = h('div', { style: { ...S.muted, fontSize: 12, marginTop: 6, lineHeight: 1.8 } },
+        h('div', null, L('备份在服务器的 /root/vpssh-uninstall-<时间>.tar.gz。从备份恢复（先放回数据、再安装）：', 'The backup is at /root/vpssh-uninstall-<time>.tar.gz on the server. To restore (data first, then install):')),
+        h('div', { style: S.mono }, 'sudo tar -xzf /root/vpssh-uninstall-<…>.tar.gz -C /'),
+        h('div', { style: S.mono }, 'curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash'))
+      if (started) {
+        return h('div', { style: S.card },
+          h('div', { style: { ...S.h2, marginTop: 0 } }, L('正在卸载', 'Uninstalling')),
+          h('div', { style: { fontSize: 12 } }, L('vpssh 正在从这台服务器上移除，这个页面马上会打不开。', 'vpssh is being removed from this server; this page will stop working in a moment.')),
+          restore)
+      }
+      return h('div', { style: S.card },
+        h('div', { style: S.spread },
+          h('div', null,
+            h('span', { style: { fontWeight: 600 } }, L('卸载', 'Uninstall')),
+            h('span', { style: { ...S.muted, fontSize: 12, marginLeft: 8 } }, L('把整个 vpssh 从这台服务器移除', 'Remove vpssh from this server entirely'))),
+          open ? null : h(Btn, { kind: 'danger', onClick: () => setOpen(true) }, L('卸载…', 'Uninstall…'))),
+        open ? h('div', { style: { marginTop: 10, fontSize: 12, lineHeight: 1.8 } },
+          h('div', null, L('会移除：vpssh 服务、登录网关、Caddy 里 vpssh 的站点、本机账号 vpssh-admin。移除前先打包备份。', 'Removes: the vpssh service, the sign-in gateway, vpssh\'s Caddy site and the local account vpssh-admin. A backup is made first.')),
+          h('div', null, L('被管的机器不受影响；它们上面 vpssh 的公钥要你自己删（authorized_keys 里结尾是 vpssh@ 的那行）。', 'Managed machines are untouched; remove vpssh\'s public key from them yourself (the authorized_keys line ending in vpssh@).')),
+          h('div', { style: { color: T.danger } }, L('卸载后这个页面会当场打不开（手机上的也一样）。', 'This page stops working immediately afterwards (on phones too).')),
+          h('label', { style: { ...S.row, marginTop: 6, gap: 6 } },
+            h('input', { type: 'checkbox', checked: deleteData, onChange: (e) => setDeleteData(e.target.checked) }),
+            h('span', null, L('连数据一起删：对话、机器清单、钥匙（不勾就保留，重装可以接着用）', 'Also delete the data: conversations, machine list, keys (unticked: kept, a reinstall picks them up)'))),
+          h('div', { style: { maxWidth: 320, marginTop: 8 } },
+            h(Field, { label: L('管理员密码', 'Admin password') }, h(Input, { type: 'password', value: password, onChange: setPassword }))),
+          error ? h('div', { style: { ...S.err, marginTop: 8 } }, error) : null,
+          h('div', { style: { ...S.row, marginTop: 10 } },
+            h(Btn, { kind: 'danger', disabled: busy || !password, onClick: submit }, busy ? L('提交中…', 'Submitting…') : L('确认卸载', 'Uninstall now')),
+            h(Btn, { onClick: () => { setOpen(false); setPassword(''); setError('') } }, L('取消', 'Cancel'))),
+          restore) : null)
     }
 
     function SettingsSection() {
@@ -1729,7 +1559,9 @@ window.__ModuleLoader__.load({
           h('div', { style: { ...S.muted, fontSize: 12 } },
             L('hosts.yml 可以手工编辑；recipes/ 放自己的菜谱；audit/ 是操作记录', 'hosts.yml can be edited by hand; recipes/ holds your own recipes; audit/ is the activity log'))) : null,
 
-        h(FeedbackCard))
+        h(FeedbackCard),
+
+        gate.data?.health ? h(ProductUninstallCard) : null)
     }
 
     // ——————————————————————— 左栏的两个入口：「VPS 管理」「常用操作」 ———————————————————————
@@ -5822,7 +5654,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, updateView, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })

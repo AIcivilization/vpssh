@@ -1358,6 +1358,46 @@ async function handlePassword(req, res, user) {
 	return json(200, { ok: true }, { "set-cookie": sessionCookieHeader(req, loadAdmin(), true) });
 }
 
+/**
+ * 网页上的「卸载」：核对管理员密码后只写 state/uninstall.request，由 root 的 vpssh-uninstall.path
+ * 接手执行 uninstall.sh（gate 没有 root 权限，也不该有）。卸载会让这个页面当场打不开。
+ */
+async function handleUninstall(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	const origin = req.headers.origin;
+	let sameOrigin = false;
+	try {
+		sameOrigin = origin !== void 0 && new URL(origin).host === requestAuthority(req.headers);
+	} catch {
+		/* 非法 Origin */
+	}
+	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross_origin" });
+	const ip = clientIp(req);
+	if (loginRateLimited(ip)) return json(429, { error: "rate_limited" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	const admin = loadAdmin();
+	if (!admin || admin.username !== user) return json(409, { error: "admin_changed" });
+	if (!verifyAdmin(admin, admin.username, typeof body?.password === "string" ? body.password : "")) {
+		recordLoginFailure(ip);
+		log(`uninstall rejected (wrong password) from ${ip}`);
+		return json(400, { error: "wrong_password" });
+	}
+	clearLoginFailures(ip);
+	const request = { deleteData: body?.deleteData === true, by: user, at: Date.now() };
+	fs.writeFileSync(path.join(STATE_DIR, "uninstall.request"), JSON.stringify(request) + "\n", { mode: 0o600 });
+	log(`uninstall requested from browser by ${user} (deleteData=${request.deleteData})`);
+	return json(202, { ok: true });
+}
+
 function writeAdminRecord(username, password) {
 	ensureStateDir();
 	const salt = crypto.randomBytes(16);
@@ -2017,6 +2057,7 @@ function main() {
 				}
 				if (pathname === "/gate/update") return handleUpdate(req, res, user);
 				if (pathname === "/gate/password") return handlePassword(req, res, user);
+				if (pathname === "/gate/uninstall") return handleUninstall(req, res, user);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {

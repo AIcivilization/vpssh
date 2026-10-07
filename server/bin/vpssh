@@ -29,21 +29,7 @@ SELFCHECK_URL="http://127.0.0.1:$GATE_PORT/gate/selfcheck"
 DSH_HOME_DIR="${DSH_HOME:-/home/vpssh/.dsh}"
 SERVICE="vpssh"
 RAW_BASE="${VPSSH_RAW_BASE:-https://raw.githubusercontent.com/AIcivilization/vpssh/main/server}"
-VERSIONS_URL="${VPSSH_VERSIONS_URL:-$RAW_BASE/versions.json}"
-# 依赖解析冻结时间点的兜底值（版本表里带 resolve_before 时以版本表为准）。
-# 只钉顶层包版本不够：DSH 子包依赖是 ^x 浮动范围，上游发新预发布波次时解析结果会整体漂上去
-# ——2026-09-22 上游漏发 rc.3 的 dsh-client-ui-sidebar-documentpreview 就导致过 ETARGET。
-# 同日 03:46 的 cordis 系列新版本同样与 rc.2 不兼容（HMR 服务缺失致启动崩溃），故取 03:40。
-# 升级 latest_verified 时必须同步推后这个值。
-DEFAULT_RESOLVE_BEFORE="${VPSSH_RESOLVE_BEFORE:-2026-10-02T00:00:00Z}"
-VERSIONS_CACHE="$ROOT/state/versions.cache.json"
-NPM_REGISTRY="${VPSSH_NPM_REGISTRY:-}"
-# 新版本发布满多少小时才升级（--latest / 页面一键升级）：上游常见「主包先发、子包晚几小时补齐」
-UPGRADE_COOLDOWN_HOURS="${VPSSH_UPGRADE_COOLDOWN_HOURS:-12}"
-# 安装时选了 --mirror cn：升级也走 npmmirror，与首次安装同源
-if [[ -z "$NPM_REGISTRY" && -f "$ROOT/state/config.json" ]] && grep -q '"mirror": *"cn"' "$ROOT/state/config.json"; then
-	NPM_REGISTRY="https://registry.npmmirror.com"
-fi
+# DSH 版本与依赖冻结点在 manifest.json 里，由 install.sh 处理；升级就是用新版本的 install.sh 重装（见 upgrade）
 
 log()  { printf '\033[1;32m[vpssh]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[vpssh]\033[0m %s\n' "$*" >&2; }
@@ -82,69 +68,13 @@ cmd_backup() {
 
 ## endregion
 
-## region: update-gate
-
-# 安装目录不是 git 仓库（install.sh 从 RAW_BASE 取文件），所以 gate 代码
-# 只能靠重新拉取更新。upgrade 管 DSH 版本，update-gate 管 gate 自身代码。
-cmd_update_gate() {
-	require_root
-	[[ -f "$ROOT/gate/server.js" ]] || die "未找到 $ROOT/gate/server.js（不是 vpssh 安装目录？）"
-	# node --check 走 ESM loader，只认 .js/.cjs/.mjs 等已知后缀；用 .cjs 同时
-	# 锁定 CommonJS 解析，不受将来可能出现的 package.json {"type":"module"} 影响。
-	local tmp="$ROOT/gate/server.update.cjs"
-	log "拉取最新 gate/server.js ($RAW_BASE/gate/server.js)"
-	curl -fsSL --max-time 30 "$RAW_BASE/gate/server.js" -o "$tmp" \
-		|| { rm -f "$tmp"; die "拉取失败（离线？或 VPSSH_RAW_BASE 指向有误）"; }
-	node --check "$tmp" \
-		|| { rm -f "$tmp"; die "新版本语法检查失败，原文件未改动"; }
-	if cmp -s "$tmp" "$ROOT/gate/server.js"; then
-		rm -f "$tmp"
-		log "gate 已是最新版本，无需更新"
-		return 0
-	fi
-	cp -p "$ROOT/gate/server.js" "$ROOT/gate/server.js.bak" && log "已备份旧版: $ROOT/gate/server.js.bak"
-	mv "$tmp" "$ROOT/gate/server.js"
-	chmod 644 "$ROOT/gate/server.js"
-	# 站点块模板与 gate 同源（install.sh、vpssh vpn 都用它），顺手同步（幂等）
-	local sb="$ROOT/gate/site-block.update.js"
-	if curl -fsSL --max-time 30 "$RAW_BASE/gate/site-block.js" -o "$sb" && node --check "$sb"; then
-		mv "$sb" "$ROOT/gate/site-block.js"
-		chmod 644 "$ROOT/gate/site-block.js"
-	else
-		rm -f "$sb"
-		warn "gate/site-block.js 未更新（保留现有版本）"
-	fi
-	# vpssh 自身：先写临时文件再 rename，正在执行的旧脚本仍持有旧 inode，不会读到半截新内容
-	local nb="$ROOT/bin/vpssh.update"
-	if curl -fsSL --max-time 30 "$RAW_BASE/bin/vpssh" -o "$nb" && bash -n "$nb"; then
-		chmod 755 "$nb"
-		mv "$nb" "$ROOT/bin/vpssh"
-	else
-		rm -f "$nb"
-		warn "bin/vpssh 未更新（保留现有版本）"
-	fi
-	log "重启 $SERVICE ..."
-	systemctl restart "$SERVICE"
-	sleep 3
-	# 以下都用新版 vpssh 执行：静态补丁（含升级提示条）与一键升级单元（幂等）
-	"$ROOT/bin/vpssh" ownshost on >/dev/null 2>&1 || true
-	"$ROOT/bin/vpssh" install-units || warn "一键升级单元安装失败"
-	if curl -fsS --max-time 3 "$HEALTH_URL" >/dev/null 2>&1; then
-		log "更新完成，gate 已就绪"
-	else
-		warn "重启后健康检查未通过：journalctl -u $SERVICE -n 50"
-		warn "回滚：cp $ROOT/gate/server.js.bak $ROOT/gate/server.js && systemctl restart $SERVICE"
-		return 1
-	fi
-}
-
-## endregion
 
 ## region: status
 
 cmd_status() {
 	echo "== 服务 =="
 	systemctl is-active "$SERVICE" 2>/dev/null | sed 's/^/  vpssh: /' || echo "  vpssh: inactive"
+	systemctl is-active vpssh-keyd 2>/dev/null | sed 's/^/  keyd:  /' || echo "  keyd:  inactive"
 	systemctl is-active caddy 2>/dev/null | sed 's/^/  caddy:    /' || echo "  caddy:    (未安装)"
 	echo
 	echo "== 配置 =="
@@ -160,30 +90,11 @@ cmd_status() {
 		echo "  gate 不可达（服务未运行或启动中）"
 	fi
 	echo
-	# 版本表提示（24h 缓存）
-	local cache_ok=0
-	if [[ -f "$VERSIONS_CACHE" ]]; then
-		local age=$(( $(date +%s) - $(stat -c %Y "$VERSIONS_CACHE" 2>/dev/null || echo 0) ))
-		[[ $age -lt 86400 ]] && cache_ok=1
-	fi
-	if [[ $cache_ok -eq 0 ]]; then
-		curl -fsSL --max-time 8 "$VERSIONS_URL" -o "$VERSIONS_CACHE.tmp" 2>/dev/null \
-			&& mv "$VERSIONS_CACHE.tmp" "$VERSIONS_CACHE" || rm -f "$VERSIONS_CACHE.tmp"
-	fi
-	if [[ -f "$VERSIONS_CACHE" ]]; then
-		local latest
-		latest=$(sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' "$VERSIONS_CACHE" | head -1)
-		local cur
-		cur=$(current_version)
-		if [[ -n "$latest" && "$latest" != "$cur" ]]; then
-			if printf '%s\n%s\n' "$cur" "$latest" | sort -V | tail -1 | grep -qx "$latest"; then
-				echo "== 提示：有新验证版本 ${latest}（当前 ${cur}），运行 sudo vpssh upgrade 升级 =="
-			fi
-		else
-			echo "== 已是最新验证版本（${cur}） =="
-		fi
-	else
-		echo "== 版本表暂不可达（离线或仓库未发布），跳过升级提示 =="
+	echo "== vpssh $(installed_vpssh) =="
+	local latest
+	latest=$(latest_release_tag)
+	if [[ -n "$latest" && "${latest#v}" != "$(installed_vpssh)" ]]; then
+		echo "$(M "有新版本 $latest：sudo vpssh upgrade" "New version $latest available: sudo vpssh upgrade")"
 	fi
 }
 
@@ -217,160 +128,159 @@ wait_selfcheck() { # $1=重试次数
 
 ## region: upgrade / rollback
 
-switch_version() { # $1=版本目录名
-	ln -sfn "$1" "$ROOT/dsh/current"
-	# 新版本的 node_modules 是干净的，静态补丁必须重打
-	ownshost_apply on >/dev/null 2>&1 || true
+# vpssh 整体升级：每个 vpssh 版本固定一组组件（DSH 版本见 manifest.json），一起升、一起回滚。
+#   1. 取新版本：默认 GitHub 上最新的 Release；--ref <分支或标签>；--from <本地仓库目录>（开发、测试用）
+#   2. 备份数据（cmd_backup）+ 快照代码（snapshot：程序目录、服务单元、Caddy 配置、DSH profile）
+#   3. 用新版本的 install.sh 原地重装（重装模式不碰账号、令牌、机器清单）
+#   4. 健康检查不过：自动恢复快照
+# vpssh rollback：恢复最近一次快照（升级前的样子）。
+REPO_SLUG="AIcivilization/vpssh"
+SNAP_DIR="$ROOT/backups/snapshots"
+
+installed_vpssh() { sed -n 's/.*"vpsshVersion": *"\([^"]*\)".*/\1/p' "$ROOT/state/config.json" 2>/dev/null | head -1; }
+
+latest_release_tag() {
+	curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null \
+		| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1
+}
+
+# 快照：升级会改的东西都在里面；DSH 各版本本身按版本号分目录保留，不进快照
+snapshot_take() {
+	mkdir -p "$SNAP_DIR"
+	local file="$SNAP_DIR/snap-$(date +%Y%m%d-%H%M%S).tar.gz" paths=()
+	local p
+	for p in "$ROOT/bin" "$ROOT/gate" "$ROOT/keyd" "$ROOT/plugin" "$ROOT/dsh/current" \
+		"$ROOT/state/config.json" "$ROOT/state/gate.env" \
+		/etc/systemd/system/vpssh.service /etc/systemd/system/vpssh-keyd.service \
+		/etc/systemd/system/vpssh-upgrade.path /etc/systemd/system/vpssh-upgrade.service \
+		/etc/caddy/Caddyfile /etc/caddy/vpssh-site.conf "$DSH_HOME_DIR/profiles"; do
+		[[ -e "$p" || -L "$p" ]] && paths+=("${p#/}")
+	done
+	tar -czf "$file" -C / "${paths[@]}" 2>/dev/null || { local rc=$?; [[ $rc -eq 1 ]] || die "$(M "快照失败（tar 返回 $rc）" "Snapshot failed (tar returned $rc)")"; }
+	chmod 600 "$file"
+	# 保留最近 3 份
+	ls -1t "$SNAP_DIR"/snap-*.tar.gz 2>/dev/null | tail -n +4 | xargs -r rm -f
+	printf '%s' "$file"
+}
+
+snapshot_restore() { # $1=快照文件
+	local file="$1"
+	[[ -f "$file" ]] || die "$(M "找不到快照：$file" "Snapshot not found: $file")"
+	systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+	rm -rf "$ROOT/plugin" "$ROOT/gate" "$ROOT/keyd" "$DSH_HOME_DIR/profiles"
+	tar -xzf "$file" -C /
+	systemctl daemon-reload
+	systemctl restart vpssh-keyd >/dev/null 2>&1 || true
+	systemctl reload caddy >/dev/null 2>&1 || systemctl restart caddy >/dev/null 2>&1 || true
 	systemctl restart "$SERVICE"
+}
+
+wait_healthy() { # $1=最多等多少秒
+	local i
+	for i in $(seq 1 $(( $1 / 2 ))); do
+		curl -fsS --max-time 3 "$HEALTH_URL" 2>/dev/null | grep -q '"dshCookie":{"authority"' && return 0
+		sleep 2
+	done
+	return 1
+}
+
+# 只保留当前和上一个 DSH 版本目录（每个几百 MB）
+prune_dsh_versions() {
+	local cur keep
+	cur=$(current_version)
+	keep=$(ls -1t "$ROOT/dsh" 2>/dev/null | grep -vx current | grep -vx "$cur" | head -1 || true)
+	local v
+	for v in $(ls -1 "$ROOT/dsh" 2>/dev/null | grep -vx current); do
+		[[ "$v" == "$cur" || "$v" == "$keep" ]] && continue
+		rm -rf "${ROOT:?}/dsh/$v"
+		log "$(M "已清理旧的 DSH $v" "Removed old DSH $v")"
+	done
 }
 
 cmd_upgrade() {
 	require_root
-	local target="" latest_mode=0 assume_yes=0 verified_latest=0
+	local ref="" from="" yes=0 force=0
 	while [[ $# -gt 0 ]]; do
 		case "$1" in
-		--latest) latest_mode=1; shift ;;
-		--yes) assume_yes=1; shift ;;
-		-*) die "未知参数: $1" ;;
-		*) target="$1"; shift ;;
+		--ref) ref="${2:?--ref}"; shift 2 ;;
+		--from) from="${2:?--from}"; shift 2 ;;
+		--yes | -y) yes=1; shift ;;
+		--force) force=1; shift ;;
+		*) die "$(M "未知参数: $1（可用：--ref <分支或标签> --from <目录> --yes --force）" "Unknown option: $1 (available: --ref <branch or tag> --from <dir> --yes --force)")" ;;
 		esac
 	done
 
-	local cur
-	cur=$(current_version)
-	log "当前版本: $cur"
-	# --latest 明确要最新，不冻结解析；其余情况冻结在验证过的时间点之前
-	local resolve_before="$DEFAULT_RESOLVE_BEFORE"
-
-	if [[ $latest_mode -eq 1 ]]; then
-		warn "--latest：将安装官方最新版（npm latest 与 next 渠道中较新、且发布满 ${UPGRADE_COOLDOWN_HOURS} 小时的一个），可能未经 vpssh 验证（有备份与自动回滚兜底）"
-		[[ $assume_yes -eq 1 ]] || { read -rp "确认继续？[y/N] " ans; [[ "$ans" == "y" || "$ans" == "Y" ]] || die "已取消"; }
-		local reg_arg=(dist-tags time --json)
-		[[ -n "$NPM_REGISTRY" ]] && reg_arg+=(--registry="$NPM_REGISTRY")
-		# 官方同时维护 latest（正式）与 next（预览）两个渠道，取其中版本号更高、且过了冷静期的；
-		# alpha 等内部渠道不取。冷静期见 UPGRADE_COOLDOWN_HOURS（与 gate 的升级提示同一规则）
-		target=$(npm view @deepseek-ai/dsh "${reg_arg[@]}" 2>/dev/null | COOLDOWN_H="$UPGRADE_COOLDOWN_HOURS" node -e '
-const doc = JSON.parse(require("fs").readFileSync(0, "utf8"));
-const t = doc["dist-tags"] || {};
-const times = doc.time || {};
-const cooldown = Number(process.env.COOLDOWN_H || 12) * 3600000;
-const parse = (v) => { const [c, p] = v.split("-", 2); return { c: c.split(".").map(Number), p: p === undefined ? null : p.split(".") }; };
-const cmp = (a, b) => {
-	const x = parse(a), y = parse(b);
-	for (let i = 0; i < 3; i++) if (x.c[i] !== y.c[i]) return x.c[i] - y.c[i];
-	if (x.p === null || y.p === null) return (x.p === null) - (y.p === null);
-	for (let i = 0; i < Math.max(x.p.length, y.p.length); i++) {
-		const p = x.p[i], q = y.p[i];
-		if (p === undefined || q === undefined) return p === undefined ? -1 : 1;
-		const pn = /^\d+$/.test(p), qn = /^\d+$/.test(q);
-		if (pn && qn && +p !== +q) return +p - +q;
-		if (pn !== qn) return pn ? -1 : 1;
-		if (p !== q) return p < q ? -1 : 1;
-	}
-	return 0;
-};
-const c = [t.latest, t.next].filter((v) => typeof v === "string" && /^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(v))
-	.filter((v) => { const at = Date.parse(times[v] || ""); return Number.isFinite(at) && Date.now() - at >= cooldown; });
-if (!c.length) process.exit(1);
-console.log(c.sort(cmp).pop());
-') || die "无法查询 npm 最新版本"
-		# 官方最新版恰好是我们验证过的版本：用验证时冻结的依赖树，而不是当下重新解析
-		local vt
-		if vt=$(curl -fsSL --max-time 10 "$VERSIONS_URL" 2>/dev/null) \
-			&& [[ "$(printf '%s' "$vt" | sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' | head -1)" == "$target" ]]; then
-			local vrb
-			vrb=$(printf '%s' "$vt" | sed -n 's/.*"resolve_before": *"\([^"]*\)".*/\1/p' | head -1)
-			if [[ -n "$vrb" ]]; then
-				resolve_before="$vrb"
-				verified_latest=1
-				log "$target 是已验证版本，按验证时的依赖树安装（冻结于 $vrb）"
-			fi
-		fi
-	elif [[ -z "$target" ]]; then
-		# 默认：已验证版本表的 latest_verified
-		local versions
-		versions=$(curl -fsSL --max-time 10 "$VERSIONS_URL" 2>/dev/null) \
-			|| die "无法获取版本表（${VERSIONS_URL}）。可显式指定版本：vpssh upgrade <version>"
-		target=$(printf '%s' "$versions" | sed -n 's/.*"latest_verified": *"\([^"]*\)".*/\1/p' | head -1)
-		[[ -n "$target" ]] || die "版本表中没有 latest_verified 字段"
-		local rb
-		rb=$(printf '%s' "$versions" | sed -n 's/.*"resolve_before": *"\([^"]*\)".*/\1/p' | head -1)
-		[[ -n "$rb" ]] && resolve_before="$rb"
-		# min_gate 提示（gate 无版本戳，仅提醒人工确认）
-		if printf '%s' "$versions" | grep -q "\"dsh\": *\"$target\""; then
-			local min_gate
-			min_gate=$(printf '%s' "$versions" | grep -o "\"min_gate\": *\"[^\"]*\"" | head -1 | sed 's/.*: *"\(.*\)"/\1/')
-			[[ -n "$min_gate" ]] && warn "该版本要求 gate >= ${min_gate}，请确认 gate 代码已同步更新"
-		fi
-	fi
-
-	[[ "$target" == "$cur" ]] && { log "已是 ${target}，无需升级"; exit 0; }
-	log "目标版本: $target"
-
-	# 1. 备份（防数据格式不向前兼容）
-	cmd_backup
-
-	# 2. 版本化安装
-	local prefix="$ROOT/dsh/$target"
-	if [[ ! -f "$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js" ]]; then
-		mkdir -p "$prefix"
-		# 数组恒不为空：bash 3.2 在 set -u 下展开空数组会报 unbound variable
-		local args=(--no-audit --no-fund --loglevel=error)
-		[[ -n "$NPM_REGISTRY" ]] && args+=(--registry="$NPM_REGISTRY")
-		local frozen=1
-		[[ ($latest_mode -eq 1 && $verified_latest -eq 0) || "$resolve_before" == "none" ]] && frozen=0
-		[[ $frozen -eq 1 ]] && args+=(--before="$resolve_before")
-		if ! npm install --prefix "$prefix" "${args[@]}" "@deepseek-ai/dsh@$target"; then
-			if [[ $frozen -eq 1 ]]; then
-				warn "按时间点冻结解析失败，改为不冻结重试（可能装到未验证的新版本）"
-				local args2=(--no-audit --no-fund --loglevel=error)
-				[[ -n "$NPM_REGISTRY" ]] && args2+=(--registry="$NPM_REGISTRY")
-				npm install --prefix "$prefix" "${args2[@]}" "@deepseek-ai/dsh@$target" \
-					|| die "npm 安装 $target 失败"
-			else
-				die "npm 安装 $target 失败"
-			fi
-		fi
-		[[ -f "$prefix/node_modules/@deepseek-ai/dsh/lib/bin.js" ]] || die "安装产物缺失: $prefix"
-	fi
-
-	# 3. 切换 + 重启
-	log "切换到 $target 并重启..."
-	switch_version "$target"
-
-	# 4. 回归自检（重试 3 次）
-	if wait_selfcheck 3; then
-		log "升级成功：$cur -> ${target}（自检通过）"
+	local src
+	src=$(mktemp -d /tmp/vpssh-upgrade.XXXXXX)
+	if [[ -n "$from" ]]; then
+		[[ -f "$from/server/install.sh" && -f "$from/manifest.json" ]] || die "$(M "$from 不是 vpssh 仓库目录" "$from is not a vpssh repository")"
+		(cd "$from" && tar -cf - --exclude=node_modules --exclude=.git --exclude=.sim .) | tar -xf - -C "$src"
 	else
-		warn "自检失败，自动回滚到 $cur ..."
-		switch_version "$cur"
-		die "升级失败已回滚。原因见上方自检输出；可查 journalctl -u $SERVICE -n 50"
+		if [[ -z "$ref" ]]; then
+			ref=$(latest_release_tag)
+			[[ -n "$ref" ]] || die "$(M "查不到 vpssh 的发布版本（离线，或还没有发布）。要升到开发版：sudo vpssh upgrade --ref main" "Could not find a vpssh release (offline, or none published yet). For the development version: sudo vpssh upgrade --ref main")"
+		fi
+		log "$(M "下载 vpssh（$ref）" "Downloading vpssh ($ref)")"
+		curl -fsSL --retry 2 "https://codeload.github.com/$REPO_SLUG/tar.gz/$ref" | tar -xz -C "$src" --strip-components=1 \
+			|| die "$(M "下载失败：$ref" "Download failed: $ref")"
+	fi
+	[[ -f "$src/server/install.sh" && -f "$src/manifest.json" ]] || die "$(M "下载的 vpssh 不完整" "The downloaded vpssh is incomplete")"
+
+	local cur next
+	cur=$(installed_vpssh)
+	next=$(sed -n 's/^ *"vpssh": *"\([^"]*\)".*/\1/p' "$src/manifest.json" | head -1)
+	if [[ -n "$cur" && "$cur" == "$next" && $force -eq 0 ]]; then
+		log "$(M "已经是 vpssh $cur，不用升级（要重装同一版本：--force）" "Already on vpssh $cur (to reinstall the same version: --force)")"
+		rm -rf "$src"
+		return 0
+	fi
+	if [[ $yes -eq 0 ]]; then
+		printf '%s ' "$(M "把 vpssh ${cur:-?} 升级到 ${next:-?}？升级时页面会断开 1–3 分钟，失败会自动回到现在的版本。[y/N]" "Upgrade vpssh ${cur:-?} to ${next:-?}? The page goes away for 1–3 minutes; on failure it returns to the current version. [y/N]")"
+		local ans
+		read -r ans
+		[[ "$ans" =~ ^[Yy] ]] || { rm -rf "$src"; die "$(M "已取消" "Cancelled")"; }
 	fi
 
-	# 5. 清理：保留最近 2 个版本目录
-	local old_dirs
-	old_dirs=$(ls -1d "$ROOT"/dsh/*/ 2>/dev/null | grep -v current | sed 's|/$||' | sort -V | head -n -2 || true)
-	for d in $old_dirs; do
-		[[ "$(basename "$d")" == "$cur" ]] && continue # 保底：至少留一个可回滚目标
-		rm -rf "$d" && log "已清理旧版本目录: $d"
-	done
+	cmd_backup
+	local snap
+	snap=$(snapshot_take)
+	log "$(M "已快照：$snap" "Snapshot saved: $snap")"
+
+	local mirror_args=()
+	grep -q '"mirror": *"cn"' "$ROOT/state/config.json" 2>/dev/null && mirror_args=(--mirror cn)
+	local rc=0
+	bash "$src/server/install.sh" "${mirror_args[@]}" || rc=$?
+	if [[ $rc -eq 0 ]] && wait_healthy 120; then
+		rm -rf "$src"
+		prune_dsh_versions
+		log "$(M "升级完成：vpssh ${next}" "Upgrade complete: vpssh ${next}")"
+		return 0
+	fi
+	warn "$(M "升级没成功（install.sh 返回 $rc），恢复到升级前…" "The upgrade failed (install.sh returned $rc); restoring the previous version…")"
+	snapshot_restore "$snap"
+	rm -f "$snap" # 已经回到这个状态了：不留着，下次 rollback 才会回到更早那次升级之前
+	rm -rf "$src"
+	if wait_healthy 120; then
+		warn "$(M "已回到 vpssh ${cur:-之前的版本}，可以照常使用" "Back on vpssh ${cur:-the previous version}; it works as before")"
+	else
+		warn "$(M "恢复后还没起来：sudo vpssh repair" "Still not up after restoring: sudo vpssh repair")"
+	fi
+	exit 1
 }
 
 cmd_rollback() {
 	require_root
-	local cur
-	cur=$(current_version)
-	local prev
-	prev=$(ls -1d "$ROOT"/dsh/*/ 2>/dev/null | grep -v current | sed 's|/$||' | xargs -n1 basename 2>/dev/null \
-		| grep -vx "$cur" | sort -V | tail -1 || true)
-	[[ -n "$prev" ]] || die "没有可回滚的版本目录"
-	log "回滚: $cur -> $prev"
-	switch_version "$prev"
-	sleep 3
-	if cmd_selfcheck >/dev/null 2>&1; then
-		log "回滚完成，自检通过"
+	local snap
+	snap=$(ls -1t "$SNAP_DIR"/snap-*.tar.gz 2>/dev/null | head -1 || true)
+	[[ -n "$snap" ]] || die "$(M "没有可以回滚的快照（升级时才会生成）" "No snapshot to roll back to (one is taken at each upgrade)")"
+	log "$(M "恢复快照：$snap" "Restoring snapshot: $snap")"
+	snapshot_restore "$snap"
+	rm -f "$snap" # 用掉了：再执行一次 rollback 回到更早一次升级之前
+	if wait_healthy 120; then
+		log "$(M "已回滚：vpssh $(installed_vpssh)" "Rolled back: vpssh $(installed_vpssh)")"
 	else
-		warn "回滚后自检未通过，请查 journalctl -u $SERVICE -n 50"
+		warn "$(M "回滚后还没起来：sudo vpssh repair" "Not up after the rollback: sudo vpssh repair")"
+		exit 1
 	fi
 }
 
@@ -1053,6 +963,7 @@ EOF
 UPGRADE_REQUEST="$ROOT/state/upgrade.request"
 UPGRADE_STATUS="$ROOT/state/upgrade.status.json"
 UPGRADE_LOG="$ROOT/state/upgrade.log"
+UNINSTALL_REQUEST="$ROOT/state/uninstall.request"
 
 cmd_install_units() {
 	require_root
@@ -1078,9 +989,53 @@ Type=oneshot
 ExecStart=$ROOT/bin/vpssh upgrade-run
 TimeoutStartSec=30min
 UNIT
+	cat >/etc/systemd/system/vpssh-uninstall.path <<UNIT
+# vpssh：监听网页上的卸载请求（由 vpssh install-units 生成；gate 核对过管理员密码才会写这个文件）
+[Unit]
+Description=vpssh: watch for an uninstall request from the browser
+
+[Path]
+PathExists=$UNINSTALL_REQUEST
+Unit=vpssh-uninstall.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+	cat >/etc/systemd/system/vpssh-uninstall.service <<UNIT
+# vpssh：执行网页上发起的卸载（由 vpssh install-units 生成）
+[Unit]
+Description=vpssh: uninstall, as requested from the browser
+
+[Service]
+Type=oneshot
+ExecStart=$ROOT/bin/vpssh uninstall-run
+TimeoutStartSec=15min
+UNIT
 	systemctl daemon-reload
 	systemctl enable --now vpssh-upgrade.path >/dev/null 2>&1 || die "启用 vpssh-upgrade.path 失败"
-	log "浏览器一键升级已启用（vpssh-upgrade.path）"
+	systemctl enable --now vpssh-uninstall.path >/dev/null 2>&1 || die "启用 vpssh-uninstall.path 失败"
+	log "浏览器一键升级、网页卸载已启用（vpssh-upgrade.path、vpssh-uninstall.path）"
+}
+
+# 卸载：install.sh 在服务器上留了一份 uninstall.sh
+cmd_uninstall() {
+	require_root
+	[[ -f "$ROOT/uninstall.sh" ]] || die "$(M "找不到 $ROOT/uninstall.sh" "$ROOT/uninstall.sh is missing")"
+	# 复制出来再跑：卸载会删掉 $ROOT
+	local copy
+	copy=$(mktemp /tmp/vpssh-uninstall.XXXXXX.sh)
+	cp "$ROOT/uninstall.sh" "$copy"
+	bash "$copy" "$@"
+}
+
+cmd_uninstall_run() {
+	require_root
+	[[ -f "$UNINSTALL_REQUEST" ]] || exit 0
+	local args=(--yes)
+	grep -q '"deleteData":true' "$UNINSTALL_REQUEST" && args+=(--delete-data)
+	rm -f "$UNINSTALL_REQUEST"
+	# 日志留在 /root：卸载后 $ROOT 就没了
+	cmd_uninstall "${args[@]}" >"/root/vpssh-uninstall-$(date +%Y%m%d-%H%M%S).log" 2>&1
 }
 
 write_upgrade_status() { # $1=state $2=from $3=to
@@ -1104,7 +1059,7 @@ cmd_upgrade_run() {
 	chown "$owner" "$UPGRADE_LOG" 2>/dev/null || true
 	chmod 600 "$UPGRADE_LOG"
 	# 独立进程执行：写在 `|| rc=$?` 里的函数/子 shell 会让 set -e 失效，出错也不停
-	"$ROOT/bin/vpssh" upgrade --latest --yes >>"$UPGRADE_LOG" 2>&1 || rc=$?
+	"$ROOT/bin/vpssh" upgrade --yes >>"$UPGRADE_LOG" 2>&1 || rc=$?
 	[[ $rc -eq 0 ]] || printf '[vpssh] 升级进程退出码 %s（原因见上一行）\n' "$rc" >>"$UPGRADE_LOG"
 	to=$(current_version)
 	if [[ $rc -eq 0 ]]; then
@@ -1122,14 +1077,14 @@ vpssh 管理命令
 用法: sudo vpssh <子命令>
   status              服务状态 + 健康 + 版本提示
   restart             重启 gate（DSH 随之重启并重新兑换会话）
-  upgrade [version]   升级 DSH 版本；--latest [--yes] 强上 npm 最新版
-  update-gate         更新 gate 自身代码（gate/server.js）并重启
+  upgrade [--ref R]   整体升级 vpssh（默认最新发布版；失败自动回到升级前）
   ownshost [on|off|status]  设置页可用性补丁（公网域名下解除"设置不可用"）
-  rollback            切回上一 DSH 版本（秒级，不依赖网络）
+  rollback            回到上一次升级之前（恢复快照）
   reset-admin [--yes] 删除管理员与向导锁，重新走初始设置（换发令牌）
   setup-url          打印初始设置链接（含一次性令牌）
   backup              备份数据到 /opt/vpssh/backups/（保留 3 份）
   selfcheck           手动触发回归自检探针
+  uninstall [--delete-data]  卸载 vpssh（先备份；默认保留数据）
   repair [--public]   网页打不开时救援：拉起服务、重写站点、放行端口（--public 关掉「仅我的设备」）
 EOF
 }
@@ -1138,7 +1093,6 @@ case "${1:-}" in
 status) cmd_status ;;
 restart) cmd_restart ;;
 upgrade) shift; cmd_upgrade "$@" ;;
-update-gate) cmd_update_gate ;;
 ownshost) shift; cmd_ownshost "$@" ;;
 rollback) cmd_rollback ;;
 reset-admin) shift; cmd_reset_admin "$@" ;;
@@ -1146,6 +1100,8 @@ setup-url) cmd_setup_url ;;
 backup) cmd_backup ;;
 selfcheck) cmd_selfcheck ;;
 repair) shift; cmd_repair "$@" ;;
+uninstall) shift; cmd_uninstall "$@" ;;
+uninstall-run) cmd_uninstall_run ;;
 install-units) cmd_install_units ;;
 upgrade-run) cmd_upgrade_run ;;
 vpn) shift; cmd_vpn "$@" ;;

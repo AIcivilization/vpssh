@@ -5,11 +5,11 @@
 #   curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/uninstall.sh \
 #     | sudo bash -s -- --yes
 #   # 或在仓库克隆目录内：
-#   sudo bash uninstall.sh [--yes] [--keep-data] [--purge-caddy]
+#   sudo bash uninstall.sh [--yes] [--delete-data] [--purge-caddy]
 #
 # 目标 OS：Ubuntu 22.04+ / Debian 12+
 #
-# 顺序：备份 → 停服务 → 移除 unit 与安装目录 → 移除 Caddy 站点块 → 清 DSH 数据目录。
+# 顺序：备份 → 停服务 → 移除 unit 与安装目录 → 移除 Caddy 站点块 → 本机账号 → 数据（默认保留）。
 # 任何一步失败都会就地停下（set -euo pipefail），不做半吊子清理。
 
 set -euo pipefail
@@ -23,9 +23,12 @@ SERVICE="vpssh"
 UNIT_FILE="/etc/systemd/system/vpssh.service"
 CADDY_SITE_FILE="/etc/caddy/vpssh-site.conf"
 CADDYFILE="/etc/caddy/Caddyfile"
+KEYS_USER="vpssh-keys"
+KEY_DIR="/var/lib/vpssh-keys"
+LOCAL_ADMIN="vpssh-admin"
 
 ASSUME_YES=0
-KEEP_DATA=0
+KEEP_DATA=1 # 默认保留数据（机器清单、对话、钥匙）；--delete-data 才删
 PURGE_CADDY=0
 
 log()  { printf '\033[1;32m[uninstall]\033[0m %s\n' "$*"; }
@@ -35,9 +38,9 @@ die()  { printf '\033[1;31m[uninstall]\033[0m %s\n' "$*" >&2; exit 1; }
 usage() {
 	cat <<'EOF'
 vpssh 卸载脚本
-用法: sudo bash uninstall.sh [--yes] [--keep-data] [--purge-caddy]
+用法: sudo bash uninstall.sh [--yes] [--delete-data] [--purge-caddy]
   --yes          跳过交互确认（脚本化调用时用）
-  --keep-data    保留 DSH 数据目录 /home/vpssh/.dsh 与系统用户 vpssh
+  --delete-data  连数据一起删：对话与机器清单（/home/vpssh）、钥匙（/var/lib/vpssh-keys）、系统用户。默认保留
   --purge-caddy  连 Caddy 软件包与 apt 源一起移除（默认只删本产品的站点块）
 EOF
 }
@@ -45,6 +48,7 @@ EOF
 while [[ $# -gt 0 ]]; do
 	case "$1" in
 	--yes) ASSUME_YES=1; shift ;;
+	--delete-data) KEEP_DATA=0; shift ;;
 	--keep-data) KEEP_DATA=1; shift ;;
 	--purge-caddy) PURGE_CADDY=1; shift ;;
 	-h | --help) usage; exit 0 ;;
@@ -66,8 +70,9 @@ if [[ $ASSUME_YES -eq 0 ]]; then
   - 命令        /usr/local/bin/vpssh
   - Caddy 站点  $CADDY_SITE_FILE$([ $PURGE_CADDY -eq 1 ] && echo "（并移除 caddy 软件包）")
   - 隧道        /etc/wireguard/wg0.conf（仅当它是 vpssh vpn 创建的；你自己的 wg0 不动）
-  - DSH 数据    $DSH_HOME_DIR$([ $KEEP_DATA -eq 1 ] && echo "（--keep-data：保留）" || echo "（删除）")
-  - 系统用户    $DSH_USER$([ $KEEP_DATA -eq 1 ] && echo "（--keep-data：保留）" || echo "（保留，重装可复用）")
+  - 钥匙保管    vpssh-keyd 服务
+  - 本机账号    $LOCAL_ADMIN（vpssh 用它管理这台机器，连同它的免密 sudo 一起删）
+  - 数据        /home/vpssh、$KEY_DIR、系统用户 $DSH_USER / $KEYS_USER$([ $KEEP_DATA -eq 1 ] && echo "（保留；要删加 --delete-data）" || echo "（删除）")
 
 删除前会先打包备份到 /root/vpssh-uninstall-<时间戳>.tar.gz
 EOF
@@ -87,7 +92,9 @@ targets=()
 # 注意：set -e 下不能写 `[[ -d x ]] && arr+=(x)`——条件为假时整条列表返回非 0 会直接退出
 if [[ -d "$INSTALL_ROOT/state" ]]; then targets+=("${INSTALL_ROOT#/}/state"); fi
 if [[ -d "$INSTALL_ROOT/backups" ]]; then targets+=("${INSTALL_ROOT#/}/backups"); fi
-if [[ -d "$DSH_HOME_DIR" ]]; then targets+=("${DSH_HOME_DIR#/}"); fi
+if [[ -d /home/vpssh ]]; then targets+=("home/vpssh"); fi
+# 钥匙也进备份（备份文件只有 root 能读）：恢复后不用把钥匙重新放到每台机器上
+if [[ -d "$KEY_DIR" ]]; then targets+=("${KEY_DIR#/}"); fi
 # Caddyfile 下一步会被改写，先连同站点块一起进备份
 if [[ -f "$CADDYFILE" ]]; then targets+=("${CADDYFILE#/}"); fi
 if [[ -f "$CADDY_SITE_FILE" ]]; then targets+=("${CADDY_SITE_FILE#/}"); fi
@@ -108,9 +115,12 @@ log "步骤 2/6：停止并移除 $SERVICE"
 systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_FILE"
+systemctl disable --now vpssh-keyd 2>/dev/null || true
+rm -f /etc/systemd/system/vpssh-keyd.service
 # 浏览器一键升级单元
-systemctl disable --now vpssh-upgrade.path 2>/dev/null || true
-rm -f /etc/systemd/system/vpssh-upgrade.path /etc/systemd/system/vpssh-upgrade.service
+systemctl disable --now vpssh-upgrade.path vpssh-uninstall.path 2>/dev/null || true
+rm -f /etc/systemd/system/vpssh-upgrade.path /etc/systemd/system/vpssh-upgrade.service \
+	/etc/systemd/system/vpssh-uninstall.path /etc/systemd/system/vpssh-uninstall.service
 systemctl daemon-reload 2>/dev/null || true
 systemctl reset-failed "$SERVICE" 2>/dev/null || true
 
@@ -178,14 +188,28 @@ fi
 
 ## endregion
 
-## region: 步骤 6：DSH 数据
+## region: 步骤 6：本机账号与数据
 
-log "步骤 6/6：处理 DSH 数据目录"
+log "步骤 6/6：本机账号与数据"
+if id "$LOCAL_ADMIN" >/dev/null 2>&1; then
+	# vpssh 刚经 SSH 登录过它：登录会话（含 systemd --user）还在时 userdel 会拒绝，先结束再删
+	loginctl terminate-user "$LOCAL_ADMIN" 2>/dev/null || true
+	pkill -KILL -u "$LOCAL_ADMIN" 2>/dev/null || true
+	sleep 1
+	if userdel -f -r "$LOCAL_ADMIN" 2>/dev/null || ! id "$LOCAL_ADMIN" >/dev/null 2>&1; then
+		log "已删除本机账号 $LOCAL_ADMIN"
+	else
+		warn "删除账号 $LOCAL_ADMIN 失败，请手工处理：sudo userdel -f -r $LOCAL_ADMIN"
+	fi
+fi
+rm -f /etc/sudoers.d/vpssh-admin
 if [[ $KEEP_DATA -eq 1 ]]; then
-	log "保留 ${DSH_HOME_DIR}（--keep-data）"
+	log "保留数据：/home/vpssh、$KEY_DIR（要删：sudo bash uninstall.sh --delete-data）"
 else
-	rm -rf "$DSH_HOME_DIR"
-	log "已删除 $DSH_HOME_DIR"
+	rm -rf /home/vpssh "$KEY_DIR"
+	userdel "$DSH_USER" 2>/dev/null || true
+	userdel "$KEYS_USER" 2>/dev/null || true
+	log "已删除数据与系统用户 $DSH_USER、$KEYS_USER"
 fi
 
 ## endregion
@@ -194,6 +218,11 @@ cat <<EOF
 
 卸载完成。
   备份：${BACKUP:-（无）}
-重装：
-  curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash -s -- --domain <你的域名> --mirror cn
+
+被管的机器上还留着 vpssh 的公钥（authorized_keys 里结尾是 vpssh@... 的那一行）。
+不打算再用 vpssh 了，就到各台机器上删掉那一行。
+
+从备份恢复（先放回数据、再安装：安装会沿用原来的账号和钥匙）：
+  1. sudo tar -xzf ${BACKUP:-<备份文件>} -C /
+  2. curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
 EOF

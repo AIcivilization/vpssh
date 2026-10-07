@@ -378,47 +378,6 @@ export function registerRoutes(ctx, deps = {}) {
     return { bindings: await allSessionBindings(env) }
   })
 
-  // —— 卸载 ——
-  // 模块先加载好再开始：卸载最后一步会把插件文件从磁盘上删掉，之后再 import 会失败
-  route('uninstall/preview', async () => {
-    const { uninstallPreview } = await import('./uninstall.js')
-    return uninstallPreview({ env, desktop: deps.desktop, pluginManager: deps.pluginManager })
-  })
-
-  route('uninstall/run', async ({ choices }) => {
-    const { runUninstall } = await import('./uninstall.js')
-    // 结果里的 ok 是「每一步都成功」，不能直接铺开：会盖掉回复本身的 ok，有一步没成功界面就只看到
-    // 「请求失败（HTTP 200）」，每一步的结果都看不到（用户实测）
-    const { ok: allOk, ...result } = await runUninstall({ choices: choices ?? {}, env, runner, desktop: deps.desktop, pluginManager: deps.pluginManager })
-    return { ...result, allOk }
-  }, { write: true })
-
-  // 卸载的最后一步（DSH 官方桌面版等）：交给 DSH 的插件管理器移除插件本身。它会当场卸下插件，
-  // 所以单独一个请求、放在其他各项之后；回复写在 removed 里（外层的 ok 只表示请求成功）
-  route('uninstall/remove-plugin', async () => {
-    const { removePluginViaManager } = await import('./uninstall.js')
-    const { ok: removed, text } = await removePluginViaManager({ pluginManager: deps.pluginManager })
-    appendAudit({ source: 'panel', action: 'uninstall_plugin', note: text, status: removed ? 'done' : 'failed' }, env).catch(() => {})
-    return { removed, text }
-  }, { write: true })
-
-  // —— 插件自己的更新 ——
-  // check：GitHub 上最新发布 + npm 上能装的版本（存本机 6 小时，force 时马上重查）；
-  // run：交给 DSH 的插件管理器装那个版本，装好重启 DSH 生效
-  route('update/check', async ({ force }) => {
-    const { checkUpdate } = await import('./update.js')
-    const info = await checkUpdate({ env, force: force === true, ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}) })
-    return { ...info, canInstall: typeof deps.pluginManager?.installBundle === 'function', canRestart: Boolean(deps.desktop?.actions) }
-  })
-  route('update/run', async ({ version }) => {
-    const { runUpdate } = await import('./update.js')
-    const result = await runUpdate({ pluginManager: deps.pluginManager, version })
-    appendAudit({ source: 'panel', action: 'update_plugin', note: `v${version}${result.ok ? '' : `：${result.code}`}`, status: result.ok ? 'done' : 'failed' }, env).catch(() => {})
-    // 用 updated 而不是 ok：接口外层的 ok 表示「请求成功」，没装成也要把原因和命令交给界面
-    const { ok: updated, ...rest } = result
-    return { updated, ...rest, canRestart: Boolean(deps.desktop?.actions) }
-  }, { write: true })
-
   // DSH Desktop 的 desktopActions：卸载完一键重启
   route('desktop/restart', async () => {
     const actions = deps.desktop?.actions

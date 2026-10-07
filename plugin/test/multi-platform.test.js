@@ -10,7 +10,6 @@ import { keyComment, knownFingerprints, sshCopyIdCommand } from '../lib/onboardi
 import { loadRecipes } from '../lib/recipes.js'
 import { runProcess } from '../lib/spawn.js'
 import { baseOptions, canMultiplex, classifySshFailure, noSshClientHint, sshArgs, sshCloseMaster } from '../lib/ssh.js'
-import { runUninstall } from '../lib/uninstall.js'
 
 // —— Windows ——
 
@@ -139,35 +138,4 @@ test('另一台电脑的改动任务还在跑：排队提示里写明是哪台�
   assert.equal(second.lockOwner.device, deviceName())
   assert.match(second.hint, new RegExp(`由电脑 ${deviceName()} 发起`))
   assert.match(second.hint, /另一台电脑/)
-})
-
-test('卸载时服务器上还有别的电脑的插件钥匙：共用的 ~/.cache/vpssh 保留，只撤销自己那一行', async () => {
-  const { home, env, runner } = await sandbox()
-  const p = paths(env)
-  await writeHosts({ current: 'hk', hosts: { hk: {} } }, env)
-  const MINE = 'AAAAC3NzaC1lZDI1NTE5AAAAIMineMineMineMineMineMineMineMineMineMineMine1'
-  const WIN = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIWinWinWinWinWinWinWinWinWinWinWinWinWin vpssh@DESKTOP-AB12CD'
-  await mkdir(p.sshDir, { recursive: true })
-  await writeFile(`${p.defaultKey}.pub`, `ssh-ed25519 ${MINE} vpssh@mac\n`)
-  const ak = join(home, '.ssh', 'authorized_keys')
-  await writeFile(ak, `${WIN}\nssh-ed25519 ${MINE} vpssh@mac\n`)
-  const cache = join(home, '.cache', 'vpssh', 'trash')
-  await mkdir(cache, { recursive: true })
-
-  const res = await runUninstall({ env, runner, choices: { remoteCache: true, revokeKey: true } })
-  assert.equal(res.ok, true, JSON.stringify(res.steps))
-  assert.match(res.steps[0].text, /别的电脑上的插件也在管这台服务器/)
-  await readdir(cache) // 还在
-  assert.equal(await readFile(ak, 'utf8'), `${WIN}\n`, 'Windows 那台的钥匙不能动')
-
-  // 只剩自己时照常清掉
-  const alone = await sandbox()
-  await writeHosts({ current: 'hk', hosts: { hk: {} } }, alone.env)
-  const ap = paths(alone.env)
-  await mkdir(ap.sshDir, { recursive: true })
-  await writeFile(`${ap.defaultKey}.pub`, `ssh-ed25519 ${MINE} vpssh@mac\n`)
-  await writeFile(join(alone.home, '.ssh', 'authorized_keys'), `ssh-ed25519 ${MINE} vpssh@mac\nssh-rsa AAAAB3Nzaother me@laptop\n`)
-  await mkdir(join(alone.home, '.cache', 'vpssh', 'tasks'), { recursive: true })
-  const cleaned = await runUninstall({ env: alone.env, runner: alone.runner, choices: { remoteCache: true } })
-  assert.match(cleaned.steps[0].text, /已删除 ~\/\.cache\/vpssh/)
 })

@@ -70,22 +70,6 @@ test('终端注册到一半失败：已经注册的实时连接也撤掉', async
   assert.equal(ws.upgrades.size, 0, '不能留下半截的终端连接入口')
 })
 
-test('卸载有一步没成功：回复本身仍是成功，界面拿得到每一步的结果（曾显示「请求失败（HTTP 200）」）', async () => {
-  const ws = fakeServer()
-  const e = await env()
-  const reg = registerRoutes({ webServer: ws }, { env: e })
-  const req = Readable.from([Buffer.from(JSON.stringify({ choices: { plugin: true } }))])
-  req.method = 'POST'
-  req.headers = { 'content-type': 'application/json', host: '127.0.0.1:3000', 'x-vpssh-token': reg.token }
-  req.socket = { remoteAddress: '127.0.0.1' }
-  const out = {}
-  await ws.exact.get('/api-vpssh/uninstall/run')(req, { writeHead: (c) => { out.code = c }, end: (t) => { out.body = JSON.parse(t) } })
-  assert.equal(out.body.ok, true)
-  assert.equal(out.body.allOk, false, '普通 dsh 下没法直接移除插件：这一步算没成功')
-  assert.equal(out.body.steps[0].id, 'plugin')
-  assert.match(out.body.steps[0].text, /dsh plugin remove/)
-})
-
 test('诊断：写明正在运行的版本；磁盘上的版本没变时不提示重启', async () => {
   const d = await diagnostics(await env())
   assert.match(d.plugin, /^\d+\.\d+\.\d+/)
