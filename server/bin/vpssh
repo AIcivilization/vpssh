@@ -419,6 +419,13 @@ cmd_repair() {
 	elif [[ "$(vpn_env)" == "on" ]]; then
 		log "$(M "当前是「仅我的设备可访问」：没连 WireGuard 的设备打不开。要对公网开放：sudo vpssh repair --public" "Access is limited to your WireGuard devices. To open it to the internet again: sudo vpssh repair --public")"
 	fi
+	# 和别的网站共用 Caddy 时，主 Caddyfile 是别人的：对方重装时可能把 vpssh 加的那行 import 冲掉，这里补回来
+	if grep -q '"caddyShared": *true' "$ROOT/state/config.json" 2>/dev/null && [[ -f /etc/caddy/Caddyfile ]] \
+		&& ! grep -qxF "import /etc/caddy/vpssh-site.conf" /etc/caddy/Caddyfile; then
+		[[ -z "$(tail -c1 /etc/caddy/Caddyfile)" ]] || printf '\n' >>/etc/caddy/Caddyfile
+		printf '# vpssh：只加了下面这一行（卸载 vpssh 时会去掉）\nimport /etc/caddy/vpssh-site.conf\n' >>/etc/caddy/Caddyfile
+		log "$(M "Caddyfile 里 vpssh 的那行 import 不见了（同机别的网站重装过？），已补回" "vpssh's import line was missing from the Caddyfile (another site reinstalled?); added it back")"
+	fi
 	vpn_apply_site
 	log "$(M "Caddy 站点已按当前设置重写" "Rewrote the Caddy site from the current settings")"
 
