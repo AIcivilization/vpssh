@@ -24,7 +24,9 @@
       "preload.js",
       "lib/**",
       "ui/**",
-      "package.json"
+      "package.json",
+      "!**/node_modules/cpu-features/**",
+      "!**/node_modules/ssh2/lib/protocol/crypto/build/**"
     ],
     "directories": {
       "buildResources": "build",
@@ -50,8 +52,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "arm64"
+            "x64"
           ]
         }
       ],
@@ -61,7 +62,9 @@
       "oneClick": true,
       "perMachine": false,
       "shortcutName": "vpssh"
-    }
+    },
+    "publish": null,
+    "npmRebuild": false
   },
   "dependencies": {
     "ssh2": "^1.17.0"
