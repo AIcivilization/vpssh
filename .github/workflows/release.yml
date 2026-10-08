@@ -1,0 +1,59 @@
+# 发布一个 vpssh 版本时（GitHub Release 发布出去）：
+#   1. 把 server/install.sh 挂到这个 Release 上（附 SHA256），一键安装命令
+#      https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh 永远是最新发布版
+#   2. 把 cli/（npx vpssh：在自己电脑上装到 VPS）发到 npm。需要仓库 Secret：NPM_TOKEN
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要补发的标签，比如 v0.1.11"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      # 版本号对不上就不发：manifest.json、cli/package.json、标签三者一致
+      - name: 校验版本
+        run: |
+          tag="${TAG#v}"
+          m=$(node -p "require('./manifest.json').vpssh")
+          c=$(node -p "require('./cli/package.json').version")
+          echo "tag=$tag manifest=$m cli=$c"
+          [[ "$m" == "$tag" && "$c" == "$tag" ]] || { echo "版本不一致，拒绝发布" >&2; exit 1; }
+
+      - name: 安装脚本挂到 Release
+        run: |
+          bash -n server/install.sh
+          cp server/install.sh install.sh
+          sha256sum install.sh > install.sh.sha256
+          gh release upload "$TAG" install.sh install.sh.sha256 --clobber
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: 发布 npx vpssh
+        working-directory: cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          node --test test/*.test.js
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then echo "::warning::没有 NPM_TOKEN，跳过 npm 发布"; exit 0; fi
+          if npm view "vpssh@$(node -p "require('./package.json').version")" version >/dev/null 2>&1; then echo "已发布过，跳过"; exit 0; fi
+          npm publish --access public
