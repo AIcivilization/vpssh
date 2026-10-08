@@ -13,10 +13,20 @@ The AI runs on your own model key (DeepSeek, OpenAI, Anthropic and others). Ther
 
 ## Install
 
-You need a VPS with **Ubuntu 22.04+ or Debian 12+** (root access) and ports 80 and 443 open. Over SSH, run:
+You need a VPS with **Ubuntu 22.04+ or Debian 12+** (root, or an account that can sudo) and ports 80 and 443 open.
+
+**From your own computer** (recommended; needs [Node.js](https://nodejs.org) 18+ there):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
+npx vpssh install root@your-server-ip
+```
+
+It SSHes in for you, installs, and opens the browser on first-time setup. Your computer's ssh asks for the password or key itself; vpssh never sees them. Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`, `--mirror cn` and `--port` below work here too. Later: `npx vpssh upgrade root@IP`, `npx vpssh uninstall root@IP`.
+
+**Or, logged in to the server over SSH** (installs the latest release):
+
+```bash
+curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh | sudo bash
 ```
 
 - With a domain: point its A record at the machine first and add `-s -- --domain vps.example.com`; HTTPS certificates are issued automatically.

@@ -13,10 +13,20 @@ AI 用你自己填的模型 key（DeepSeek、OpenAI、Anthropic 等都行），�
 
 ## 安装
 
-要一台 **Ubuntu 22.04+ 或 Debian 12+** 的 VPS（root 权限），放行 80、443 端口。SSH 登录后执行：
+要一台 **Ubuntu 22.04+ 或 Debian 12+** 的 VPS（root 或能 sudo 的账号），放行 80、443 端口。
+
+**从自己电脑上装**（推荐，电脑上有 [Node.js](https://nodejs.org) 18+ 就行）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
+npx vpssh install root@你的服务器IP
+```
+
+它会替你 SSH 上去装好，装完自动打开浏览器进初始设置。密码或私钥由你电脑上的 ssh 自己问，不经过 vpssh。私钥用 `-i ~/.ssh/id_ed25519`，SSH 端口用 `-p 2222`；下面的 `--domain`、`--mirror cn`、`--port` 也都能加在后面。以后升级、卸载：`npx vpssh upgrade root@IP`、`npx vpssh uninstall root@IP`。
+
+**或者 SSH 登录服务器后执行**（装的是最新发布版）：
+
+```bash
+curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh | sudo bash
 ```
 
 - 有域名：先把 A 记录解析到这台机器，加上 `-s -- --domain vps.example.com`，自动签发 HTTPS 证书。

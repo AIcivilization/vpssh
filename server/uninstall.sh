@@ -265,7 +265,7 @@ if [[ "$(M zh en)" == zh ]]; then
 
 从备份恢复（先放回数据、再安装：安装会沿用原来的账号和钥匙）：
   1. sudo tar -xzf ${BACKUP:-<备份文件>} -C /
-  2. curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
+  2. curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh | sudo bash
 EOF
 else
 	cat <<EOF
@@ -278,6 +278,6 @@ If you are done with vpssh, delete that line on each machine.
 
 To restore from the backup (data first, then install, so the account and key carry over):
   1. sudo tar -xzf ${BACKUP:-<backup file>} -C /
-  2. curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash
+  2. curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh | sudo bash
 EOF
 fi

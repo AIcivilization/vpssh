@@ -3,6 +3,6 @@
   "private": true,
   "description": "vpssh 仓库根：plugin/ 是 DSH 插件（自己的 package.json），server/ 是安装脚本、网关、keyd",
   "scripts": {
-    "test": "node --test server/test/*.test.js && npm --prefix plugin test"
+    "test": "node --test server/test/*.test.js cli/test/*.test.js && npm --prefix plugin test"
   }
 }

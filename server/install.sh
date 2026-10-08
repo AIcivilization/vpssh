@@ -2,15 +2,17 @@
 # vpssh 一键安装脚本
 #
 # 用法：
-#   curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh \
+#   curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh \
 #     | sudo bash -s -- --domain vps.example.com
+#   # 或在自己电脑上（经 SSH 替你执行上面这条）：npx vpssh install root@服务器IP
 #   # 或在仓库克隆目录内：
 #   sudo bash server/install.sh --domain vps.example.com [--mirror cn]
 #
 # 目标 OS：Ubuntu 22.04+ / Debian 12+（裸机，无 Docker）
 #
 # 装什么：Node 22 → DSH（npm 原样、钉住版本）→ vpssh 插件（本仓库 plugin/）→ 登录网关 → Caddy → systemd。
-# 仓库文件：在克隆目录内运行时用本地文件；curl 管道模式先把整个仓库（VPSSH_REF 指定的分支或标签）下载下来再装。
+# 仓库文件：在克隆目录内运行时用本地文件；curl 管道模式先把整个仓库下载下来，交给其中的 install.sh 去装。
+# 下载哪个版本：默认 GitHub 上最新的发布版（不是 main 分支）；VPSSH_REF=<分支或标签> 可以指定。
 
 # -E：出错提示（trap ERR）在函数里也生效；没有它，函数里的命令失败时脚本会一声不响地退出
 set -Eeuo pipefail
@@ -43,8 +45,10 @@ PORT_FORCED=0 # 用 --port 自己指定过：域名、IP 都照它；否则域�
 # 和别的产品共用一个 Caddy（主 Caddyfile 是别人的，只加一行 import）
 CADDY_SHARED=0
 CADDY_SITE=/etc/caddy/vpssh-site.conf
-# 仓库来源：curl 管道模式下载这个分支或标签的整个仓库
-REPO_TARBALL="${VPSSH_TARBALL:-https://codeload.github.com/AIcivilization/vpssh/tar.gz/${VPSSH_REF:-main}}"
+# 仓库来源：curl 管道模式下载这个分支或标签的整个仓库；latest = 最新发布版（fetch_repo 里查）
+REPO_SLUG="AIcivilization/vpssh"
+VPSSH_REF="${VPSSH_REF:-latest}"
+ORIG_ARGS=("$@") # 交给下载下来的 install.sh 时原样带上
 
 DOMAIN=""
 MIRROR=""
@@ -109,13 +113,22 @@ fetch_repo() {
 		return 0
 	fi
 	command -v curl >/dev/null 2>&1 || { apt-get update -y >/dev/null; apt-get install -y curl ca-certificates >/dev/null; }
-	local tmp
+	local tmp ref="$VPSSH_REF" tarball="${VPSSH_TARBALL:-}"
+	if [[ -z "$tarball" ]]; then
+		if [[ "$ref" == latest ]]; then
+			ref=$(curl -fsSL --max-time 15 "https://api.github.com/repos/$REPO_SLUG/releases/latest" 2>/dev/null \
+				| sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1 || true)
+			[[ -n "$ref" ]] || die "$(M "查不到 vpssh 的最新发布版（网络不通，或 GitHub 限流）。稍后再试，或指定版本：VPSSH_REF=main" "Could not look up the latest vpssh release (no network, or GitHub rate limit). Try again later, or pick one: VPSSH_REF=main")"
+		fi
+		tarball="https://codeload.github.com/$REPO_SLUG/tar.gz/$ref"
+	fi
 	tmp=$(mktemp -d /tmp/vpssh-src.XXXXXX)
-	log "$(M "下载 vpssh：${REPO_TARBALL}" "Downloading vpssh: ${REPO_TARBALL}")"
-	curl -fsSL --retry 2 "$REPO_TARBALL" | tar -xz -C "$tmp" --strip-components=1 \
-		|| die "$(M "下载 vpssh 失败：${REPO_TARBALL}" "Could not download vpssh: ${REPO_TARBALL}")"
+	log "$(M "下载 vpssh（${ref}）：${tarball}" "Downloading vpssh (${ref}): ${tarball}")"
+	curl -fsSL --retry 2 "$tarball" | tar -xz -C "$tmp" --strip-components=1 \
+		|| die "$(M "下载 vpssh 失败：${tarball}" "Could not download vpssh: ${tarball}")"
 	[[ -f "$tmp/server/gate/server.js" && -f "$tmp/plugin/package.json" ]] || die "$(M "下载的 vpssh 不完整" "The downloaded vpssh is incomplete")"
-	REPO_DIR="$tmp"
+	# 交给这个版本自己的 install.sh：脚本和它要装的文件永远是同一版本
+	exec bash "$tmp/server/install.sh" "${ORIG_ARGS[@]}"
 }
 
 # DSH 版本与冻结点以仓库根目录的 manifest.json 为准（上面的常量只是读不到时的兜底）
@@ -195,6 +208,16 @@ step1_prechecks() {
 }
 
 port_busy() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
+# 主 Caddyfile 是不是别的产品的（比如同机的 dsh-vps）。不算别人的：没有、vpssh 自己的、
+# Caddy 装好时自带的样例（/usr/share/caddy）、vpssh 卸载时留下的空壳（卸载后 Caddy 还开着 80，实测）
+caddy_has_other_site() {
+	local main=/etc/caddy/Caddyfile
+	[[ -f "$main" ]] || return 1
+	grep -q "vpssh 主 Caddyfile" "$main" && return 1
+	grep -q "/usr/share/caddy" "$main" && return 1
+	grep -q "已被 vpssh 卸载脚本重置" "$main" && return 1
+	return 0
+}
 # 占着端口的程序名（root 才看得到）；没人占返回空
 port_owner() { ss -ltnpH "sport = :$1" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | sed 's/users:(("//; s/"$//'; }
 
@@ -230,6 +253,11 @@ choose_public_port() {
 			die "$(M "端口 $p 被 ${owner:-别的程序} 占用。vpssh 现在只能和 Caddy 共用 80/443（比如同机装着 dsh-vps）；可以先停掉它，或者换一台机器" "Port $p is used by ${owner:-another program}. vpssh can currently share 80/443 only with Caddy (e.g. dsh-vps on the same machine); stop it first, or use another machine")"
 		fi
 	done
+	# 占着的是 Caddy，但上面没有别的网站（比如 vpssh 卸载后留下的 Caddy）：照常用 443
+	if ! caddy_has_other_site; then
+		PUBLIC_PORT=443
+		return 0
+	fi
 	if [[ -n "$DOMAIN" ]]; then
 		PUBLIC_PORT=443
 		log "$(M "80/443 由同机的 Caddy 在用（别的网站）；vpssh 有域名，照样用 443，Caddy 按域名区分" "Caddy on this machine already serves 80/443 for another site; vpssh has a domain, so it shares 443 (Caddy tells them apart by name)")"
@@ -534,7 +562,7 @@ step7_caddy() {
 	#   - 是别的产品的（比如同机的 dsh-vps）：一字不改，只在末尾加一行 import，两边共用这个 Caddy
 	local main=/etc/caddy/Caddyfile backup=""
 	fetch_file caddy/Caddyfile.template /tmp/Caddyfile.vpssh
-	if [[ -f "$main" ]] && ! grep -q "vpssh 主 Caddyfile" "$main" && ! grep -q "/usr/share/caddy" "$main"; then
+	if caddy_has_other_site; then
 		CADDY_SHARED=1
 		if ! grep -qxF "import $CADDY_SITE" "$main"; then
 			backup="$main.bak.$(date +%s)"

@@ -1,0 +1,18 @@
+{
+  "name": "vpssh",
+  "version": "0.1.11",
+  "description": "Install vpssh (AI-driven VPS management and SSH tool) on your VPS from your own computer. · 在自己电脑上把 vpssh 装到 VPS 上。",
+  "keywords": ["vps", "ssh", "ai", "installer", "server-management", "self-hosted"],
+  "license": "MIT",
+  "author": "AIcivilization",
+  "homepage": "https://github.com/AIcivilization/vpssh#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AIcivilization/vpssh.git",
+    "directory": "cli"
+  },
+  "bin": { "vpssh": "bin/vpssh.js" },
+  "files": ["bin/"],
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/*.test.js" }
+}

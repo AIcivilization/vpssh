@@ -1432,7 +1432,7 @@ window.__ModuleLoader__.load({
       const restore = h('div', { style: { ...S.muted, fontSize: 12, marginTop: 6, lineHeight: 1.8 } },
         h('div', null, L('备份在服务器的 /root/vpssh-uninstall-<时间>.tar.gz。从备份恢复（先放回数据、再安装）：', 'The backup is at /root/vpssh-uninstall-<time>.tar.gz on the server. To restore (data first, then install):')),
         h('div', { style: S.mono }, 'sudo tar -xzf /root/vpssh-uninstall-<…>.tar.gz -C /'),
-        h('div', { style: S.mono }, 'curl -fsSL https://raw.githubusercontent.com/AIcivilization/vpssh/main/server/install.sh | sudo bash'))
+        h('div', { style: S.mono }, 'curl -fsSL https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh | sudo bash'))
       if (started) {
         return h('div', { style: S.card },
           h('div', { style: { ...S.h2, marginTop: 0 } }, L('正在卸载', 'Uninstalling')),
