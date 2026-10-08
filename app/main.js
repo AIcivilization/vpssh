@@ -15,6 +15,8 @@ const { verifyWithRoot, chainFromElectron } = require("./lib/certs.js");
 const PARTITION = "persist:vpssh";
 const UI_FILE = path.join(__dirname, "ui", "index.html");
 
+// VPSSH_USER_DATA：开发测试（截图、自检）用一个单独的数据目录，不碰这台电脑上真正的服务器列表和登录状态
+if (process.env.VPSSH_USER_DATA) app.setPath("userData", process.env.VPSSH_USER_DATA);
 if (!app.requestSingleInstanceLock()) app.quit();
 
 let win = null;

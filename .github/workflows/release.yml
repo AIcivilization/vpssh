@@ -1,6 +1,7 @@
 # 发布一个 vpssh 版本时（GitHub Release 发布出去）：
-#   1. 把 server/install.sh 挂到这个 Release 上（附 SHA256），一键安装命令
-#      https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh 永远是最新发布版
+#   1. 服务器版：server/install.sh（一键安装命令
+#      https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh 永远是最新发布版）
+#      和完整安装包 vpssh-<版本>-server-linux.tar.gz（解开后 sudo bash vpssh-<版本>/server/install.sh），都附 SHA256
 #   2. 把 cli/（npx vpssh：在自己电脑上装到 VPS）发到 npm。需要仓库 Secret：NPM_TOKEN
 #   3. 桌面版 app/：Mac（dmg，Apple 芯片 + Intel）和 Windows（exe）各在自己的系统上打包、启动自检，挂到 Release
 name: Release
@@ -41,12 +42,15 @@ jobs:
           echo "tag=$tag manifest=$m cli=$c app=$a"
           [[ "$m" == "$tag" && "$c" == "$tag" && "$a" == "$tag" ]] || { echo "版本不一致，拒绝发布" >&2; exit 1; }
 
-      - name: 安装脚本挂到 Release
+      - name: 服务器版挂到 Release（安装脚本 + 完整安装包）
         run: |
           bash -n server/install.sh
+          v="${TAG#v}"
           cp server/install.sh install.sh
+          git archive --format=tar.gz --prefix="vpssh-$v/" -o "vpssh-$v-server-linux.tar.gz" HEAD manifest.json LICENSE README.md README.en.md server plugin
           sha256sum install.sh > install.sh.sha256
-          gh release upload "$TAG" install.sh install.sh.sha256 --clobber
+          sha256sum "vpssh-$v-server-linux.tar.gz" > "vpssh-$v-server-linux.tar.gz.sha256"
+          gh release upload "$TAG" install.sh install.sh.sha256 "vpssh-$v-server-linux.tar.gz" "vpssh-$v-server-linux.tar.gz.sha256" --clobber
 
       - uses: actions/setup-node@v4
         with:
