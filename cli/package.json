@@ -1,6 +1,6 @@
 {
   "name": "vpssh",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Install vpssh (AI-driven VPS management and SSH tool) on your VPS from your own computer. · 在自己电脑上把 vpssh 装到 VPS 上。",
   "keywords": ["vps", "ssh", "ai", "installer", "server-management", "self-hosted"],
   "license": "MIT",

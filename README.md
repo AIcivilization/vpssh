@@ -15,7 +15,11 @@ AI 用你自己填的模型 key（DeepSeek、OpenAI、Anthropic 等都行），�
 
 要一台 **Ubuntu 22.04+ 或 Debian 12+** 的 VPS（root 或能 sudo 的账号），放行 80、443 端口。
 
-**从自己电脑上装**（推荐，电脑上有 [Node.js](https://nodejs.org) 18+ 就行）：
+**桌面版（推荐）**：在 [Releases](https://github.com/AIcivilization/vpssh/releases/latest) 下载 Mac（`.dmg`，Apple 芯片选 arm64、Intel 选 x64）或 Windows（`.exe`）版，打开后填服务器 IP、SSH 端口、用户名、密码（有域名再填域名），点「安装到这台 VPS」。装好后就在这个窗口里完成初始设置、登录、使用 vpssh；菜单「服务器」可以切换多台。密码只用这一次，不保存。用 IP 访问时桌面版只信任这台服务器自己的证书，不会弹「不安全」。
+
+> 桌面版暂时没有苹果 / 微软的开发者签名：Mac 第一次打开如果提示无法验证，到「系统设置 → 隐私与安全性」点「仍要打开」；Windows 提示「已保护你的电脑」时点「更多信息 → 仍要运行」。
+
+**从自己电脑上用命令装**（电脑上有 [Node.js](https://nodejs.org) 18+ 就行）：
 
 ```bash
 npx vpssh install root@你的服务器IP
@@ -67,6 +71,8 @@ sudo vpssh uninstall    # 卸载：先备份，默认保留数据（加 --delete
 |---|---|
 | `plugin/` | vpssh 的全部功能：机器、终端、文件、状态、AI 工具、品牌与布局 |
 | `server/` | 安装、登录网关、钥匙保管（keyd）、自动 HTTPS、升级、救援 |
+| `app/` | 桌面版（Mac、Windows）：填表经 SSH 安装，在独立窗口里使用 |
+| `cli/` | `npx vpssh`：在自己电脑上用命令安装 |
 
 AI 对话、确认、多模型、会话由 [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh) 提供：从 npm 原样安装，不复制、不修改它的代码，每个 vpssh 版本固定用一个测过的 DSH 版本（见 [manifest.json](manifest.json)）。
 

@@ -2,6 +2,7 @@
 #   1. 把 server/install.sh 挂到这个 Release 上（附 SHA256），一键安装命令
 #      https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh 永远是最新发布版
 #   2. 把 cli/（npx vpssh：在自己电脑上装到 VPS）发到 npm。需要仓库 Secret：NPM_TOKEN
+#   3. 桌面版 app/：Mac（dmg，Apple 芯片 + Intel）和 Windows（exe）各在自己的系统上打包、启动自检，挂到 Release
 name: Release
 
 on:
@@ -33,8 +34,9 @@ jobs:
           tag="${TAG#v}"
           m=$(node -p "require('./manifest.json').vpssh")
           c=$(node -p "require('./cli/package.json').version")
-          echo "tag=$tag manifest=$m cli=$c"
-          [[ "$m" == "$tag" && "$c" == "$tag" ]] || { echo "版本不一致，拒绝发布" >&2; exit 1; }
+          a=$(node -p "require('./app/package.json').version")
+          echo "tag=$tag manifest=$m cli=$c app=$a"
+          [[ "$m" == "$tag" && "$c" == "$tag" && "$a" == "$tag" ]] || { echo "版本不一致，拒绝发布" >&2; exit 1; }
 
       - name: 安装脚本挂到 Release
         run: |
@@ -57,3 +59,58 @@ jobs:
           if [[ -z "$NODE_AUTH_TOKEN" ]]; then echo "::warning::没有 NPM_TOKEN，跳过 npm 发布"; exit 0; fi
           if npm view "vpssh@$(node -p "require('./package.json').version")" version >/dev/null 2>&1; then echo "已发布过，跳过"; exit 0; fi
           npm publish --access public
+
+  desktop:
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 安装依赖、测试
+        run: |
+          npm ci
+          npm test
+
+      - name: 打包（Mac）
+        if: runner.os == 'macOS'
+        run: npx electron-builder --mac --publish never
+
+      - name: 打包（Windows）
+        if: runner.os == 'Windows'
+        run: npx electron-builder --win --x64 --publish never
+
+      # 打包好的应用真的启动一次：本地页面渲染出表单、SSH 模块能加载
+      - name: 启动自检（Mac）
+        if: runner.os == 'macOS'
+        run: dist/mac-arm64/vpssh.app/Contents/MacOS/vpssh --smoke-test
+
+      - name: 启动自检（Windows）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "dist\win-unpacked\vpssh.exe" -ArgumentList "--smoke-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "smoke test failed: $($p.ExitCode)" }
+          "SMOKE OK"
+
+      - name: 挂到 Release
+        run: |
+          ls dist
+          if [[ "$RUNNER_OS" == macOS ]]; then files=(dist/*.dmg); else files=(dist/*.exe); fi
+          gh release upload "$TAG" "${files[@]}" --clobber

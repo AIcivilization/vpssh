@@ -1,0 +1,73 @@
+{
+  "name": "vpssh-desktop",
+  "productName": "vpssh",
+  "version": "0.1.12",
+  "private": true,
+  "description": "vpssh desktop: install vpssh on your VPS and use it in its own window. · vpssh 桌面版：把 vpssh 装到 VPS 上，在独立窗口里使用。",
+  "license": "MIT",
+  "author": "AIcivilization",
+  "homepage": "https://github.com/AIcivilization/vpssh#readme",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.js",
+    "icon": "electron scripts/make-icon.js",
+    "dist:mac": "electron-builder --mac --publish never",
+    "dist:win": "electron-builder --win --publish never"
+  },
+  "build": {
+    "appId": "io.github.aicivilization.vpssh",
+    "productName": "vpssh",
+    "artifactName": "vpssh-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "preload.js",
+      "lib/**",
+      "ui/**",
+      "package.json"
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "build/icon.png",
+      "identity": "-",
+      "hardenedRuntime": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "vpssh"
+    }
+  },
+  "dependencies": {
+    "ssh2": "^1.17.0"
+  },
+  "devDependencies": {
+    "electron": "^44.7.0",
+    "electron-builder": "^26.15.3"
+  }
+}

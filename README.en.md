@@ -15,7 +15,11 @@ The AI runs on your own model key (DeepSeek, OpenAI, Anthropic and others). Ther
 
 You need a VPS with **Ubuntu 22.04+ or Debian 12+** (root, or an account that can sudo) and ports 80 and 443 open.
 
-**From your own computer** (recommended; needs [Node.js](https://nodejs.org) 18+ there):
+**Desktop app (recommended)**: download the Mac (`.dmg`: arm64 for Apple silicon, x64 for Intel) or Windows (`.exe`) build from [Releases](https://github.com/AIcivilization/vpssh/releases/latest). Enter the server IP, SSH port, user name and password (and a domain if you have one) and click "Install on this VPS". First-time setup, sign-in and vpssh itself then open in that same window; the Server menu switches between servers. The password is used once and never saved. Over an IP address the app trusts only that server's own certificate, so there is no "not secure" warning.
+
+> The desktop builds are not signed with an Apple / Microsoft developer certificate yet: if the Mac says it cannot verify the app the first time, click "Open Anyway" under System Settings → Privacy & Security; on Windows, choose "More info → Run anyway".
+
+**From your own computer, by command** (needs [Node.js](https://nodejs.org) 18+ there):
 
 ```bash
 npx vpssh install root@your-server-ip
@@ -67,6 +71,8 @@ sudo vpssh uninstall    # backs up first and keeps the data unless you add --del
 |---|---|
 | `plugin/` | All of vpssh's features: machines, terminal, files, status, AI tools, branding and layout |
 | `server/` | Install, sign-in gateway, key holder (keyd), automatic HTTPS, upgrades, rescue |
+| `app/` | Desktop app (Mac, Windows): install over SSH from a form, then use vpssh in its own window |
+| `cli/` | `npx vpssh`: install from your own computer by command |
 
 AI chat, confirmations, multiple models and sessions come from [DSH](https://www.npmjs.com/package/@deepseek-ai/dsh), installed unmodified from npm; each vpssh release pins one tested DSH version (see [manifest.json](manifest.json)).
 
