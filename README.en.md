@@ -70,7 +70,7 @@ Server: **Ubuntu 22.04+ or Debian 12+**, root or an account that can sudo, ports
 <img src="docs/screenshots/install.jpg" alt="Desktop app: install on a VPS" width="640" align="right">
 
 1. Download, install and open vpssh.
-2. Enter the server IP, SSH port, user name and password (or choose a key file); add a domain if you have one, and tick "Server in mainland China" if it is.
+2. Enter the server IP, SSH port and user name, and pick how to log in: password, private key (paste it or choose a .pem file), or This computer's key (generated in one click; add its public key to the server once and log in without a password from then on, which is what servers with password login turned off need); add a domain if you have one, and tick "Server in mainland China" if it is.
 3. Click "Install on this VPS" and watch the progress (usually 3–8 minutes; a dropped connection reconnects by itself).
 4. First-time setup opens right in the window: create the admin account, sign in, and you are in.
 

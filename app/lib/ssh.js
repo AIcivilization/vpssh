@@ -1,6 +1,9 @@
 // lib/ssh.js — SSH 登录与执行（ssh2，纯 JS，Mac / Windows 一样）
 //
-// 登录方式按顺序都试：选的私钥 / ~/.ssh 里常见的私钥 → ssh-agent → 密码 → 键盘交互（填密码）。
+// 登录方式（界面上三选一）：
+//   password：密码 + 键盘交互（填同一个密码）
+//   key     ：粘贴的私钥或选的私钥文件（有口令填口令）
+//   local   ：桌面版专用的本机密钥（lib/localkey.js）+ ~/.ssh 里常见的几把 + ssh-agent
 // 主机指纹：第一次连上记下来（和 ssh 的 known_hosts 一个意思），以后对不上就拒绝连接。
 "use strict";
 
@@ -25,10 +28,10 @@ function agentSocket() {
 	return process.env.SSH_AUTH_SOCK || "";
 }
 
-/** 能用的私钥（加了口令的私钥：有填密码就当口令试，没有就跳过） */
-function loadKeys(keyPath, password) {
+/** 能用的私钥（加了口令的私钥：有口令就试，没有就跳过）。extra：额外先试的私钥文件（本机密钥） */
+function loadKeys(keyPath, password, extra = []) {
 	const out = [];
-	for (const file of defaultKeys(keyPath)) {
+	for (const file of [...extra.filter((f) => f && fs.existsSync(f)), ...defaultKeys(keyPath)]) {
 		let buf;
 		try {
 			buf = fs.readFileSync(file);
@@ -55,12 +58,26 @@ function loadKeys(keyPath, password) {
  * 连上服务器。knownFingerprint：之前记下的主机指纹（没有就是第一次连，记下新的）。
  * 返回 { conn, fingerprint }
  */
-function connect({ host, port, user, password, keyPath }, { knownFingerprint = "", timeoutMs = 20000 } = {}) {
-	const keys = loadKeys(keyPath, password);
-	const methods = keys.map((k) => ({ type: "publickey", username: user, key: k.key, passphrase: k.passphrase }));
-	const agent = agentSocket();
-	if (agent && !keyPath) methods.push({ type: "agent", username: user, agent });
-	if (password) {
+function connect({ host, port, user, password, keyPath, auth, privateKey, passphrase, localKeyFile }, { knownFingerprint = "", timeoutMs = 20000 } = {}) {
+	const mode = auth || (keyPath ? "key" : password ? "password" : "local");
+	const methods = [];
+	if (mode === "key" && privateKey) {
+		let parsed = utils.parseKey(Buffer.from(privateKey), passphrase || undefined);
+		if (Array.isArray(parsed)) parsed = parsed[0];
+		if (parsed instanceof Error) {
+			const encrypted = /encrypted|passphrase/i.test(parsed.message);
+			return Promise.reject(encrypted
+				? new SshError("key_parse", passphrase ? "私钥口令不对" : "这把私钥设了口令：把口令填在「私钥口令」里", passphrase ? "Wrong key passphrase" : "This key has a passphrase: enter it under Key passphrase")
+				: new SshError("key_parse", "私钥读不出来：确认粘贴的是完整的私钥文件内容；PuTTY 的 .ppk 要先用 PuTTYgen 导出为 OpenSSH 格式", "Cannot read that key: paste the whole private key file; convert a PuTTY .ppk to OpenSSH format with PuTTYgen first"));
+		}
+		methods.push({ type: "publickey", username: user, key: Buffer.from(privateKey), passphrase: passphrase || undefined });
+	} else if (mode === "key" || mode === "local") {
+		const keys = mode === "key" ? loadKeys(keyPath, passphrase || password) : loadKeys("", "", [localKeyFile]);
+		for (const k of keys) methods.push({ type: "publickey", username: user, key: k.key, passphrase: k.passphrase });
+		const agent = agentSocket();
+		if (agent && mode === "local") methods.push({ type: "agent", username: user, agent });
+	}
+	if (mode === "password" && password) {
 		methods.push({ type: "password", username: user, password });
 		methods.push({
 			type: "keyboard-interactive",
@@ -69,18 +86,32 @@ function connect({ host, port, user, password, keyPath }, { knownFingerprint = "
 		});
 	}
 	if (!methods.length) {
-		return Promise.reject(new SshError("no_auth", "填上密码，或者选一个私钥文件", "Enter the password, or choose a key file"));
+		return Promise.reject(mode === "local"
+			? new SshError("no_key", "这台电脑上还没有可用的密钥：先点「生成本机密钥」，把公钥加到服务器上", "No key on this computer yet: click Generate a key, then add its public key to the server")
+			: new SshError("no_auth", "填上密码，或者选一个私钥", "Enter the password, or choose a private key"));
 	}
 	return new Promise((resolve, reject) => {
 		const conn = new Client();
 		let seen = "";
 		let mismatch = false;
+		let allowed = null; // 服务器说它接受哪些登录方式（第一次失败后才知道）
 		conn.on("ready", () => resolve({ conn, fingerprint: seen }));
 		conn.on("error", (err) => {
 			if (mismatch) {
 				reject(new SshError("host_key", `服务器的身份指纹变了（以前 ${knownFingerprint}，现在 ${seen}）。如果服务器重装过系统，这是正常的：在服务器列表里删掉它再重新添加；否则可能有人冒充这台服务器，不要继续`, `The server's fingerprint changed (was ${knownFingerprint}, now ${seen}). Normal if the server was reinstalled: remove it from the list and add it again; otherwise someone may be impersonating it, so stop here`));
 			} else if (err.level === "client-authentication") {
-				reject(new SshError("auth", "登录被拒绝：用户名、密码或私钥不对", "Login refused: wrong user name, password or key"));
+				const noPassword = allowed && !allowed.includes("password") && !allowed.includes("keyboard-interactive");
+				if (mode === "password" && noPassword) {
+					reject(new SshError("key_only", "这台服务器关掉了密码登录，只认密钥：登录方式改用「私钥」或「本机密钥」", "This server has password login turned off and only accepts keys: switch to Private key or This computer's key"));
+				} else if (mode === "local") {
+					reject(new SshError("auth", "服务器不认这台电脑的密钥：先把本机公钥加到服务器上（见登录方式下面的说明），或者检查用户名", "The server does not accept this computer's key: add the public key to the server first (see the steps under the login method), or check the user name"));
+				} else if (mode === "key") {
+					reject(new SshError("auth", "服务器不认这把私钥：确认它对应的公钥在服务器上，以及用户名对不对（有的云厂商默认用户是 ubuntu、debian、admin）", "The server does not accept this key: check that its public key is on the server and the user name is right (some providers use ubuntu, debian or admin)"));
+				} else {
+					reject(new SshError("auth", "登录被拒绝：用户名或密码不对", "Login refused: wrong user name or password"));
+				}
+			} else if (/before handshake|ECONNRESET/i.test(`${err.message} ${err.code || ""}`)) {
+				reject(new SshError("handshake", "连上了，但还没开始登录就被服务器断开。常见原因：IP 或 SSH 端口不对（连到了别的服务）；服务器的 fail2ban 等把你的 IP 封了（密码输错几次后常见，等一会儿或换网络再试）；本机的代理 / VPN 拦了 SSH", "Connected, but the server dropped the connection before login started. Usually: wrong IP or SSH port (another service answered); fail2ban or similar banned your IP (common after a few wrong passwords; wait or try another network); a proxy or VPN on this computer is blocking SSH"));
 			} else if (err.level === "client-timeout" || /timed out/i.test(err.message)) {
 				reject(new SshError("timeout", "连接超时：检查 IP、SSH 端口，以及云厂商安全组是否放行了 SSH 端口", "Connection timed out: check the IP and SSH port, and that the provider's security group allows the SSH port"));
 			} else if (err.code === "ECONNREFUSED") {
@@ -99,7 +130,10 @@ function connect({ host, port, user, password, keyPath }, { knownFingerprint = "
 			readyTimeout: timeoutMs,
 			keepaliveInterval: 15000,
 			keepaliveCountMax: 4,
-			authHandler: (_methodsLeft, _partial, next) => next(queue.shift() || false),
+			authHandler: (methodsLeft, _partial, next) => {
+				if (Array.isArray(methodsLeft)) allowed = methodsLeft;
+				next(queue.shift() || false);
+			},
 			hostVerifier: (key) => {
 				seen = fingerprint(key);
 				if (knownFingerprint && knownFingerprint !== seen) {
@@ -142,7 +176,7 @@ async function runAsRoot(conn, script, { password = "", onData } = {}) {
 	const probe = await exec(conn, "id -u; sudo -n true >/dev/null 2>&1 && echo VPSSH_NOPASS");
 	if (/^0\s*$/m.test(probe.out.split("\n")[0] + "\n")) return exec(conn, "sh -s", { stdin: script, onData });
 	if (probe.out.includes("VPSSH_NOPASS")) return exec(conn, "sudo -n sh -s", { stdin: script, onData });
-	if (!password) throw new SshError("need_root", "这个账号不是 root：要么用 root 登录，要么填上它的密码（用来 sudo）", "This account is not root: log in as root, or enter its password (used for sudo)");
+	if (!password) throw new SshError("need_root", "这个账号不是 root，也不能免密 sudo：改用 root 登录；或者用密码登录这个账号（密码会用来 sudo）", "This account is not root and cannot sudo without a password: log in as root, or log in to this account with its password (used for sudo)");
 	const check = await exec(conn, "sudo -S -p '' -v", { stdin: password + "\n" });
 	if (check.code !== 0) throw new SshError("sudo", "这个账号不能 sudo（或密码不对）。用 root 登录试试", "This account cannot sudo (or the password is wrong). Try logging in as root");
 	return exec(conn, "sudo -S -p '' sh -s", { stdin: password + "\n" + script, onData });

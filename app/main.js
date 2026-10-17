@@ -11,6 +11,7 @@ const { Store } = require("./lib/store.js");
 const { validate } = require("./lib/remote.js");
 const { runJob, readServerInfo } = require("./lib/jobs.js");
 const { verifyWithRoot, chainFromElectron } = require("./lib/certs.js");
+const localKey = require("./lib/localkey.js");
 
 const PARTITION = "persist:vpssh";
 const UI_FILE = path.join(__dirname, "ui", "index.html");
@@ -241,6 +242,12 @@ function registerIpc() {
 	handle("open-external", (url) => {
 		if (/^https:\/\//.test(String(url))) shell.openExternal(url);
 	});
+	// 本机密钥：读（generate=true 时没有就生成），连同把公钥加到服务器上的那一行命令
+	handle("local-key", (generate) => {
+		const dir = app.getPath("userData");
+		const k = generate ? localKey.generateLocalKey(dir) : localKey.readLocalKey(dir);
+		return { publicKey: k.publicKey, command: k.publicKey ? localKey.authorizeCommand(k.publicKey) : "" };
+	});
 	handle("pick-key", async () => {
 		const r = await dialog.showOpenDialog(win, {
 			title: L("选择 SSH 私钥", "Choose an SSH private key"),
@@ -254,13 +261,13 @@ function registerIpc() {
 		if (jobRunning) return { error: L("已经有一个任务在进行", "A task is already running") };
 		const v = validate(form);
 		if (v.error) return { error: L(...v.error) };
-		const opts = v.value;
+		const opts = { ...v.value, localKeyFile: localKey.keyPath(app.getPath("userData")) };
 		const known = store.list().find((s) => s.ssh && s.ssh.host === opts.host && Number(s.ssh.port) === opts.port);
 		jobRunning = true;
 		const emit = (ev) => win?.webContents.send("job", ev);
 		runJob(opts, { lang, knownFingerprint: known?.hostKey || "", emit })
 			.then((r) => finishJob(opts, r, emit))
-			.catch((err) => emit({ type: "done", ok: false, error: errText(err) }))
+			.catch((err) => emit({ type: "done", ok: false, error: errText(err), code: err?.code || "" }))
 			.finally(() => {
 				jobRunning = false;
 				opts.password = ""; // 密码不多留
@@ -284,6 +291,7 @@ function registerIpc() {
 			// 用 IP 访问是自签证书：经 SSH 读一次服务器的根证书，只信任它
 			const v = validate({ ...form, action: "install", host: form.host || hostname, domain: "" });
 			if (v.error) return { error: L(...v.error) };
+			v.value.localKeyFile = localKey.keyPath(app.getPath("userData"));
 			try {
 				const known = store.list().find((s) => s.ssh && s.ssh.host === v.value.host && Number(s.ssh.port) === v.value.port);
 				const info = await readServerInfo(v.value, { knownFingerprint: known?.hostKey || "" });

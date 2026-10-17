@@ -85,31 +85,111 @@ function field(label, input, hint) {
 }
 const text = (name, value, placeholder, type = "text") => h("input", { type, name, value: value ?? "", placeholder, autocomplete: "off", spellcheck: "false" });
 
-/** 登录信息：IP、端口、用户名、密码 / 私钥 */
+/** 一段可复制的命令：点「复制」放进剪贴板 */
+function copyBlock(textValue) {
+	const btn = h("button", { type: "button", class: "plain small" }, L("复制", "Copy"));
+	btn.addEventListener("click", async () => {
+		try {
+			await navigator.clipboard.writeText(textValue);
+			btn.textContent = L("已复制", "Copied");
+			setTimeout(() => { btn.textContent = L("复制", "Copy"); }, 1500);
+		} catch {
+			/* 剪贴板用不了：内容本身可以选中复制 */
+		}
+	});
+	return h("div", { class: "copyrow" }, h("pre", { class: "cmd" }, textValue), btn);
+}
+
+/** 本机密钥：显示（或生成）桌面版专用的公钥，教用户加到服务器上 */
+function localKeyPanel() {
+	const box = h("div", { class: "note" }, L("读取中…", "Loading…"));
+	const render = (k, error) => {
+		if (k?.publicKey) {
+			box.replaceChildren(
+				h("div", null, L("① 把这台电脑的公钥加到服务器上（只需一次）。在云厂商控制台打开服务器的网页终端（VNC / 远程连接 / Workbench），粘贴执行：", "① Add this computer's public key to the server (once). Open the server's web console in your cloud provider (VNC / remote connection) and run:")),
+				copyBlock(k.command),
+				h("div", { style: "margin-top:8px" }, L("或者在云厂商控制台的「SSH 密钥 / 密钥对」里导入下面这个公钥，绑定到这台服务器：", "Or import this public key under SSH keys / key pairs in your cloud provider's console and attach it to the server:")),
+				copyBlock(k.publicKey),
+				h("div", { style: "margin-top:8px" }, L("② 点下面的按钮。这台电脑 ~/.ssh 里原有的密钥、ssh-agent 也会一并尝试。私钥只在这台电脑上，不会上传。", "② Click the button below. Keys already in ~/.ssh and ssh-agent on this computer are tried too. The private key stays on this computer and is never uploaded.")));
+		} else {
+			const gen = h("button", { type: "button", class: "primary small" }, L("生成本机密钥", "Generate a key"));
+			gen.addEventListener("click", async () => {
+				gen.disabled = true;
+				try {
+					render(await api.localKey(true));
+				} catch (e) {
+					render(null, String(e.message || e));
+				}
+			});
+			box.replaceChildren(
+				h("div", null, L("这台电脑还没有 vpssh 专用的密钥。生成一把，把公钥加到服务器上，以后就能免密码登录（~/.ssh 里已有的密钥、ssh-agent 也会自动尝试）。", "This computer has no vpssh key yet. Generate one, add its public key to the server, and log in without a password from then on (keys in ~/.ssh and ssh-agent are tried too).")),
+				h("div", { style: "margin-top:8px" }, gen),
+				error ? h("div", { class: "error", style: "margin:8px 0 0" }, error) : null);
+		}
+	};
+	api.localKey(false).then((k) => render(k), (e) => render(null, String(e.message || e)));
+	return box;
+}
+
+/** 登录信息：IP、端口、用户名；登录方式：密码 / 私钥 / 本机密钥 */
 function sshFields(prefill = {}, { hostLabel } = {}) {
-	// 选中的私钥路径放在隐藏字段里（和别的字段一样随表单读）
-	const keyInput = h("input", { type: "hidden", name: "keyPath" });
+	let auth = ["password", "key", "local"].includes(prefill.auth) ? prefill.auth : "password";
+	// 私钥：粘贴进文本框，或选文件（选的文件路径放在隐藏字段里，交给主进程去读）
+	const keyInput = h("input", { type: "hidden", name: "keyPath", value: prefill.keyPath || "" });
 	const keyLine = h("div", { class: "keyline" });
 	const showKey = () => {
 		const keyPath = keyInput.value;
 		keyLine.replaceChildren(keyInput, keyPath
-			? h("span", null, L("私钥：", "Key: "), keyPath, "  ", h("a", { onclick: () => { keyInput.value = ""; showKey(); } }, L("不用了", "Clear")))
-			: h("a", { onclick: async () => { keyInput.value = (await api.pickKey()) || ""; showKey(); } }, L("用私钥文件登录…", "Log in with a key file…")));
+			? h("span", null, L("私钥文件：", "Key file: "), keyPath, "  ", h("a", { onclick: () => { keyInput.value = ""; showKey(); } }, L("不用了", "Clear")))
+			: h("a", { onclick: async () => { keyInput.value = (await api.pickKey()) || ""; showKey(); } }, L("或者选择私钥文件…", "Or choose a key file…")));
 	};
 	keyInput.addEventListener("change", showKey);
 	showKey();
+	const privateKey = h("textarea", { name: "privateKey", rows: "5", spellcheck: "false", autocomplete: "off", placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n…\n-----END OPENSSH PRIVATE KEY-----" });
+
+	const panes = {
+		password: h("div", null,
+			field(L("密码", "Password"), text("password", "", L("服务器的登录密码", "The server's login password"), "password"),
+				L("只用这一次，不保存。服务器关掉了密码登录时，改用「私钥」或「本机密钥」", "Used this once and never saved. If the server has password login turned off, use a private key or this computer's key"))),
+		key: h("div", null,
+			h("div", { class: "field" },
+				h("label", null, L("私钥", "Private key")),
+				privateKey,
+				h("div", { class: "hint" }, L("云厂商创建或重装服务器时下载的 .pem 文件，或你自己的 id_ed25519 / id_rsa 的全部内容。只用这一次，不保存", "The .pem file your cloud provider gave you when creating or reinstalling the server, or the full contents of your own id_ed25519 / id_rsa. Used this once and never saved")),
+				keyLine),
+			field(L("私钥口令（可选）", "Key passphrase (optional)"), text("passphrase", "", "", "password"), L("私钥设过口令才填", "Only if the key has a passphrase"))),
+		local: h("div", { class: "field" }, localKeyPanel()),
+	};
+	const picker = h("div", { class: "seg" });
+	const paneBox = h("div");
+	const show = () => {
+		picker.replaceChildren(...[["password", L("密码", "Password")], ["key", L("私钥", "Private key")], ["local", L("本机密钥", "This computer's key")]].map(([k, label]) => {
+			const b = h("button", { type: "button", class: k === auth ? "on" : "" }, label);
+			b.addEventListener("click", () => { auth = k; show(); });
+			return b;
+		}));
+		paneBox.replaceChildren(panes[auth]);
+	};
+	show();
 	const el = h("div", null,
 		h("div", { class: "row wide" },
 			field(hostLabel || L("服务器 IP 或域名", "Server IP or hostname"), text("host", prefill.host, "203.0.113.10"), L("你买的 VPS 的公网地址", "Your VPS's public address")),
 			field(L("SSH 端口", "SSH port"), text("port", prefill.port ?? 22, "22", "number"))),
 		h("div", { class: "row" },
 			field(L("用户名", "User name"), text("user", prefill.user ?? "root", "root"), L("建议用 root；别的账号要能 sudo", "root is easiest; another account must be able to sudo")),
-			h("div", { class: "field" },
-				h("label", null, L("密码", "Password")),
-				text("password", "", L("服务器的登录密码", "The server's login password"), "password"),
-				h("div", { class: "hint" }, L("只用这一次，不保存；留空则用本机的 SSH 密钥", "Used this once and never saved; leave empty to use this computer's SSH key")),
-				keyLine)));
-	el.read = () => ({ host: val(el, "host"), port: Number(val(el, "port")) || 22, user: val(el, "user"), password: el.querySelector("[name=password]").value, keyPath: keyInput.value });
+			h("div", { class: "field" }, h("label", null, L("登录方式", "Log in with")), picker)),
+		paneBox);
+	el.read = () => ({
+		host: val(el, "host"),
+		port: Number(val(el, "port")) || 22,
+		user: val(el, "user"),
+		auth,
+		password: auth === "password" ? panes.password.querySelector("[name=password]").value : "",
+		privateKey: auth === "key" ? privateKey.value : "",
+		passphrase: auth === "key" ? panes.key.querySelector("[name=passphrase]").value : "",
+		keyPath: auth === "key" ? keyInput.value : "",
+	});
+	el.setAuth = (k) => { auth = k; show(); };
 	return el;
 }
 const val = (root, name) => (root.querySelector(`[name=${name}]`)?.value || "").trim();
@@ -122,12 +202,12 @@ function errorBox() {
 
 // ———————————————————— 安装 ————————————————————
 
-function InstallForm() {
+function InstallForm(prefill = {}) {
 	const err = errorBox();
-	const ssh = sshFields();
-	const domain = text("domain", "", "vps.example.com");
-	const mirror = h("input", { type: "checkbox", name: "mirror" });
-	const model = h("input", { type: "checkbox", name: "model" });
+	const ssh = sshFields(prefill);
+	const domain = text("domain", prefill.domain || "", "vps.example.com");
+	const mirror = h("input", { type: "checkbox", name: "mirror", checked: prefill.mirror });
+	const model = h("input", { type: "checkbox", name: "model", checked: prefill.model });
 	const manual = h("div", { hidden: true }, h("div", { class: "hint" }, L("SSH 登录服务器后执行（装最新发布版）：", "Log in to the server over SSH and run (installs the latest release):")), h("pre", { class: "cmd" }, INSTALL_CMD));
 	const btn = h("button", { class: "primary", type: "submit" }, L("安装到这台 VPS", "Install on this VPS"));
 	const form = h("form", { class: "card", onsubmit: async (e) => {
@@ -157,7 +237,7 @@ function InstallForm() {
 
 function UninstallForm(server) {
 	const err = errorBox();
-	const ssh = sshFields(server?.ssh || {});
+	const ssh = sshFields(server?.ssh || server || {});
 	const del = h("input", { type: "checkbox", name: "deleteData" });
 	const btn = h("button", { class: "danger", type: "submit" }, L("从这台 VPS 卸载", "Uninstall from this VPS"));
 	const form = h("form", { class: "card", onsubmit: async (e) => {
@@ -227,7 +307,8 @@ async function startJob(data, err, btn) {
 	const r = await api.startJob(data).catch((x) => ({ error: String(x.message || x) }));
 	btn.disabled = false;
 	if (r?.error) return err.show(r.error);
-	go("progress", data);
+	// 任务开始后页面里不再留密码、私钥
+	go("progress", { ...data, password: "", privateKey: "", passphrase: "" });
 }
 
 function Progress(data) {
@@ -274,7 +355,9 @@ api.onJob((ev) => {
 				: L("装好了，正在打开初始设置…", "Installed. Opening first-time setup…")));
 		} else {
 			phase.textContent = "";
-			result.replaceChildren(h("div", { class: "error", style: "margin-top:16px" }, ev.error), h("button", { class: "plain", onclick: () => go(progress.data.action === "uninstall" ? "uninstall" : "install") }, L("返回修改", "Back")));
+			const back = { ...progress.data, password: "", privateKey: "", passphrase: "" };
+			if (ev.code === "key_only") back.auth = "key";
+			result.replaceChildren(h("div", { class: "error", style: "margin-top:16px" }, ev.error), h("button", { class: "plain", onclick: () => go(progress.data.action === "uninstall" ? "uninstall" : "install", back) }, L("返回修改", "Back")));
 		}
 	}
 });

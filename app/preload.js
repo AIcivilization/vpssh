@@ -9,6 +9,7 @@ if (location.protocol === "file:") {
 		open: (id) => ipcRenderer.invoke("open", id),
 		remove: (id) => ipcRenderer.invoke("remove", id),
 		pickKey: () => ipcRenderer.invoke("pick-key"),
+		localKey: (generate) => ipcRenderer.invoke("local-key", Boolean(generate)),
 		startJob: (form) => ipcRenderer.invoke("job-start", form),
 		connect: (form) => ipcRenderer.invoke("connect", form),
 		openExternal: (url) => ipcRenderer.invoke("open-external", url),

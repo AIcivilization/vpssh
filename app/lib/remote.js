@@ -21,6 +21,14 @@ const CADDY_ROOT = "/var/lib/caddy/.local/share/caddy/pki/authorities/local/root
 const HOST_RE = /^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*|[0-9A-Fa-f:.]+)$/;
 const DOMAIN_RE = /^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$/;
 const USER_RE = /^[A-Za-z_][A-Za-z0-9_.-]{0,31}$/;
+const AUTHS = new Set(["password", "key", "local"]);
+const PRIVATE_KEY_RE = /^-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----\n[\s\S]+\n-----END [A-Z0-9 ]*PRIVATE KEY-----\n$/;
+
+/** 粘贴来的私钥：统一换行、去首尾空白、补上结尾换行 */
+function normalizePrivateKey(text) {
+	const t = String(text ?? "").replace(/\r\n?/g, "\n").trim();
+	return t ? `${t}\n` : "";
+}
 
 /** 校验并规整表单。返回 { value } 或 { error: [中文, English] } */
 function validate(body) {
@@ -31,6 +39,11 @@ function validate(body) {
 	const user = String(b.user ?? "root").trim() || "root";
 	const password = typeof b.password === "string" ? b.password : "";
 	const keyPath = typeof b.keyPath === "string" ? b.keyPath.trim() : "";
+	const privateKey = normalizePrivateKey(b.privateKey);
+	const passphrase = typeof b.passphrase === "string" ? b.passphrase : "";
+	// 登录方式：密码 / 私钥（粘贴或选文件）/ 本机密钥（桌面版专用的一把 + ~/.ssh 里的 + ssh-agent）。
+	// 老的调用不带 auth：选了私钥文件算私钥，填了密码算密码，都没有算本机密钥
+	const auth = AUTHS.has(b.auth) ? b.auth : keyPath ? "key" : password ? "password" : "local";
 	const domain = action === "install" ? String(b.domain ?? "").trim().toLowerCase() : "";
 	const mirror = action === "install" && b.mirror === true;
 	const model = action === "install" && b.model === true;
@@ -38,9 +51,24 @@ function validate(body) {
 	if (!host || host.length > 253 || !HOST_RE.test(host)) return { error: ["服务器地址格式不对（填公网 IP 或能解析到它的域名）", "Not a server address (use the public IP, or a name that resolves to it)"] };
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: ["SSH 端口应为 1–65535", "The SSH port must be 1–65535"] };
 	if (!USER_RE.test(user)) return { error: ["用户名格式不对", "Not a valid user name"] };
-	if (password.length > 1024) return { error: ["密码太长", "Password too long"] };
+	if (password.length > 1024 || passphrase.length > 1024) return { error: ["密码太长", "Password too long"] };
+	if (auth === "password" && !password) return { error: ["请填写服务器的登录密码（服务器关掉了密码登录的话，改用「私钥」或「本机密钥」）", "Enter the server's login password (if the server has password login turned off, use a private key or this computer's key)"] };
+	if (auth === "key" && !privateKey && !keyPath) return { error: ["请粘贴私钥，或选择私钥文件", "Paste a private key, or choose a key file"] };
+	if (auth === "key" && privateKey && (privateKey.length > 32 * 1024 || !PRIVATE_KEY_RE.test(privateKey))) {
+		return { error: ["私钥格式不对：应是以 -----BEGIN … PRIVATE KEY----- 开头的完整文件内容（.pem、id_ed25519 等）。PuTTY 的 .ppk 要先用 PuTTYgen 导出为 OpenSSH 格式", "That is not a private key: paste the whole file, starting with -----BEGIN … PRIVATE KEY----- (.pem, id_ed25519…). Convert a PuTTY .ppk to OpenSSH format with PuTTYgen first"] };
+	}
 	if (domain && (domain.length > 253 || !DOMAIN_RE.test(domain))) return { error: ["访问域名格式不对（例如 vps.example.com）", "Not a valid domain (e.g. vps.example.com)"] };
-	return { value: { action, host, port, user, password, keyPath, domain, mirror, model, deleteData } };
+	return {
+		value: {
+			action, host, port, user, auth,
+			// 密码：密码登录用；私钥 / 本机密钥登录时非 root 账号拿它去 sudo
+			password,
+			keyPath: auth === "key" ? keyPath : "",
+			privateKey: auth === "key" ? privateKey : "",
+			passphrase: auth === "key" ? passphrase : "",
+			domain, mirror, model, deleteData,
+		},
+	};
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
@@ -134,4 +162,4 @@ function defaultKeys(keyPath) {
 	return ["id_ed25519", "id_ecdsa", "id_rsa"].map((n) => path.join(dir, n)).filter((f) => fs.existsSync(f));
 }
 
-module.exports = { validate, installArgs, startScript, attachScript, INFO_SCRIPT, parseInfo, parseLog, strip, shq, defaultKeys, INSTALL_URL, LOGS, CADDY_ROOT };
+module.exports = { normalizePrivateKey, validate, installArgs, startScript, attachScript, INFO_SCRIPT, parseInfo, parseLog, strip, shq, defaultKeys, INSTALL_URL, LOGS, CADDY_ROOT };

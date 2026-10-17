@@ -48,3 +48,18 @@ test("勾了「同时启用模型来源」：安装脚本带 --model", () => {
 	assert.deepEqual(installArgs(v), ["--model"]);
 	assert.equal(validate({ action: "uninstall", host: "h", model: true }).value.model, false);
 });
+
+test("登录方式：密码 / 私钥（粘贴或文件）/ 本机密钥；老的调用照旧", () => {
+	assert.equal(validate({ host: "h", password: "p" }).value.auth, "password");
+	assert.equal(validate({ host: "h", keyPath: "/k" }).value.auth, "key");
+	assert.equal(validate({ host: "h" }).value.auth, "local");
+	assert.match(validate({ host: "h", auth: "password" }).error[0], /本机密钥/);
+	assert.ok(validate({ host: "h", auth: "key" }).error);
+	assert.match(validate({ host: "h", auth: "key", privateKey: "hello" }).error[0], /PuTTYgen/);
+	const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\r\nAAAA\r\n-----END OPENSSH PRIVATE KEY-----\r\n\r\n";
+	const v = validate({ host: "h", auth: "key", privateKey: pem, passphrase: "x" }).value;
+	assert.equal(v.privateKey, "-----BEGIN OPENSSH PRIVATE KEY-----\nAAAA\n-----END OPENSSH PRIVATE KEY-----\n");
+	assert.equal(v.passphrase, "x");
+	// 选了别的方式，私钥不往下传
+	assert.equal(validate({ host: "h", auth: "local", privateKey: pem }).value.privateKey, "");
+});
