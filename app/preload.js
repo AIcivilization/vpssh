@@ -10,6 +10,8 @@ if (location.protocol === "file:") {
 		remove: (id) => ipcRenderer.invoke("remove", id),
 		pickKey: () => ipcRenderer.invoke("pick-key"),
 		localKey: (generate) => ipcRenderer.invoke("local-key", Boolean(generate)),
+		localKeys: (host) => ipcRenderer.invoke("local-keys", String(host || "")),
+		testLogin: (form) => ipcRenderer.invoke("test-login", form),
 		startJob: (form) => ipcRenderer.invoke("job-start", form),
 		connect: (form) => ipcRenderer.invoke("connect", form),
 		openExternal: (url) => ipcRenderer.invoke("open-external", url),

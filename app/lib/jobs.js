@@ -20,7 +20,7 @@ async function runJob(opts, { lang = "en", knownFingerprint = "", emit = () => {
 	const pause = deps.sleep || sleep;
 
 	emit({ type: "phase", phase: "connecting" });
-	let { conn, fingerprint } = await doConnect(opts, { knownFingerprint });
+	let { conn, fingerprint, keyPath: usedKey = "" } = await doConnect(opts, { knownFingerprint });
 	knownFingerprint = fingerprint;
 	let log = "";
 	const onData = (chunk) => {
@@ -62,7 +62,7 @@ async function runJob(opts, { lang = "en", knownFingerprint = "", emit = () => {
 		if (parsed.exitCode === null && !parsed.error) {
 			throw new SshError("lost", "和服务器的连接一直断着。安装可能仍在服务器上进行：稍后用「连接已装好的服务器」再试", "Lost the connection to the server. The install may still be running there: try again later with \"Connect to an installed server\"");
 		}
-		const result = { ...parsed, fingerprint, host: "", rootPem: "" };
+		const result = { ...parsed, fingerprint, usedKey, host: "", rootPem: "" };
 		if (opts.action === "install" && (parsed.exitCode === 0 || parsed.exitCode === 3)) {
 			emit({ type: "phase", phase: "finishing" });
 			const info = await asRoot(conn, INFO_SCRIPT, { password: opts.password });
@@ -76,10 +76,10 @@ async function runJob(opts, { lang = "en", knownFingerprint = "", emit = () => {
 
 /** 只读访问地址和根证书（「连接已装好的服务器」用 IP 时） */
 async function readServerInfo(opts, { knownFingerprint = "" } = {}) {
-	const { conn, fingerprint } = await connect(opts, { knownFingerprint });
+	const { conn, fingerprint, keyPath: usedKey = "" } = await connect(opts, { knownFingerprint });
 	try {
 		const info = await runAsRoot(conn, INFO_SCRIPT, { password: opts.password });
-		return { ...parseInfo(info.out), fingerprint };
+		return { ...parseInfo(info.out), fingerprint, usedKey };
 	} finally {
 		conn.end();
 	}

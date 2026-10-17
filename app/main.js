@@ -12,6 +12,8 @@ const { validate } = require("./lib/remote.js");
 const { runJob, readServerInfo } = require("./lib/jobs.js");
 const { verifyWithRoot, chainFromElectron } = require("./lib/certs.js");
 const localKey = require("./lib/localkey.js");
+const { localKeysFor } = require("./lib/localkeys.js");
+const { connect: sshConnect, runAsRoot } = require("./lib/ssh.js");
 
 const PARTITION = "persist:vpssh";
 const UI_FILE = path.join(__dirname, "ui", "index.html");
@@ -242,6 +244,30 @@ function registerIpc() {
 	handle("open-external", (url) => {
 		if (/^https:\/\//.test(String(url))) shell.openExternal(url);
 	});
+	// 这台电脑上能拿来登录 host 的钥匙：只给界面显示名字，私钥不出主进程
+	handle("local-keys", (host) => {
+		const appKey = localKey.keyPath(app.getPath("userData"));
+		return localKeysFor(String(host || "").trim(), { appKey }).map((k) => ({ label: k.isApp ? L("vpssh 本机密钥", "vpssh key") : k.label }));
+	});
+	// 测试登录：只登录、看看是不是 root 或能 sudo，什么都不改
+	handle("test-login", async (form) => {
+		const v = validate({ ...form, action: "install", domain: "" });
+		if (v.error) return { error: L(...v.error) };
+		const known = store.list().find((s) => s.ssh && s.ssh.host === v.value.host && Number(s.ssh.port) === v.value.port);
+		const opts = { ...v.value, localKeyFile: localKey.keyPath(app.getPath("userData")), preferredKey: known?.ssh?.keyPath || "" };
+		try {
+			const { conn, keyLabel, keyIsApp } = await sshConnect(opts, { knownFingerprint: known?.hostKey || "" });
+			try {
+				const r = await runAsRoot(conn, "id -un\n", { password: opts.password });
+				const how = opts.auth === "password" ? L("密码", "password") : keyIsApp ? L("vpssh 本机密钥", "the vpssh key") : keyLabel === "pasted" ? L("粘贴的私钥", "the pasted key") : keyLabel;
+				return { ok: true, message: L(`能登录：用 ${how} 登录 ${opts.user}@${opts.host}，可以取得 ${r.out.trim()} 权限`, `Works: logged in to ${opts.user}@${opts.host} with ${how}, and can act as ${r.out.trim()}`) };
+			} finally {
+				conn.end();
+			}
+		} catch (err) {
+			return { error: errText(err) };
+		}
+	});
 	// 本机密钥：读（generate=true 时没有就生成），连同把公钥加到服务器上的那一行命令
 	handle("local-key", (generate) => {
 		const dir = app.getPath("userData");
@@ -261,8 +287,8 @@ function registerIpc() {
 		if (jobRunning) return { error: L("已经有一个任务在进行", "A task is already running") };
 		const v = validate(form);
 		if (v.error) return { error: L(...v.error) };
-		const opts = { ...v.value, localKeyFile: localKey.keyPath(app.getPath("userData")) };
-		const known = store.list().find((s) => s.ssh && s.ssh.host === opts.host && Number(s.ssh.port) === opts.port);
+		const known = store.list().find((s) => s.ssh && s.ssh.host === v.value.host && Number(s.ssh.port) === v.value.port);
+		const opts = { ...v.value, localKeyFile: localKey.keyPath(app.getPath("userData")), preferredKey: known?.ssh?.keyPath || "" };
 		jobRunning = true;
 		const emit = (ev) => win?.webContents.send("job", ev);
 		runJob(opts, { lang, knownFingerprint: known?.hostKey || "", emit })
@@ -292,11 +318,12 @@ function registerIpc() {
 			const v = validate({ ...form, action: "install", host: form.host || hostname, domain: "" });
 			if (v.error) return { error: L(...v.error) };
 			v.value.localKeyFile = localKey.keyPath(app.getPath("userData"));
+			v.value.preferredKey = store.list().find((s) => s.ssh && s.ssh.host === v.value.host)?.ssh?.keyPath || "";
 			try {
 				const known = store.list().find((s) => s.ssh && s.ssh.host === v.value.host && Number(s.ssh.port) === v.value.port);
 				const info = await readServerInfo(v.value, { knownFingerprint: known?.hostKey || "" });
 				if (!info.rootPem) return { error: L("这台服务器上没找到 vpssh 的证书：确认 vpssh 已经装好", "No vpssh certificate found on that server: check that vpssh is installed") };
-				Object.assign(server, { rootPem: info.rootPem, hostKey: info.fingerprint, ssh: { host: v.value.host, port: v.value.port, user: v.value.user } });
+				Object.assign(server, { rootPem: info.rootPem, hostKey: info.fingerprint, ssh: { host: v.value.host, port: v.value.port, user: v.value.user, keyPath: info.usedKey || "" } });
 			} catch (err) {
 				return { error: errText(err) };
 			}
@@ -325,7 +352,8 @@ function finishJob(opts, r, emit) {
 	const server = store.upsert({
 		name: host.replace(/:\d+$/, ""),
 		url: `https://${host}/`,
-		ssh: { host: opts.host, port: opts.port, user: opts.user },
+		// 记下用哪把钥匙登进去的（本机已有的私钥文件路径），下次先试它；不存私钥、不存密码
+		ssh: { host: opts.host, port: opts.port, user: opts.user, keyPath: r.usedKey || "" },
 		hostKey: r.fingerprint,
 		rootPem: opts.domain ? "" : r.rootPem,
 		setupUrl: r.setupUrl || undefined, // 向导做完就删（见 did-navigate）

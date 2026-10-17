@@ -100,8 +100,23 @@ function copyBlock(textValue) {
 	return h("div", { class: "copyrow" }, h("pre", { class: "cmd" }, textValue), btn);
 }
 
-/** 本机密钥：显示（或生成）桌面版专用的公钥，教用户加到服务器上 */
-function localKeyPanel() {
+/** 本机密钥：这台电脑上已有的钥匙（服务器认其中一把就直接能登），以及桌面版专用的那把怎么加到服务器上 */
+function localKeyPanel(getHost) {
+	const found = h("div", { class: "note", style: "margin-bottom:10px" });
+	let timer = null;
+	const refresh = () => {
+		clearTimeout(timer);
+		timer = setTimeout(async () => {
+			const keys = await api.localKeys(getHost()).catch(() => []);
+			found.replaceChildren(
+				h("div", null, keys.length
+					? L("这台电脑上找到这些钥匙，会按顺序试（服务器认其中一把就能直接登录，比如 dsh-vps-manager 管过的服务器都认 dsh_vps_ed25519）：", "Keys found on this computer, tried in this order (if the server trusts one of them you are in, e.g. servers managed by dsh-vps-manager trust dsh_vps_ed25519):")
+					: L("这台电脑的 ~/.ssh 里没找到能用的钥匙（带口令的会跳过）。用下面 vpssh 的本机密钥：", "No usable key in ~/.ssh on this computer (keys with a passphrase are skipped). Use the vpssh key below:")),
+				...(keys.length ? [h("ul", { class: "keys" }, keys.map((k) => h("li", null, k.label)))] : []),
+				h("div", { class: "hint" }, L("ssh-agent 里的钥匙也会试。私钥只在这台电脑上读，不会上传。", "Keys in ssh-agent are tried too. Private keys are read on this computer only and never uploaded.")));
+		}, 300);
+	};
+	refresh();
 	const box = h("div", { class: "note" }, L("读取中…", "Loading…"));
 	const render = (k, error) => {
 		if (k?.publicKey) {
@@ -110,7 +125,7 @@ function localKeyPanel() {
 				copyBlock(k.command),
 				h("div", { style: "margin-top:8px" }, L("或者在云厂商控制台的「SSH 密钥 / 密钥对」里导入下面这个公钥，绑定到这台服务器：", "Or import this public key under SSH keys / key pairs in your cloud provider's console and attach it to the server:")),
 				copyBlock(k.publicKey),
-				h("div", { style: "margin-top:8px" }, L("② 点下面的按钮。这台电脑 ~/.ssh 里原有的密钥、ssh-agent 也会一并尝试。私钥只在这台电脑上，不会上传。", "② Click the button below. Keys already in ~/.ssh and ssh-agent on this computer are tried too. The private key stays on this computer and is never uploaded.")));
+				h("div", { style: "margin-top:8px" }, L("② 点「测试登录」确认能进，再安装。", "② Click Test login to check, then install.")));
 		} else {
 			const gen = h("button", { type: "button", class: "primary small" }, L("生成本机密钥", "Generate a key"));
 			gen.addEventListener("click", async () => {
@@ -122,13 +137,15 @@ function localKeyPanel() {
 				}
 			});
 			box.replaceChildren(
-				h("div", null, L("这台电脑还没有 vpssh 专用的密钥。生成一把，把公钥加到服务器上，以后就能免密码登录（~/.ssh 里已有的密钥、ssh-agent 也会自动尝试）。", "This computer has no vpssh key yet. Generate one, add its public key to the server, and log in without a password from then on (keys in ~/.ssh and ssh-agent are tried too).")),
+				h("div", null, L("服务器不认上面那些钥匙的话：生成一把 vpssh 专用的，把公钥加到服务器上，以后就能免密码登录。", "If the server trusts none of the keys above, generate a vpssh key and add its public key to the server; no password needed from then on.")),
 				h("div", { style: "margin-top:8px" }, gen),
-				error ? h("div", { class: "error", style: "margin:8px 0 0" }, error) : null);
+				...(error ? [h("div", { class: "error", style: "margin:8px 0 0" }, error)] : []));
 		}
 	};
 	api.localKey(false).then((k) => render(k), (e) => render(null, String(e.message || e)));
-	return box;
+	const wrap = h("div", null, found, box);
+	wrap.refresh = refresh;
+	return wrap;
 }
 
 /** 登录信息：IP、端口、用户名；登录方式：密码 / 私钥 / 本机密钥 */
@@ -158,8 +175,10 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 				h("div", { class: "hint" }, L("云厂商创建或重装服务器时下载的 .pem 文件，或你自己的 id_ed25519 / id_rsa 的全部内容。只用这一次，不保存", "The .pem file your cloud provider gave you when creating or reinstalling the server, or the full contents of your own id_ed25519 / id_rsa. Used this once and never saved")),
 				keyLine),
 			field(L("私钥口令（可选）", "Key passphrase (optional)"), text("passphrase", "", "", "password"), L("私钥设过口令才填", "Only if the key has a passphrase"))),
-		local: h("div", { class: "field" }, localKeyPanel()),
+		local: h("div", { class: "field" }),
 	};
+	const localPane = localKeyPanel(() => val(el, "host"));
+	panes.local.append(localPane);
 	const picker = h("div", { class: "seg" });
 	const paneBox = h("div");
 	const show = () => {
@@ -171,6 +190,19 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 		paneBox.replaceChildren(panes[auth]);
 	};
 	show();
+	// 测试登录：只登录看看（用的哪把钥匙、能不能取得 root），什么都不改
+	const testOut = h("div", { class: "hint" });
+	const testBtn = h("button", { type: "button", class: "plain small" }, L("测试登录", "Test login"));
+	testBtn.addEventListener("click", async () => {
+		testBtn.disabled = true;
+		testOut.className = "hint";
+		testOut.textContent = L("正在连接…", "Connecting…");
+		const r = await api.testLogin(el.read()).catch((e) => ({ error: String(e.message || e) }));
+		testBtn.disabled = false;
+		testOut.className = r?.ok ? "okline" : "errline";
+		testOut.textContent = r?.ok ? `✓ ${r.message}` : r?.error || "?";
+		if (r?.error && /只认密钥|only accepts keys/.test(r.error)) { auth = "local"; show(); }
+	});
 	const el = h("div", null,
 		h("div", { class: "row wide" },
 			field(hostLabel || L("服务器 IP 或域名", "Server IP or hostname"), text("host", prefill.host, "203.0.113.10"), L("你买的 VPS 的公网地址", "Your VPS's public address")),
@@ -178,7 +210,9 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 		h("div", { class: "row" },
 			field(L("用户名", "User name"), text("user", prefill.user ?? "root", "root"), L("建议用 root；别的账号要能 sudo", "root is easiest; another account must be able to sudo")),
 			h("div", { class: "field" }, h("label", null, L("登录方式", "Log in with")), picker)),
-		paneBox);
+		paneBox,
+		h("div", { class: "testrow" }, testBtn, testOut));
+	el.querySelector("[name=host]").addEventListener("input", () => localPane.refresh());
 	el.read = () => ({
 		host: val(el, "host"),
 		port: Number(val(el, "port")) || 22,

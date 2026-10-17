@@ -11,6 +11,7 @@ const crypto = require("node:crypto");
 const fs = require("node:fs");
 const { Client, utils } = require("ssh2");
 const { defaultKeys } = require("./remote.js");
+const { localKeysFor } = require("./localkeys.js");
 
 class SshError extends Error {
 	constructor(code, zh, en) {
@@ -58,7 +59,7 @@ function loadKeys(keyPath, password, extra = []) {
  * 连上服务器。knownFingerprint：之前记下的主机指纹（没有就是第一次连，记下新的）。
  * 返回 { conn, fingerprint }
  */
-function connect({ host, port, user, password, keyPath, auth, privateKey, passphrase, localKeyFile }, { knownFingerprint = "", timeoutMs = 20000 } = {}) {
+function connect({ host, port, user, password, keyPath, auth, privateKey, passphrase, localKeyFile, preferredKey }, { knownFingerprint = "", timeoutMs = 20000 } = {}) {
 	const mode = auth || (keyPath ? "key" : password ? "password" : "local");
 	const methods = [];
 	if (mode === "key" && privateKey) {
@@ -70,12 +71,16 @@ function connect({ host, port, user, password, keyPath, auth, privateKey, passph
 				? new SshError("key_parse", passphrase ? "私钥口令不对" : "这把私钥设了口令：把口令填在「私钥口令」里", passphrase ? "Wrong key passphrase" : "This key has a passphrase: enter it under Key passphrase")
 				: new SshError("key_parse", "私钥读不出来：确认粘贴的是完整的私钥文件内容；PuTTY 的 .ppk 要先用 PuTTYgen 导出为 OpenSSH 格式", "Cannot read that key: paste the whole private key file; convert a PuTTY .ppk to OpenSSH format with PuTTYgen first"));
 		}
-		methods.push({ type: "publickey", username: user, key: Buffer.from(privateKey), passphrase: passphrase || undefined });
-	} else if (mode === "key" || mode === "local") {
-		const keys = mode === "key" ? loadKeys(keyPath, passphrase || password) : loadKeys("", "", [localKeyFile]);
-		for (const k of keys) methods.push({ type: "publickey", username: user, key: k.key, passphrase: k.passphrase });
+		methods.push({ type: "publickey", username: user, key: Buffer.from(privateKey), passphrase: passphrase || undefined, label: "pasted" });
+	} else if (mode === "key") {
+		for (const k of loadKeys(keyPath, passphrase || password)) methods.push({ type: "publickey", username: user, key: k.key, passphrase: k.passphrase, label: keyPath });
+	} else if (mode === "local") {
+		// 这台电脑上已有的钥匙，越具体越靠前（见 localkeys.js），最后是 ssh-agent
+		for (const k of localKeysFor(host, { preferred: preferredKey, appKey: localKeyFile })) {
+			methods.push({ type: "publickey", username: user, key: k.key, label: k.label, path: k.path, isApp: k.isApp });
+		}
 		const agent = agentSocket();
-		if (agent && mode === "local") methods.push({ type: "agent", username: user, agent });
+		if (agent) methods.push({ type: "agent", username: user, agent, label: "ssh-agent" });
 	}
 	if (mode === "password" && password) {
 		methods.push({ type: "password", username: user, password });
@@ -95,7 +100,8 @@ function connect({ host, port, user, password, keyPath, auth, privateKey, passph
 		let seen = "";
 		let mismatch = false;
 		let allowed = null; // 服务器说它接受哪些登录方式（第一次失败后才知道）
-		conn.on("ready", () => resolve({ conn, fingerprint: seen }));
+		let current = null; // 正在试的那一种（登录成功后告诉调用方用的是哪把钥匙）
+		conn.on("ready", () => resolve({ conn, fingerprint: seen, keyLabel: current?.label || "", keyPath: current?.path || "", keyIsApp: Boolean(current?.isApp) }));
 		conn.on("error", (err) => {
 			if (mismatch) {
 				reject(new SshError("host_key", `服务器的身份指纹变了（以前 ${knownFingerprint}，现在 ${seen}）。如果服务器重装过系统，这是正常的：在服务器列表里删掉它再重新添加；否则可能有人冒充这台服务器，不要继续`, `The server's fingerprint changed (was ${knownFingerprint}, now ${seen}). Normal if the server was reinstalled: remove it from the list and add it again; otherwise someone may be impersonating it, so stop here`));
@@ -104,7 +110,9 @@ function connect({ host, port, user, password, keyPath, auth, privateKey, passph
 				if (mode === "password" && noPassword) {
 					reject(new SshError("key_only", "这台服务器关掉了密码登录，只认密钥：登录方式改用「私钥」或「本机密钥」", "This server has password login turned off and only accepts keys: switch to Private key or This computer's key"));
 				} else if (mode === "local") {
-					reject(new SshError("auth", "服务器不认这台电脑的密钥：先把本机公钥加到服务器上（见登录方式下面的说明），或者检查用户名", "The server does not accept this computer's key: add the public key to the server first (see the steps under the login method), or check the user name"));
+					const tried = methods.map((m) => (m.isApp ? "vpssh 本机密钥" : m.label)).join("、");
+					const triedEn = methods.map((m) => (m.isApp ? "vpssh key" : m.label)).join(", ");
+					reject(new SshError("auth", `服务器不认这台电脑上的钥匙（试了：${tried}）。把 vpssh 本机密钥的公钥加到服务器上（见下面的说明），或者检查用户名`, `The server accepted none of this computer's keys (tried: ${triedEn}). Add the vpssh key's public key to the server (see the steps below), or check the user name`));
 				} else if (mode === "key") {
 					reject(new SshError("auth", "服务器不认这把私钥：确认它对应的公钥在服务器上，以及用户名对不对（有的云厂商默认用户是 ubuntu、debian、admin）", "The server does not accept this key: check that its public key is on the server and the user name is right (some providers use ubuntu, debian or admin)"));
 				} else {
@@ -132,7 +140,10 @@ function connect({ host, port, user, password, keyPath, auth, privateKey, passph
 			keepaliveCountMax: 4,
 			authHandler: (methodsLeft, _partial, next) => {
 				if (Array.isArray(methodsLeft)) allowed = methodsLeft;
-				next(queue.shift() || false);
+				current = queue.shift() || null;
+				if (!current) return next(false);
+				const { label: _l, path: _p, isApp: _a, ...method } = current;
+				next(method);
 			},
 			hostVerifier: (key) => {
 				seen = fingerprint(key);
