@@ -44,6 +44,9 @@ PUBLIC_PORT=""
 PORT_FORCED=0 # 用 --port 自己指定过：域名、IP 都照它；否则域名走 443（见 resolve_trusted_host）
 # 和别的产品共用一个 Caddy（主 Caddyfile 是别人的，只加一行 import）
 CADDY_SHARED=0
+# 80/443 被 Caddy 以外的程序（nginx、apache…）占着：记下它的名字。vpssh 自己的 Caddy 只听访问端口（8443 起），
+# 用 IP 访问；不碰那两个端口，也不碰那个程序
+FOREIGN_WEB=""
 CADDY_SITE=/etc/caddy/vpssh-site.conf
 # 仓库来源：curl 管道模式下载这个分支或标签的整个仓库；latest = 最新发布版（fetch_repo 里查）
 REPO_SLUG="AIcivilization/vpssh"
@@ -245,8 +248,15 @@ choose_public_port() {
 		PUBLIC_PORT=$(sed -n 's/.*"publicPort": *\([0-9]*\).*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
 		PUBLIC_PORT="${PUBLIC_PORT:-443}"
 		grep -q '"portForced": *true' "$INSTALL_ROOT/state/config.json" 2>/dev/null && PORT_FORCED=1
+		FOREIGN_WEB=$(sed -n 's/.*"foreignWeb": *"\([^"]*\)".*/\1/p' "$INSTALL_ROOT/state/config.json" 2>/dev/null | head -1 || true)
 		return 0
 	fi
+	local p owner
+	for p in 80 443; do
+		port_busy "$p" || continue
+		owner=$(port_owner "$p")
+		[[ "$owner" != caddy ]] && { FOREIGN_WEB="${owner:-another-program}"; break; }
+	done
 	if [[ -n "$FORCE_PORT" ]]; then
 		[[ "$FORCE_PORT" =~ ^[0-9]+$ && "$FORCE_PORT" -ge 1 && "$FORCE_PORT" -le 65535 ]] || die "$(M "--port 不是合法端口: $FORCE_PORT" "--port is not a valid port: $FORCE_PORT")"
 		if port_busy "$FORCE_PORT" && [[ "$(port_owner "$FORCE_PORT")" != caddy ]]; then
@@ -260,14 +270,19 @@ choose_public_port() {
 		PUBLIC_PORT=443
 		return 0
 	fi
-	local p owner
-	for p in 80 443; do
-		port_busy "$p" || continue
-		owner=$(port_owner "$p")
-		if [[ "$owner" != caddy ]]; then
-			die "$(M "端口 $p 被 ${owner:-别的程序} 占用。vpssh 现在只能和 Caddy 共用 80/443（比如同机装着 dsh-vps）；可以先停掉它，或者换一台机器" "Port $p is used by ${owner:-another program}. vpssh can currently share 80/443 only with Caddy (e.g. dsh-vps on the same machine); stop it first, or use another machine")"
+	# 80/443 是别的程序的（nginx 等）：不碰它，vpssh 自己的 Caddy 只听 8443 起的空闲端口，用 IP 访问。
+	# 域名不行：证书要靠 80/443 签发，那两个端口在别人手里
+	if [[ -n "$FOREIGN_WEB" ]]; then
+		if [[ -n "$DOMAIN" ]]; then
+			die "$(M "80/443 端口由 ${FOREIGN_WEB} 在用，vpssh 签不了 ${DOMAIN} 的证书。可以去掉 --domain 用 IP 访问（vpssh 会自动用 8443），或者让 ${FOREIGN_WEB} 把这个域名转发给 vpssh" "Ports 80/443 are used by ${FOREIGN_WEB}, so vpssh cannot get a certificate for ${DOMAIN}. Drop --domain to use the IP (vpssh picks 8443 by itself), or have ${FOREIGN_WEB} forward the domain to vpssh")"
 		fi
-	done
+		for p in 8443 9443 10443 18443; do
+			if ! port_busy "$p"; then PUBLIC_PORT="$p"; break; fi
+		done
+		[[ -n "$PUBLIC_PORT" ]] || die "$(M "找不到空闲端口（8443、9443、10443、18443 都被占了），用 --port 指定一个" "No free port (8443, 9443, 10443, 18443 are all taken); pick one with --port")"
+		log "$(M "80/443 由 ${FOREIGN_WEB} 在用：vpssh 不碰它，改用 ${PUBLIC_PORT} 端口、用 IP 访问" "Ports 80/443 are used by ${FOREIGN_WEB}: vpssh leaves them alone and uses port ${PUBLIC_PORT} with the IP")"
+		return 0
+	fi
 	# 占着的是 Caddy，但上面没有别的网站（比如 vpssh 卸载后留下的 Caddy）：照常用 443
 	if ! caddy_has_other_site; then
 		PUBLIC_PORT=443
@@ -287,54 +302,64 @@ choose_public_port() {
 
 ## endregion
 
-## region: 步骤 2：Node.js 22
+## region: 步骤 2：Node.js 22（vpssh 自带一份，不碰系统的）
 
-install_node_nodesource() {
-	curl -fsSL https://deb.nodesource.com/setup_22.x -o /tmp/nodesource_setup.sh
-	bash /tmp/nodesource_setup.sh >/dev/null
-	apt-get install -y nodejs >/dev/null
-}
+# vpssh 用自己的 Node：$INSTALL_ROOT/node（官方二进制包，按官方 SHASUMS256 校验）。
+# 不装、不升、不换系统的 Node：服务器上别的程序可能正依赖系统里那个版本（比如 18、20），
+# 以前系统 Node 低于 22 时会被换成 22，可能把别的程序弄坏。
+# 目录不带版本号：DSH、dsh-model 的服务文件里记的是 node 的路径，换版本时路径不变。
+NODE_DIR="$INSTALL_ROOT/node"
 
-install_node_cn() {
-	# npmmirror 二进制镜像：取 latest-v22.x 目录中最新的 linux-x64 包并校验 sha256
-	local list pkg
-	list=$(curl -fsSL --max-time 30 "https://registry.npmmirror.com/-/binary/node/latest-v22.x/")
-	pkg=$(printf '%s' "$list" | grep -o 'node-v22[0-9.]*-linux-x64\.tar\.xz' | sort -Vu | tail -1)
-	[[ -n "$pkg" ]] || die "$(M "无法从 npmmirror 获取 Node 22 版本号" "Could not get the Node 22 version from npmmirror")"
-	log "$(M "下载 Node.js: ${pkg}（npmmirror）" "Downloading Node.js: ${pkg} (npmmirror)")"
-	curl -fsSL --retry 2 -o "/tmp/$pkg" "https://registry.npmmirror.com/-/binary/node/latest-v22.x/$pkg"
-	(cd /tmp && curl -fsSL "https://registry.npmmirror.com/-/binary/node/latest-v22.x/SHASUMS256.txt" \
-		| grep "${pkg}\$" | sha256sum -c - >/dev/null) || die "$(M "Node 包 sha256 校验失败" "Node package sha256 check failed")"
-	tar -xJf "/tmp/$pkg" -C /usr/local --strip-components=1
-	rm -f "/tmp/$pkg"
-	hash -r
+node_major() { "$1" --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\).*/\1/p' || true; }
+
+install_private_node() {
+	local arch base list pkg tmp
+	case "$(uname -m)" in
+	x86_64 | amd64) arch=x64 ;;
+	aarch64 | arm64) arch=arm64 ;;
+	*) die "$(M "不支持的 CPU 架构：$(uname -m)" "Unsupported CPU architecture: $(uname -m)")" ;;
+	esac
+	if [[ "$MIRROR" == "cn" ]]; then base="https://registry.npmmirror.com/-/binary/node/latest-v22.x"; else base="https://nodejs.org/dist/latest-v22.x"; fi
+	list=$(curl -fsSL --retry 2 --max-time 30 "$base/SHASUMS256.txt") \
+		|| die "$(M "取不到 Node 22 的版本列表：$base" "Could not get the Node 22 release list: $base")"
+	pkg=$(printf '%s\n' "$list" | awk '{print $2}' | grep -E "^node-v22\.[0-9.]+-linux-${arch}\.tar\.gz$" | sort -V | tail -1)
+	[[ -n "$pkg" ]] || die "$(M "Node 22 的版本列表里没有 linux-${arch} 的包" "No linux-${arch} package in the Node 22 release list")"
+	log "$(M "下载 Node.js：${pkg}" "Downloading Node.js: ${pkg}")"
+	tmp=$(mktemp -d /tmp/vpssh-node.XXXXXX)
+	curl -fsSL --retry 2 -o "$tmp/$pkg" "$base/$pkg" || die "$(M "下载 Node.js 失败" "Downloading Node.js failed")"
+	(cd "$tmp" && printf '%s\n' "$list" | grep "  ${pkg}\$" | sha256sum -c - >/dev/null) \
+		|| die "$(M "Node.js 包 sha256 校验失败" "Node.js package sha256 check failed")"
+	rm -rf "$NODE_DIR.new"
+	mkdir -p "$NODE_DIR.new"
+	tar -xzf "$tmp/$pkg" -C "$NODE_DIR.new" --strip-components=1
+	rm -rf "$tmp" "$NODE_DIR.old"
+	[[ -d "$NODE_DIR" ]] && mv "$NODE_DIR" "$NODE_DIR.old"
+	mv "$NODE_DIR.new" "$NODE_DIR"
+	rm -rf "$NODE_DIR.old"
 }
 
 step2_node() {
-	log "$(M "步骤 2/11：Node.js 22 + pnpm" "Step 2/11: Node.js 22 + pnpm")"
-	local major
-	major=$(node --version 2>/dev/null | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\).*/\1/p' || true)
-	if [[ "${major:-0}" -ge 22 ]]; then
-		log "$(M "已安装 Node $(node --version)，跳过" "Node $(node --version) already installed")"
+	log "$(M "步骤 2/11：Node.js 22（vpssh 自用，不改系统的 Node）" "Step 2/11: Node.js 22 (vpssh's own; the system Node is left alone)")"
+	mkdir -p "$INSTALL_ROOT"
+	if [[ "$(node_major "$NODE_DIR/bin/node")" -ge 22 ]] 2>/dev/null; then
+		log "$(M "vpssh 的 Node $("$NODE_DIR/bin/node" --version) 已就位" "vpssh's Node $("$NODE_DIR/bin/node" --version) is in place")"
 	else
-		apt-get update -y >/dev/null
-		if [[ "$MIRROR" == "cn" ]]; then install_node_cn; else install_node_nodesource; fi
-		major=$(node --version | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\).*/\1/p')
-		[[ "${major:-0}" -ge 22 ]] || die "$(M "Node.js 22 安装失败" "Installing Node.js 22 failed")"
-		log "$(M "Node $(node --version) 安装完成" "Node $(node --version) installed")"
+		install_private_node
+		[[ "$(node_major "$NODE_DIR/bin/node")" -ge 22 ]] 2>/dev/null || die "$(M "Node.js 22 安装失败" "Installing Node.js 22 failed")"
+		log "$(M "Node $("$NODE_DIR/bin/node" --version) 已装到 $NODE_DIR" "Node $("$NODE_DIR/bin/node" --version) installed in $NODE_DIR")"
 	fi
+	# 之后这个脚本里的 node、npm、pnpm 都是 vpssh 自己的这一份
+	export PATH="$NODE_DIR/bin:$PATH"
+	hash -r
 
-	# pnpm：`dsh plugin` 管理插件依赖的包管理器（/setup 向导可选安装插件需要）
-	if ! command -v pnpm >/dev/null 2>&1; then
-		log "$(M "安装 pnpm（插件管理需要）" "Installing pnpm")"
-		if [[ "$MIRROR" == "cn" ]]; then
-			npm install -g pnpm --registry=https://registry.npmmirror.com >/dev/null 2>&1 \
-				|| npm install -g pnpm >/dev/null 2>&1 || true
-		else
-			npm install -g pnpm >/dev/null 2>&1 || true
-		fi
+	# pnpm：`dsh plugin` 管理插件依赖用；装进 vpssh 自己的 Node 里，不进系统
+	if [[ ! -x "$NODE_DIR/bin/pnpm" ]]; then
+		log "$(M "安装 pnpm（插件管理需要）" "Installing pnpm (for plugin management)")"
+		local reg=()
+		[[ "$MIRROR" == "cn" ]] && reg=(--registry=https://registry.npmmirror.com)
+		npm install -g pnpm ${reg[@]+"${reg[@]}"} >/dev/null 2>&1 || npm install -g pnpm >/dev/null 2>&1 || true
 	fi
-	command -v pnpm >/dev/null 2>&1 || warn "$(M "pnpm 未安装，插件安装功能不可用（可稍后 npm i -g pnpm）" "pnpm is not installed (npm i -g pnpm later)")"
+	[[ -x "$NODE_DIR/bin/pnpm" ]] || warn "$(M "pnpm 未安装，插件安装功能可能不可用" "pnpm is not installed; installing plugins may not work")"
 }
 
 ## endregion
@@ -419,7 +444,7 @@ step5_keys() {
 	fetch_file keyd/keyd.js "$INSTALL_ROOT/keyd/keyd.js"
 	node --check "$INSTALL_ROOT/keyd/keyd.js" || die "$(M "keyd/keyd.js 语法检查失败" "keyd/keyd.js failed its syntax check")"
 	fetch_file units/vpssh-keyd.service /tmp/vpssh-keyd.service.tpl
-	sed "s|__NODE_BIN__|$(command -v node)|" /tmp/vpssh-keyd.service.tpl >/etc/systemd/system/vpssh-keyd.service
+	sed "s|__NODE_BIN__|$NODE_DIR/bin/node|" /tmp/vpssh-keyd.service.tpl >/etc/systemd/system/vpssh-keyd.service
 	systemctl daemon-reload
 	systemctl enable vpssh-keyd >/dev/null || die "$(M "启用 vpssh-keyd 失败（见上一行）" "Could not enable vpssh-keyd (see the line above)")"
 	systemctl restart vpssh-keyd || die "$(M "vpssh-keyd 起不来：journalctl -u vpssh-keyd -n 30" "vpssh-keyd does not start: journalctl -u vpssh-keyd -n 30")"
@@ -579,7 +604,16 @@ step7_caddy() {
 		curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
 			>/etc/apt/sources.list.d/caddy-stable.list
 		apt-get update -y >/dev/null
-		apt-get install -y caddy >/dev/null
+		# 80 被别的程序占着时：装包时先不让它启动（自带的样例配置听 80，会启动失败、让 apt 报错），
+		# 下面写好只听访问端口的配置再启动
+		local held_start=0
+		if [[ -n "$FOREIGN_WEB" && ! -e /usr/sbin/policy-rc.d ]]; then
+			printf '#!/bin/sh\nexit 101\n' >/usr/sbin/policy-rc.d
+			chmod 755 /usr/sbin/policy-rc.d
+			held_start=1
+		fi
+		apt-get install -y caddy >/dev/null || { [[ $held_start -eq 1 ]] && rm -f /usr/sbin/policy-rc.d; die "$(M "安装 Caddy 失败" "Installing Caddy failed")"; }
+		[[ $held_start -eq 1 ]] && rm -f /usr/sbin/policy-rc.d
 	fi
 
 	# 主 Caddyfile：
@@ -613,7 +647,7 @@ step7_caddy() {
 	local site="$TRUSTED_HOST" alt_port="$PUBLIC_PORT"
 	# 域名走 443 时也听「域名:访问端口」（带端口的地址照样能进）；--port 指定的只听那一个
 	[[ $PORT_FORCED -eq 1 ]] && alt_port=0
-	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" "$CADDY_SHARED" "$alt_port" \
+	node "$INSTALL_ROOT/gate/site-block.js" "$site" "$INSTALL_ROOT" "$GATE_PORT" "$CADDY_SHARED" "$alt_port" "$([[ -n "$FOREIGN_WEB" ]] && echo 1 || echo 0)" \
 		>"$CADDY_SITE" || die "$(M "生成站点块失败" "Generating the site config failed")"
 	chown "$DSH_USER":caddy "$CADDY_SITE"
 	chmod 640 "$CADDY_SITE"
@@ -722,12 +756,14 @@ DSH_PORT=$DSH_PORT
 VPSSH_PUBLIC_PORT=$PUBLIC_PORT
 VPSSH_PORT_FORCED=$PORT_FORCED
 VPSSH_CADDY_SHARED=$CADDY_SHARED
+VPSSH_FOREIGN_WEB=$FOREIGN_WEB
 XDG_RUNTIME_DIR=/run/user/$uid
 DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus
 DSH_MODEL_MODE=local
 DSH_MODEL_HOME=/home/vpssh/.dsh-model
 DSH_MODEL_DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
 DSH_MODEL_DSH_VERSION=$DSH_VERSION
+PATH=$NODE_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 	chmod 600 "$INSTALL_ROOT/state/gate.env"
 	chown "$DSH_USER" "$INSTALL_ROOT/state/gate.env"
@@ -746,6 +782,7 @@ DSH_MODEL_DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bi
 DSH_MODEL_DSH_VERSION=$DSH_VERSION
 pnpm_config_minimum_release_age=0
 pnpm_config_package_import_method=copy
+PATH=$NODE_DIR/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 EOF
 	chown -R "$DSH_USER": /home/vpssh/.config
 	# 正在跑的用户级 systemd 立刻用上（environment.d 只在它启动时读），已有的 dsh-model 服务重启一下
@@ -754,6 +791,13 @@ EOF
 		mapfile -t kv < <(grep -E '^[A-Za-z_]+=' "$envd/60-vpssh.conf")
 		runuser -u "$DSH_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
 			systemctl --user set-environment "${kv[@]}" 2>/dev/null || true
+		# 0.2.1 以前启用的模型来源，后台服务记的是系统的 node：换成 vpssh 自己的（系统的以后被删也不受影响）
+		local unit=/home/vpssh/.config/systemd/user/dsh-model-bridge.service
+		if [[ -f "$unit" ]] && grep -q '^ExecStart=' "$unit" && ! grep -q "^ExecStart=$NODE_DIR/bin/node " "$unit"; then
+			sed -i "s|^ExecStart=[^ ]*/node |ExecStart=$NODE_DIR/bin/node |" "$unit"
+			runuser -u "$DSH_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+				systemctl --user daemon-reload 2>/dev/null || true
+		fi
 		runuser -u "$DSH_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
 			systemctl --user try-restart dsh-model-engine.service dsh-model-bridge.service 2>/dev/null || true
 	fi
@@ -771,6 +815,7 @@ EOF
   "publicPort": $PUBLIC_PORT,
   "portForced": $([[ $PORT_FORCED -eq 1 ]] && echo true || echo false),
   "caddyShared": $([[ $CADDY_SHARED -eq 1 ]] && echo true || echo false),
+  "foreignWeb": "$FOREIGN_WEB",
   "mirror": "${MIRROR:-default}",
   "installedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }
@@ -781,8 +826,7 @@ EOF
 	chmod 700 "$INSTALL_ROOT/state"
 
 	# systemd unit（模板替换 node 路径）
-	local node_bin
-	node_bin=$(command -v node)
+	local node_bin="$NODE_DIR/bin/node"
 	fetch_file units/vpssh.service /tmp/vpssh.service.tpl
 	sed "s|__NODE_BIN__|${node_bin}|" /tmp/vpssh.service.tpl >/etc/systemd/system/vpssh.service
 	systemctl daemon-reload
@@ -802,6 +846,8 @@ step9_firewall() {
 	# 要放行的：SSH（别把自己关在外面）、80（签发证书、跳转 HTTPS）、浏览器访问的端口
 	# 443 也放行：设了域名就走 443（和同机别的网站共用）
 	local ports=("${LOCAL_SSH_PORT:-22}" 80 443) p opened=""
+	# 80/443 是别的程序（nginx 等）的：那是它的事，vpssh 只放行自己的访问端口
+	[[ -n "$FOREIGN_WEB" ]] && ports=("${LOCAL_SSH_PORT:-22}")
 	[[ "$PUBLIC_PORT" == 443 ]] || ports+=("$PUBLIC_PORT")
 	if command -v ufw >/dev/null 2>&1; then
 		for p in "${ports[@]}"; do ufw allow "$p/tcp" >/dev/null 2>&1 || true; done
@@ -820,7 +866,9 @@ step9_firewall() {
 		log "$(M "这台机器没开防火墙（ufw / firewalld），不用放行" "No firewall (ufw / firewalld) is running here; nothing to open")"
 	fi
 	# 云厂商的安全组在机器外面，脚本改不了
-	if [[ "$PUBLIC_PORT" == 443 ]]; then
+	if [[ -n "$FOREIGN_WEB" ]]; then
+		log "$(M "云厂商的安全组（控制台里）也要放行 TCP $PUBLIC_PORT" "Also allow TCP $PUBLIC_PORT in your cloud provider's security group (in its console)")"
+	elif [[ "$PUBLIC_PORT" == 443 ]]; then
 		log "$(M "云厂商的安全组（控制台里）也要放行 TCP 80、443" "Also allow TCP 80 and 443 in your cloud provider's security group (in its console)")"
 	else
 		log "$(M "云厂商的安全组（控制台里）也要放行 TCP $PUBLIC_PORT 和 443（用 IP 访问走 $PUBLIC_PORT，设了域名走 443）" "Also allow TCP $PUBLIC_PORT and 443 in your cloud provider's security group (in its console): $PUBLIC_PORT for the IP, 443 once a domain is set")"

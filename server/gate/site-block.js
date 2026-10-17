@@ -82,7 +82,12 @@ function caddySiteBlock(host, opts = {}) {
 	const ip = isIpHost(host);
 	// 用 IP 访问时浏览器不发 SNI，要靠 default_sni 挑证书。和别人共用 Caddy 时不能写全局块：
 	// 同一台机器的另一个产品若也是 IP 站点，它的 default_sni 就是同一个 IP，照样挑得到
-	const globals = ip && !opts.shared ? `{\n\tdefault_sni ${hostName(host)}\n}\n\n` : "";
+	// offDefaultPorts：80/443 是别的网站（nginx 等）的，vpssh 自己的 Caddy 只听访问端口：
+	// 关掉 HTTP→HTTPS 跳转（它要占 80）。用 IP 访问、证书是 Caddy 自签的，也用不着 80 签证书
+	const globalLines = [];
+	if (ip && !opts.shared) globalLines.push(`\tdefault_sni ${hostName(host)}`);
+	if (opts.offDefaultPorts && !opts.shared) globalLines.push("\tauto_https disable_redirects");
+	const globals = globalLines.length ? `{\n${globalLines.join("\n")}\n}\n\n` : "";
 	const tls = ip ? "\ttls internal\n" : "";
 	if (!vpn.on) return `${globals}${address} {\n${tls}${proxyLines(port, "\t")}}\n`;
 	// 隧道模式：非隧道来源直接断连，连响应体都不给。
@@ -126,5 +131,6 @@ if (require.main === module) {
 	const shared = process.argv[5] !== undefined ? process.argv[5] === "1" : readShared(state);
 	const cfg = readConfig(state);
 	const altPort = process.argv[6] !== undefined ? Number(process.argv[6]) : cfg.portForced ? 0 : Number(cfg.publicPort) || 0;
-	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared, altPort }));
+	const offDefaultPorts = process.argv[7] !== undefined ? process.argv[7] === "1" : Boolean(cfg.foreignWeb);
+	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared, altPort, offDefaultPorts }));
 }

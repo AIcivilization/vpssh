@@ -43,6 +43,9 @@ const PUBLIC_PORT = Number(process.env.VPSSH_PUBLIC_PORT || 443);
 const PORT_FORCED = process.env.VPSSH_PORT_FORCED === "1";
 // 和别的产品共用一个 Caddy：站点文件里不写全局设置块（见 site-block.js）
 const CADDY_SHARED = process.env.VPSSH_CADDY_SHARED === "1";
+// 80/443 被别的程序（nginx 等）占着：vpssh 自己的 Caddy 只听访问端口（如 8443），只能用 IP 访问——
+// 域名的证书要靠 80/443 签发（安装时记下占着的程序名）
+const FOREIGN_WEB = process.env.VPSSH_FOREIGN_WEB || "";
 /**
  * 访问地址带不带端口。只有用 IP 访问才需要换端口：浏览器按 IP 打开时不带网站名（SNI），
  * 同一个 443 上分不清是哪个网站。用域名时 Caddy 按域名分，和同机别的网站共用 443 就行，不带端口
@@ -1337,7 +1340,7 @@ function persistTrustedHost(domain) {
 // 站点块模板在 gate/site-block.js（install.sh 与 vpssh vpn 共用）。
 // 改域名时必须带上当前隧道策略，否则「仅隧道可访问」会被改域名动作悄悄抹掉。
 function siteBlock(host) {
-	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED, altPort: PORT_FORCED ? 0 : PUBLIC_PORT });
+	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED, altPort: PORT_FORCED ? 0 : PUBLIC_PORT, offDefaultPorts: Boolean(FOREIGN_WEB) });
 }
 
 async function applyDomainChange(domain) {
@@ -1434,6 +1437,7 @@ async function handleDomain(req, res, user) {
 		return json(400, { error: "bad_request" });
 	}
 	const domain = String(body?.domain ?? "").trim().toLowerCase();
+	if (domain && FOREIGN_WEB) return json(409, { error: "foreign_web", owner: FOREIGN_WEB });
 	let cfg = {};
 	try {
 		cfg = JSON.parse(fs.readFileSync(path.join(STATE_DIR, "config.json"), "utf8"));
@@ -1717,6 +1721,12 @@ async function handleSetup(req, res) {
 	if (password.length < 12) return redisplay(L("密码至少 12 位。", "The password needs at least 12 characters."));
 	if (password !== password2) return redisplay(L("两次输入的密码不一致。", "The two passwords do not match."));
 	if (domain && !DOMAIN_PATTERN.test(domain)) return redisplay(L("域名格式不合法。", "That domain is not valid."));
+	if (domain && FOREIGN_WEB) {
+		return redisplay(L(
+			`这台服务器的 80/443 端口由 ${FOREIGN_WEB} 在用，vpssh 签不了域名证书，只能用 IP 访问。域名一栏请留空。`,
+			`Ports 80/443 on this server are used by ${FOREIGN_WEB}, so vpssh cannot get a certificate for a domain and is reached by IP only. Leave the domain empty.`,
+		));
+	}
 
 	log(`setup submitted from ${ip} (username=${username}, domain=${domain || "(unchanged)"}, apiKey=${apiKey ? "yes" : "no"})`);
 	writeAdminRecord(username, password);

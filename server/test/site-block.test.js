@@ -33,3 +33,12 @@ test("域名走 443 时同时听「域名:8443」：带端口的地址照样能�
 	assert.match(caddySiteBlock("vps.example.com:9443", { altPort: 8443, shared: true }), /^vps\.example\.com:9443 \{$/m);
 	assert.match(caddySiteBlock("vps.example.com", { altPort: 443, shared: true }), /^vps\.example\.com \{$/m);
 });
+
+test("80/443 是别的程序（nginx）的：自己的 Caddy 关掉 HTTP 跳转，不去占 80", () => {
+	const block = caddySiteBlock("1.2.3.4:8443", { offDefaultPorts: true });
+	assert.match(block, /^\{\n\tdefault_sni 1\.2\.3\.4\n\tauto_https disable_redirects\n\}/);
+	assert.match(block, /^1\.2\.3\.4:8443 \{$/m);
+	// 和别人共用 Caddy 时不写全局块（那是别人的配置）
+	assert.doesNotMatch(caddySiteBlock("1.2.3.4:8443", { offDefaultPorts: true, shared: true }), /auto_https/);
+	assert.doesNotMatch(caddySiteBlock("1.2.3.4"), /auto_https/);
+});

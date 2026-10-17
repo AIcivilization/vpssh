@@ -1191,6 +1191,7 @@ window.__ModuleLoader__.load({
           if (!res.ok) {
             const msg = {
               bad_domain: L('域名格式不对。', 'That is not a valid domain.'),
+              foreign_web: L(`这台服务器的 80/443 端口由 ${body.owner} 在用，vpssh 签不了域名证书，只能用 IP 访问。`, `Ports 80/443 on this server are used by ${body.owner}, so vpssh cannot get a certificate for a domain and is reached by IP only.`),
               dns_none: L(`查不到 ${body.domain} 的解析。先在域名服务商那里加一条 A 记录指向这台服务器，等生效后再来。`, `${body.domain} does not resolve yet. Add an A record pointing to this server at your DNS provider, wait for it to take effect, then try again.`),
               dns_mismatch: L(`${body.domain} 解析到的是 ${(body.ips || []).join('、')}，不是这台服务器（${body.serverIp}）。改好 A 记录、等生效后再来；用 Cloudflare 的话先关掉代理（灰色云朵）。`, `${body.domain} points to ${(body.ips || []).join(', ')}, not this server (${body.serverIp}). Fix the A record and wait for it to take effect; with Cloudflare, turn the proxy off (grey cloud) first.`),
               no_ip: L('不知道这台服务器的 IP，没法改回 IP 访问。在服务器上执行：sudo bash install.sh --ip <IP>', 'The server IP is unknown, so it cannot switch back to the IP. On the server run: sudo bash install.sh --ip <IP>'),

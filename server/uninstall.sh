@@ -148,7 +148,7 @@ if [[ -f "$MODEL_BIN" && -f "$INSTALL_ROOT/state/gate.env" ]] && id "$DSH_USER" 
 	keep=()
 	[[ $KEEP_DATA -eq 1 ]] && keep=(--keep-auth)
 	(cd /home/vpssh && runuser -u "$DSH_USER" -- env "${model_env[@]}" HOME=/home/vpssh DSH_MODEL_MODE=local \
-		"$(command -v node)" "$MODEL_BIN" uninstall --yes --remove-plugin ${keep[@]+"${keep[@]}"} </dev/null) \
+		"$( [[ -x "$INSTALL_ROOT/node/bin/node" ]] && echo "$INSTALL_ROOT/node/bin/node" || command -v node)" "$MODEL_BIN" uninstall --yes --remove-plugin ${keep[@]+"${keep[@]}"} </dev/null) \
 		|| warn "$(M "dsh-model 没卸干净：之后可执行 sudo -u vpssh dsh-model uninstall" "dsh-model was not fully removed")"
 fi
 loginctl disable-linger "$DSH_USER" 2>/dev/null || true
@@ -205,7 +205,17 @@ elif [[ -f "$CADDYFILE" ]] && grep -qF "import $CADDY_SITE_FILE" "$CADDYFILE"; t
 	fi
 fi
 if command -v caddy >/dev/null 2>&1; then
+	# 起不来（比如还原出的样例配置要听 80，而 80 是 nginx 的）：Caddy 现在没有自己的网站要服务，
+	# 停掉、不再开机自启，不留一个「失败」的服务；包本身不卸（要卸加 --purge-caddy）
+	# restart 先报成功、Caddy 随后才因端口被占退出（实测）：等一会儿再看它在不在跑
 	systemctl reload caddy 2>/dev/null || systemctl restart caddy 2>/dev/null || true
+	sleep 3
+	if ! systemctl is-active --quiet caddy; then
+		systemctl stop caddy 2>/dev/null || true
+		systemctl disable caddy 2>/dev/null || true
+		systemctl reset-failed caddy 2>/dev/null || true
+		log "$(M "Caddy 现在没有要服务的网站，已停用（没卸载；要卸加 --purge-caddy）" "Caddy has no site left to serve; stopped and disabled (not removed; add --purge-caddy to remove it)")"
+	fi
 fi
 if [[ $PURGE_CADDY -eq 1 ]]; then
 	systemctl stop caddy 2>/dev/null || true

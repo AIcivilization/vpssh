@@ -1,7 +1,7 @@
 {
   "name": "vpssh-desktop",
   "productName": "vpssh",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "vpssh desktop: install vpssh on your VPS and use it in its own window. · vpssh 桌面版：把 vpssh 装到 VPS 上，在独立窗口里使用。",
   "license": "MIT",

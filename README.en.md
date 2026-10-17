@@ -179,7 +179,11 @@ sudo vpssh uninstall    # backs up first and keeps the data unless you add --del
 <details>
 <summary><b>Another site already uses 80/443 on the server. Can I still install?</b></summary>
 
-If it is Caddy (e.g. dsh-vps): yes. vpssh shares that Caddy and only appends one `import` line to its config, which uninstalling removes again. With a domain it still uses 443 (told apart by name); without one it uses 8443. If it is nginx or another program: they cannot coexist yet, and the installer says so and stops.
+Yes, and vpssh leaves existing sites and programs alone:
+
+- Caddy (e.g. dsh-vps): vpssh shares that Caddy and only appends one `import` line to its config, which uninstalling removes again. With a domain it still uses 443 (told apart by name); without one it uses 8443.
+- nginx, Apache and the like: vpssh does not touch them and switches to port 8443 with the IP. A domain is not possible then (certificates need 80/443); installing with `--domain` explains this and stops.
+- If vpssh's internal ports (3190, 3191) are taken it moves to free ones; vpssh brings its own Node.js (in `/opt/vpssh/node`) and never changes the system Node; uninstalling removes only vpssh's own things.
 </details>
 
 <details>

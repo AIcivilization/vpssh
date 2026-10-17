@@ -179,7 +179,11 @@ sudo vpssh uninstall    # 卸载：先备份，默认保留数据（加 --delete
 <details>
 <summary><b>服务器上已经有网站占着 80/443，能装吗？</b></summary>
 
-如果占着的是 Caddy（比如 dsh-vps）：能。vpssh 和它共用 Caddy，只在它的配置末尾加一行 `import`，卸载时只去掉这一行。有域名时照样用 443（按域名区分），没有域名时用 8443。占着的是 nginx 等别的程序：目前还不能共存，安装会说明原因后退出。
+能，vpssh 不会动已有的网站和程序：
+
+- 占着的是 Caddy（比如 dsh-vps）：vpssh 和它共用 Caddy，只在它的配置末尾加一行 `import`，卸载时只去掉这一行。有域名时照样用 443（按域名区分），没有域名时用 8443。
+- 占着的是 nginx、Apache 等：vpssh 不碰它们，自动改用 8443、用 IP 访问。这种情况下用不了域名（证书要靠 80/443 签发），装的时候带了 `--domain` 会说明原因后停下。
+- vpssh 内部用的端口（3190、3191）被占时自动往后换；vpssh 用自己的一份 Node.js（在 `/opt/vpssh/node`），不改系统里的 Node；卸载只删 vpssh 自己的东西。
 </details>
 
 <details>
