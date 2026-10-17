@@ -110,10 +110,12 @@ function localKeyPanel(getHost) {
 			const keys = await api.localKeys(getHost()).catch(() => []);
 			found.replaceChildren(
 				h("div", null, keys.length
-					? L("这台电脑上找到这些钥匙，会按顺序试（服务器认其中一把就能直接登录，比如 dsh-vps-manager 管过的服务器都认 dsh_vps_ed25519）：", "Keys found on this computer, tried in this order (if the server trusts one of them you are in, e.g. servers managed by dsh-vps-manager trust dsh_vps_ed25519):")
-					: L("这台电脑的 ~/.ssh 里没找到能用的钥匙（带口令的会跳过）。用下面 vpssh 的本机密钥：", "No usable key in ~/.ssh on this computer (keys with a passphrase are skipped). Use the vpssh key below:")),
+					? L("这台电脑上有这些钥匙，登录时按顺序试：", "This computer has these keys; they are tried in this order when logging in:")
+					: L("这台电脑的 ~/.ssh 里没有可用的钥匙（带口令的会跳过）。用下面 vpssh 的本机密钥：", "No usable key in ~/.ssh on this computer (keys with a passphrase are skipped). Use the vpssh key below:")),
 				...(keys.length ? [h("ul", { class: "keys" }, keys.map((k) => h("li", null, k.label)))] : []),
-				h("div", { class: "hint" }, L("ssh-agent 里的钥匙也会试。私钥只在这台电脑上读，不会上传。", "Keys in ssh-agent are tried too. Private keys are read on this computer only and never uploaded.")));
+				h("div", { class: "hint" }, L(
+					"有钥匙不代表能登录：要这台服务器事先信任它（公钥已放在服务器上，比如 dsh-vps-manager 管过的服务器信任 dsh_vps_ed25519）。随便填一个别人的服务器，这些钥匙是进不去的。点下面的「测试登录」就知道这台服务器认不认。私钥只在这台电脑上用，不会发给服务器。",
+					"Having a key does not mean you can log in: the server must already trust it (its public key placed on the server, e.g. servers managed by dsh-vps-manager trust dsh_vps_ed25519). These keys will not open someone else's server. Click Test login below to see whether this server accepts one. Private keys stay on this computer and are never sent to the server.")));
 		}, 300);
 	};
 	refresh();
@@ -146,6 +148,32 @@ function localKeyPanel(getHost) {
 	const wrap = h("div", null, found, box);
 	wrap.refresh = refresh;
 	return wrap;
+}
+
+/** 测试登录的结果，写成大白话：认没认、用的哪把、能不能装 */
+function testResult(r) {
+	if (r?.ok) {
+		const who = `${r.user}@${r.host}`;
+		const how = r.auth === "password" ? L("用密码", "with the password")
+			: r.key === "app" ? L("用 vpssh 本机密钥", "with the vpssh key")
+				: r.key === "pasted" ? L("用你粘贴的私钥", "with the private key you pasted")
+					: r.key === "ssh-agent" ? L("用 ssh-agent 里的钥匙", "with a key from ssh-agent")
+						: r.key ? L(`用这台电脑上的钥匙 ${r.key}`, `with this computer's key ${r.key}`) : "";
+		const trusted = r.auth === "local" || r.auth === "key"
+			? L("这台服务器事先信任这把钥匙，所以不需要密码。", "The server already trusts this key, so no password is needed.") : "";
+		const sp = /[\x21-\x7e]$/.test(how) ? " " : ""; // 钥匙路径结尾是英文时和「登录」之间空一格
+		return r.root
+			? [h("b", null, L(`✓ 可以登录：${how}${sp}登录 ${who}`, `✓ You can log in: ${how} as ${who}`)),
+				h("div", null, `${trusted}${L("有管理员权限，点下面的「安装到这台 VPS」就会用同样的方式登录。", "It has admin rights; Install on this VPS below logs in the same way.")}`)]
+			: [h("b", null, L(`⚠ 登录成功（${how}），但 ${r.user} 没有管理员权限`, `⚠ Logged in (${how}), but ${r.user} has no admin rights`)),
+				h("div", null, L("这个账号不是 root，也不能免密 sudo，装不了。改用 root 登录，或用这个账号的密码登录（密码会用来 sudo）。", "This account is not root and cannot sudo without a password, so it cannot install. Log in as root, or log in to this account with its password (used for sudo)."))];
+	}
+	const rows = [h("b", null, L("✗ 登录不了", "✗ Cannot log in")), h("div", null, r?.error || "?")];
+	if (r?.code === "auth" && r?.auth === "local") {
+		rows.push(h("div", null, L("这是正常的安全保护：服务器只放行事先信任的钥匙。也可以改用「密码」登录。", "This is normal protection: a server only lets in keys it already trusts. You can also log in with the password.")));
+	}
+	if (r?.code === "key_only") rows.push(h("div", null, L("已经切到「本机密钥」，再点一次「测试登录」。", "Switched to This computer's key; click Test login again.")));
+	return rows;
 }
 
 /** 登录信息：IP、端口、用户名；登录方式：密码 / 私钥 / 本机密钥 */
@@ -190,18 +218,20 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 		paneBox.replaceChildren(panes[auth]);
 	};
 	show();
-	// 测试登录：只登录看看（用的哪把钥匙、能不能取得 root），什么都不改
-	const testOut = h("div", { class: "hint" });
+	// 测试登录：只登录看看（这台服务器认不认、用的哪把钥匙、有没有管理员权限），什么都不改
+	const testOut = h("div", { class: "testresult", hidden: true });
 	const testBtn = h("button", { type: "button", class: "plain small" }, L("测试登录", "Test login"));
+	const testNote = h("span", { class: "hint" }, L("先试试能不能登录这台服务器，不会改动服务器上的任何东西", "Check whether you can log in to this server first; nothing on the server is changed"));
 	testBtn.addEventListener("click", async () => {
 		testBtn.disabled = true;
-		testOut.className = "hint";
-		testOut.textContent = L("正在连接…", "Connecting…");
+		testOut.hidden = false;
+		testOut.className = "testresult wait";
+		testOut.replaceChildren(h("div", null, L("正在连接这台服务器…", "Connecting to the server…")));
 		const r = await api.testLogin(el.read()).catch((e) => ({ error: String(e.message || e) }));
 		testBtn.disabled = false;
-		testOut.className = r?.ok ? "okline" : "errline";
-		testOut.textContent = r?.ok ? `✓ ${r.message}` : r?.error || "?";
-		if (r?.error && /只认密钥|only accepts keys/.test(r.error)) { auth = "local"; show(); }
+		testOut.replaceChildren(...testResult(r));
+		testOut.className = `testresult ${r?.ok ? (r.root ? "ok" : "warn") : "bad"}`;
+		if (r?.code === "key_only") { auth = "local"; show(); }
 	});
 	const el = h("div", null,
 		h("div", { class: "row wide" },
@@ -211,7 +241,8 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 			field(L("用户名", "User name"), text("user", prefill.user ?? "root", "root"), L("建议用 root；别的账号要能 sudo", "root is easiest; another account must be able to sudo")),
 			h("div", { class: "field" }, h("label", null, L("登录方式", "Log in with")), picker)),
 		paneBox,
-		h("div", { class: "testrow" }, testBtn, testOut));
+		h("div", { class: "testrow" }, testBtn, testNote),
+		testOut);
 	el.querySelector("[name=host]").addEventListener("input", () => localPane.refresh());
 	el.read = () => ({
 		host: val(el, "host"),

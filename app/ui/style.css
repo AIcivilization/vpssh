@@ -79,6 +79,13 @@ button:disabled { opacity: .55; cursor: default; }
 button.small { padding: 6px 12px; font-size: 13px; }
 ul.keys { margin: 6px 0; padding-left: 20px; font: 12px/1.7 ui-monospace, Menlo, Consolas, monospace; }
 .testrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -6px 0 18px; }
+.testresult { border-radius: 8px; padding: 12px 14px; margin: 0 0 18px; font-size: 13px; line-height: 1.7; border: 1px solid var(--line); }
+.testresult b { display: block; font-size: 14px; margin-bottom: 2px; }
+.testresult.wait { color: var(--muted); }
+.testresult.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 10%, transparent); border-color: color-mix(in srgb, var(--ok) 40%, transparent); }
+.testresult.warn { color: #c98a12; background: color-mix(in srgb, #c98a12 10%, transparent); border-color: color-mix(in srgb, #c98a12 40%, transparent); }
+.testresult.bad { color: var(--danger); background: color-mix(in srgb, var(--danger) 10%, transparent); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+.testresult div { color: var(--text); }
 .okline { color: var(--ok); font-size: 13px; }
 .errline { color: var(--danger); font-size: 13px; }
 .keyline { font-size: 12px; color: var(--muted); margin-top: 6px; word-break: break-all; }

@@ -258,14 +258,18 @@ function registerIpc() {
 		try {
 			const { conn, keyLabel, keyIsApp } = await sshConnect(opts, { knownFingerprint: known?.hostKey || "" });
 			try {
-				const r = await runAsRoot(conn, "id -un\n", { password: opts.password });
-				const how = opts.auth === "password" ? L("密码", "password") : keyIsApp ? L("vpssh 本机密钥", "the vpssh key") : keyLabel === "pasted" ? L("粘贴的私钥", "the pasted key") : keyLabel;
-				return { ok: true, message: L(`能登录：用 ${how} 登录 ${opts.user}@${opts.host}，可以取得 ${r.out.trim()} 权限`, `Works: logged in to ${opts.user}@${opts.host} with ${how}, and can act as ${r.out.trim()}`) };
+				let root = true;
+				try {
+					await runAsRoot(conn, "id -un\n", { password: opts.password });
+				} catch {
+					root = false; // 登得进去，但不是 root、也不能 sudo
+				}
+				return { ok: true, auth: opts.auth, key: keyIsApp ? "app" : keyLabel, user: opts.user, host: opts.host, root };
 			} finally {
 				conn.end();
 			}
 		} catch (err) {
-			return { error: errText(err) };
+			return { error: errText(err), code: err?.code || "", auth: opts.auth };
 		}
 	});
 	// 本机密钥：读（generate=true 时没有就生成），连同把公钥加到服务器上的那一行命令
