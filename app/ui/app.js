@@ -114,8 +114,8 @@ function localKeyPanel(getHost) {
 					: L("这台电脑的 ~/.ssh 里没有可用的钥匙（带口令的会跳过）。用下面 vpssh 的本机密钥：", "No usable key in ~/.ssh on this computer (keys with a passphrase are skipped). Use the vpssh key below:")),
 				...(keys.length ? [h("ul", { class: "keys" }, keys.map((k) => h("li", null, k.label)))] : []),
 				h("div", { class: "hint" }, L(
-					"有钥匙不代表能登录：要这台服务器事先信任它（公钥已放在服务器上，比如 dsh-vps-manager 管过的服务器信任 dsh_vps_ed25519）。随便填一个别人的服务器，这些钥匙是进不去的。点下面的「测试登录」就知道这台服务器认不认。私钥只在这台电脑上用，不会发给服务器。",
-					"Having a key does not mean you can log in: the server must already trust it (its public key placed on the server, e.g. servers managed by dsh-vps-manager trust dsh_vps_ed25519). These keys will not open someone else's server. Click Test login below to see whether this server accepts one. Private keys stay on this computer and are never sent to the server.")));
+					"有钥匙不代表能登录：要这台服务器事先信任它（公钥已放在服务器上，比如 dsh-vps-manager 管过的服务器信任 dsh_vps_ed25519）。随便填一个别人的服务器，这些钥匙是进不去的。点上面的「测试登录」就知道这台服务器认不认。私钥只在这台电脑上用，不会发给服务器。",
+					"Having a key does not mean you can log in: the server must already trust it (its public key placed on the server, e.g. servers managed by dsh-vps-manager trust dsh_vps_ed25519). These keys will not open someone else's server. Click Test login above to see whether this server accepts one. Private keys stay on this computer and are never sent to the server.")));
 		}, 300);
 	};
 	refresh();
@@ -207,21 +207,9 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 	};
 	const localPane = localKeyPanel(() => val(el, "host"));
 	panes.local.append(localPane);
-	const picker = h("div", { class: "seg" });
-	const paneBox = h("div");
-	const show = () => {
-		picker.replaceChildren(...[["password", L("密码", "Password")], ["key", L("私钥", "Private key")], ["local", L("本机密钥", "This computer's key")]].map(([k, label]) => {
-			const b = h("button", { type: "button", class: k === auth ? "on" : "" }, label);
-			b.addEventListener("click", () => { auth = k; show(); });
-			return b;
-		}));
-		paneBox.replaceChildren(panes[auth]);
-	};
-	show();
 	// 测试登录：只登录看看（这台服务器认不认、用的哪把钥匙、有没有管理员权限），什么都不改
 	const testOut = h("div", { class: "testresult", hidden: true });
-	const testBtn = h("button", { type: "button", class: "plain small" }, L("测试登录", "Test login"));
-	const testNote = h("span", { class: "hint" }, L("先试试能不能登录这台服务器，不会改动服务器上的任何东西", "Check whether you can log in to this server first; nothing on the server is changed"));
+	const testBtn = h("button", { type: "button", class: "plain small", title: L("先试试能不能登录这台服务器，不会改动服务器上的任何东西", "Check whether you can log in to this server first; nothing on the server is changed") }, L("测试登录", "Test login"));
 	testBtn.addEventListener("click", async () => {
 		testBtn.disabled = true;
 		testOut.hidden = false;
@@ -233,16 +221,30 @@ function sshFields(prefill = {}, { hostLabel } = {}) {
 		testOut.className = `testresult ${r?.ok ? (r.root ? "ok" : "warn") : "bad"}`;
 		if (r?.code === "key_only") { auth = "local"; show(); }
 	});
+	const picker = h("div", { class: "seg" });
+	const paneBox = h("div");
+	const show = () => {
+		picker.replaceChildren(...[["password", L("密码", "Password")], ["key", L("私钥", "Private key")], ["local", L("本机密钥", "This computer's key")]].map(([k, label]) => {
+			const b = h("button", { type: "button", class: k === auth ? "on" : "" }, label);
+			b.addEventListener("click", () => { auth = k; show(); });
+			return b;
+		}));
+		paneBox.replaceChildren(panes[auth]);
+		// 「测试登录」和登录方式是一套：选了本机密钥（最需要先试一下的）时亮起来
+		if (testBtn) testBtn.className = auth === "local" ? "primary small" : "plain small";
+	};
+	show();
 	const el = h("div", null,
 		h("div", { class: "row wide" },
 			field(hostLabel || L("服务器 IP 或域名", "Server IP or hostname"), text("host", prefill.host, "203.0.113.10"), L("你买的 VPS 的公网地址", "Your VPS's public address")),
 			field(L("SSH 端口", "SSH port"), text("port", prefill.port ?? 22, "22", "number"))),
 		h("div", { class: "row" },
 			field(L("用户名", "User name"), text("user", prefill.user ?? "root", "root"), L("建议用 root；别的账号要能 sudo", "root is easiest; another account must be able to sudo")),
-			h("div", { class: "field" }, h("label", null, L("登录方式", "Log in with")), picker)),
-		paneBox,
-		h("div", { class: "testrow" }, testBtn, testNote),
-		testOut);
+			h("div", { class: "field" }, h("label", null, L("登录方式", "Log in with")),
+				h("div", { class: "authrow" }, picker, testBtn),
+				h("div", { class: "hint" }, L("选好登录方式后点「测试登录」，先看看能不能进；不会改动服务器", "Pick how to log in, then Test login to check you can get in; nothing on the server changes")))),
+		testOut,
+		paneBox);
 	el.querySelector("[name=host]").addEventListener("input", () => localPane.refresh());
 	el.read = () => ({
 		host: val(el, "host"),

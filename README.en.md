@@ -125,7 +125,8 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 |---|---|
 | **Manage servers by conversation** | Describe the job in plain words; the AI plans, runs and reports. Changes are approved by risk level: Careful (every change asks), Relaxed (only dangerous ones ask) or Fully automatic |
 | **Many machines** | Machine list with groups and notes; the numbered squares in the conversation header pick which one a conversation works on; import from `~/.ssh/config` |
-| **Server status** | CPU, memory, swap, disks, network, services, firewall, certificates, scheduled tasks, security updates, logins, with anything that needs attention on top; one click asks the AI for a short summary |
+| **Server status** | CPU, memory, swap, disks, network, services, firewall, certificates, scheduled tasks, security updates, logins, with anything that needs attention on top; one click asks the AI for a short summary, and +AI on a card sends that card to the conversation |
+| **Network check-up** | Reachable from China, whether ChatGPT / Claude / Gemini work, which YouTube / Netflix / Disney+ region, how clean the IP is; about 30 seconds, no tokens (Network card on the status page, or `/vps-netcheck`) |
 | **Web terminal** | Reconnects to the same session after a dropped connection or a closed page; works on phones too |
 | **Files** | Browse, drag in to upload, right-click to download, double-click to edit; deletes go to the trash and edits are backed up first; right-click "Let the AI look at this file" |
 | **Common tasks** | Ready-made recipes for lookups, installing common software and common fixes, with the plan shown first, no tokens spent |

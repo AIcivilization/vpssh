@@ -153,7 +153,13 @@ function setupCertificates() {
 		if (req.errorCode === 0) return callback(-3); // 正常的公共证书：照 Chromium 的结果
 		const hostname = String(req.hostname).replace(/^\[|\]$/g, "");
 		const chainPems = chainFromElectron(req.certificate);
-		if (process.env.VPSSH_DEBUG_CERT) console.log("[cert]", hostname, req.errorCode, req.verificationResult, "chain", chainPems.length, "servers", store.byHostname(hostname).length);
+		if (process.env.VPSSH_DEBUG_CERT) {
+			const { X509Certificate } = require("node:crypto");
+			require("node:fs").writeFileSync(process.env.VPSSH_DEBUG_CERT_DUMP || "/dev/null", JSON.stringify(chainPems));
+			console.log("[cert]", hostname, req.errorCode, req.verificationResult, "chain", chainPems.length, "servers", store.byHostname(hostname).length);
+			for (const p of chainPems) { try { const c = new X509Certificate(p); console.log("  ", c.subject || "(no subject)", "| issuer", c.issuer, "|", c.validFrom, "->", c.validTo); } catch (e) { console.log("   bad pem", e.message); } }
+			for (const sv of store.byHostname(hostname)) console.log("   server", sv.url, "root", sv.rootPem ? new (require("node:crypto").X509Certificate)(sv.rootPem).subject : "none", "verify", verifyWithRoot({ hostname, chainPems, rootPem: sv.rootPem }));
+		}
 		for (const server of store.byHostname(hostname)) {
 			if (server.rootPem && verifyWithRoot({ hostname, chainPems, rootPem: server.rootPem })) return callback(0);
 		}

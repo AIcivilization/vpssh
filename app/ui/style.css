@@ -78,6 +78,8 @@ button:disabled { opacity: .55; cursor: default; }
 .copyrow button { margin-top: 8px; }
 button.small { padding: 6px 12px; font-size: 13px; }
 ul.keys { margin: 6px 0; padding-left: 20px; font: 12px/1.7 ui-monospace, Menlo, Consolas, monospace; }
+.authrow { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.authrow button.small { padding: 9px 14px; font-size: 14px; }
 .testrow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: -6px 0 18px; }
 .testresult { border-radius: 8px; padding: 12px 14px; margin: 0 0 18px; font-size: 13px; line-height: 1.7; border: 1px solid var(--line); }
 .testresult b { display: block; font-size: 14px; margin-bottom: 2px; }

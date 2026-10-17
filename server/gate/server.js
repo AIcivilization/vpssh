@@ -1936,6 +1936,31 @@ async function handleUpdate(req, res, user) {
 	return json(202, { ok: true, from: info.current, to: info.latest });
 }
 
+//#region 重启 DSH（左下角账号菜单「重启」：在 DSH 里装了插件，重启后才加载）
+
+function handleRestart(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method !== "POST") return json(405, { error: "method not allowed" });
+	const origin = req.headers.origin;
+	let sameOrigin = false;
+	try {
+		sameOrigin = origin !== void 0 && new URL(origin).host === requestAuthority(req.headers);
+	} catch {
+		/* 非法 Origin */
+	}
+	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross-origin request refused" });
+	log(`dsh restart requested by ${user} (account menu)`);
+	const before = dsh.child?.pid ?? null;
+	// 让回复先到浏览器，再重启（页面据 pid 变化判断重启完了）
+	setTimeout(() => restartDsh("requested from the account menu"), 300);
+	return json(202, { ok: true, pid: before });
+}
+
+//#endregion
+
 //#region 模型来源（dsh-model，见 model.js）
 
 let modelJobs = null;
@@ -2226,6 +2251,7 @@ function main() {
 				if (pathname === "/gate/uninstall") return handleUninstall(req, res, user);
 				if (pathname === "/gate/domain") return handleDomain(req, res, user);
 				if (pathname === "/gate/model") return handleModel(req, res, user);
+				if (pathname === "/gate/restart") return handleRestart(req, res, user);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {

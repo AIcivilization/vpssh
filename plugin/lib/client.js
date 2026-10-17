@@ -1914,6 +1914,46 @@ window.__ModuleLoader__.load({
         document.addEventListener('pointerdown', close)
         return () => document.removeEventListener('pointerdown', close)
       }, [open])
+      // 更新：打开菜单时看一眼有没有新版本（网关 6 小时查一次，这里读它的结果）
+      const [update, setUpdate] = useState(null)
+      const [busy, setBusy] = useState('')
+      useEffect(() => {
+        if (open) gateGet('/gate/update').then((u) => u && setUpdate(u))
+      }, [open])
+      const doUpdate = async () => {
+        setOpen(false)
+        const info = (await gateGet('/gate/update?refresh=1')) || update
+        if (!info) return window.alert(L('查不到新版本（网络不通？）。服务器上也可以执行 sudo vpssh upgrade', 'Could not check for updates (offline?). You can also run sudo vpssh upgrade on the server'))
+        setUpdate(info)
+        if (!info.available) return window.alert(L(`已经是最新版本 vpssh ${info.current || ''}`, `vpssh ${info.current || ''} is up to date`))
+        if (!window.confirm(L(`把 vpssh ${info.current} 更新到 ${info.latest}？\n\n更新时页面会断开 1–3 分钟；先自动备份，失败会自动回到现在的版本。`, `Update vpssh ${info.current} to ${info.latest}?\n\nThe page goes away for 1–3 minutes. A backup is taken first; on failure it returns to the current version.`))) return
+        const res = await fetch('/gate/update', { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(30_000) }).catch(() => null)
+        const body = res ? await res.json().catch(() => ({})) : {}
+        if (!res || !res.ok) return window.alert(L(`没能开始更新：${body.error || '连不上服务器'}`, `Could not start the update: ${body.error || 'cannot reach the server'}`))
+        window.alert(L('正在更新，完成后页面会自动刷新（右下角有进度）。', 'Updating; the page reloads when done (progress at the bottom right).'))
+      }
+      // 重启：只重启 DSH（界面服务）。在 DSH 里装了插件，要重启一次才加载
+      const doRestart = async () => {
+        setOpen(false)
+        if (!window.confirm(L('重启界面服务（DSH）？\n\n在「插件」里装了、更新了插件后，重启一次才会生效。页面会断开几秒，回来后自动刷新；正在进行的对话不会丢。', 'Restart the UI service (DSH)?\n\nPlugins you installed or updated take effect after a restart. The page goes away for a few seconds and reloads when it is back; conversations are kept.'))) return
+        setBusy('restart')
+        const res = await fetch('/gate/restart', { method: 'POST', credentials: 'same-origin', signal: AbortSignal.timeout(20_000) }).catch(() => null)
+        const body = res ? await res.json().catch(() => ({})) : {}
+        if (!res || !res.ok) {
+          setBusy('')
+          return window.alert(L(`没能重启：${body.error || '连不上服务器'}`, `Could not restart: ${body.error || 'cannot reach the server'}`))
+        }
+        // 等 DSH 换了一个新进程、会话就绪，再刷新页面
+        const started = Date.now()
+        const wait = setInterval(async () => {
+          const h2 = await gateGet('/gate/health')
+          const back = h2?.dsh?.alive && h2.dsh.pid && h2.dsh.pid !== body.pid && h2.dshCookie
+          if (back || Date.now() - started > 90_000) {
+            clearInterval(wait)
+            window.location.reload()
+          }
+        }, 1500)
+      }
       const user = health.data?.admin
       if (!user) return null
       const avatar = h('span', {
@@ -1942,8 +1982,15 @@ window.__ModuleLoader__.load({
         },
           h('div', { style: { padding: '6px 10px 8px', fontSize: 12, opacity: 0.65, borderBottom: line, marginBottom: 4 } }, L('已登录：', 'Signed in as '), h('span', { style: { fontWeight: 600, opacity: 1 } }, user)),
           item(L('账号与安全', 'Account and security'), () => { setOpen(false); try { layoutApi?.selectPanel?.(PANEL_MANAGE) } catch { /* 切不过去就算了 */ } }),
+          item(update?.available ? L(`更新到 ${update.latest}`, `Update to ${update.latest}`) : L('检查更新', 'Check for updates'), doUpdate),
+          item(L('重启（装插件后用）', 'Restart (after installing plugins)'), doRestart),
+          h('div', { style: { borderTop: line, margin: '4px 0' } }),
           item(L('退出登录', 'Sign out'), () => { window.location.href = '/logout' }, true))
-          : null)
+          : null,
+        busy === 'restart' ? h('div', {
+          role: 'status',
+          style: { position: 'fixed', inset: 0, zIndex: 100, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.35)', color: '#fff', fontSize: 14 },
+        }, L('正在重启界面服务，回来后自动刷新…', 'Restarting the UI service; the page reloads when it is back…')) : null)
     }
 
     function StatusIcon({ size = 18 }) {
@@ -2700,6 +2747,8 @@ window.__ModuleLoader__.load({
       hover: 'var(--dsw-alias-interactive-bg-hover, rgba(38,49,72,0.06))',
       tip: 'var(--dsw-specific-tip, rgba(127,127,127,0.08))',
       accent: 'var(--dsw-alias-state-business-primary, #4176e6)',
+      // 卡片上「+AI」的颜色：DSH 的主题蓝和紫色各一半，醒目但和蓝色协调，深浅色跟着主题蓝变
+      ai: 'color-mix(in srgb, var(--dsw-alias-state-business-primary, #4176e6) 50%, #8b5cf6)',
       ok: 'var(--dsw-alias-state-success-primary, #22c55e)',
       danger: 'var(--dsw-alias-state-error-primary, #ec1313)',
       scrollbar: 'var(--dsw-alias-scrollbar-bg-l2, rgba(127,127,127,0.3))',
@@ -2759,7 +2808,7 @@ window.__ModuleLoader__.load({
       light: {
         bg: '#ffffff', text: '#0f1115', secondary: '#4b4f56', tertiary: '#81858c',
         border: 'rgba(0,0,0,0.1)', divider: 'rgba(0,0,0,0.05)', hover: 'rgba(38,49,72,0.06)',
-        tip: '#f5f6f7', accent: '#4176e6', ok: '#22c55e', danger: '#ec1313', scrollbar: 'rgba(0,0,0,0.12)',
+        tip: '#f5f6f7', accent: '#4176e6', ai: '#6a5af0', ok: '#22c55e', danger: '#ec1313', scrollbar: 'rgba(0,0,0,0.12)',
         selected: 'rgba(65,118,230,0.12)',
         warn: '#d97706', okBg: 'rgba(34,197,94,0.12)', warnBg: 'rgba(217,119,6,0.12)', dangerBg: 'rgba(236,19,19,0.09)',
         infoBg: 'rgba(65,118,230,0.08)', track: 'rgba(0,0,0,0.07)',
@@ -2768,7 +2817,7 @@ window.__ModuleLoader__.load({
       dark: {
         bg: '#2c2c2e', text: '#f9fafb', secondary: '#d0d3d8', tertiary: '#adb2b8',
         border: 'rgba(255,255,255,0.12)', divider: 'rgba(255,255,255,0.06)', hover: 'rgba(255,255,255,0.08)',
-        tip: '#353638', accent: '#679efe', ok: '#22c55e', danger: '#f25a5a', scrollbar: 'rgba(255,255,255,0.16)',
+        tip: '#353638', accent: '#679efe', ai: '#9f8fff', ok: '#22c55e', danger: '#f25a5a', scrollbar: 'rgba(255,255,255,0.16)',
         selected: 'rgba(103,158,254,0.22)',
         warn: '#f5a524', okBg: 'rgba(34,197,94,0.16)', warnBg: 'rgba(245,165,36,0.16)', dangerBg: 'rgba(242,90,90,0.16)',
         infoBg: 'rgba(103,158,254,0.13)', track: 'rgba(255,255,255,0.10)',
@@ -3534,6 +3583,7 @@ window.__ModuleLoader__.load({
       hardDrive: [['path', { d: 'M22 12H2' }], ['path', { d: 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z' }], ['path', { d: 'M6 16h.01M10 16h.01' }]],
       panelRight: [['rect', { x: 3, y: 3, width: 18, height: 18, rx: 2 }], ['path', { d: 'M15 3v18' }]],
       arrowDownUp: [['path', { d: 'm3 16 4 4 4-4' }], ['path', { d: 'M7 20V4' }], ['path', { d: 'm21 8-4-4-4 4' }], ['path', { d: 'M17 4v16' }]],
+      globe: [['circle', { cx: 12, cy: 12, r: 10 }], ['path', { d: 'M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20' }], ['path', { d: 'M2 12h20' }]],
       alert: [['path', { d: 'm21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3' }], ['path', { d: 'M12 9v4' }], ['path', { d: 'M12 17h.01' }]],
     }
     function Icon({ name, size = 14, style }) {
@@ -3582,6 +3632,75 @@ window.__ModuleLoader__.load({
       }
       await input.submit('queue')
       return 'sent'
+    }
+
+    // —— 卡片上的「+AI」（来自 dsh-vps-manager 0.6.8）：把这张卡的结论和关键数字整理成一段话发进对话，AI 在对话里回答 ——
+    // 只发结论，不发原始数据（免得占对话的上下文）；末尾说清楚只查看、不改动
+    const MARK = { ok: '✓', warn: '!', danger: '✗', na: '?' }
+    const colon = () => L('：', ': ')
+    const lookOnly = () => L('（只查看，不要改动）', ' (Look only, change nothing.)')
+    function askNet(alias, v) {
+      return [
+        L(`帮我看看 ${alias} 的网络体检结果（${fmtClock(v.checkedAt)} 测）：`, `Please look at the network check-up of ${alias} (measured ${fmtClock(v.checkedAt)}):`),
+        ...v.items.map((i) => `${MARK[i.level] ?? '?'} ${i.title}${colon()}${i.text}`),
+        '',
+        L(`请说说这台适合做什么、最要紧的问题和怎么办${lookOnly()}。`, `What is this server good for, what is the most important problem, and what should I do?${lookOnly()}`),
+      ].join('\n')
+    }
+    function askPorts(alias, data, at) {
+      const fw = data.firewall
+      return [
+        L(`帮我看看 ${alias} 上监听的端口（${fmtClock(at)} 看的）：`, `Please look at the listening ports on ${alias} (checked ${fmtClock(at)}):`),
+        ...data.ports.map((p) => `${p.port} ${p.proc || '?'} · ${p.local ? L('只在本机', 'local only') : L('对外', 'public')}`),
+        ...(fw && fw.type !== 'unknown' ? [`${L('防火墙', 'Firewall')}${colon()}${fw.type === 'none' ? L('没有', 'none') : `${fw.type}${fw.allow?.length ? ` · ${L('放行', 'allowed')} ${fw.allow.join(' ')}` : ''}`}`] : []),
+        '',
+        L(`有没有不该对外开放的端口？该怎么处理${lookOnly()}？`, `Is anything public that should not be, and what should I do about it?${lookOnly()}`),
+      ].join('\n')
+    }
+    function askFirewall(alias, data, at) {
+      const fw = data.firewall
+      const pub = data.ports.filter((p) => !p.local).map((p) => `${p.port}${p.proc ? ` ${p.proc}` : ''}`)
+      return [
+        L(`帮我看看 ${alias} 的防火墙（${fmtClock(at)} 看的）：`, `Please look at the firewall on ${alias} (checked ${fmtClock(at)}):`),
+        `${L('防火墙', 'Firewall')}${colon()}${fw.type === 'none' ? L('没检测到（可能用的是服务商的防火墙）', 'none detected (the provider\'s firewall may be in use)') : `${fw.type}${fw.active ? '' : L('（没开）', ' (inactive)')}`}`,
+        ...(fw.allow?.length ? [`${L('放行', 'Allowed')}${colon()}${fw.allow.join(' ')}`] : []),
+        ...(pub.length ? [`${L('对外监听的端口', 'Public listening ports')}${colon()}${pub.join(L('，', ', '))}`] : []),
+        '',
+        L(`规则合不合理、有没有漏洞${lookOnly()}？`, `Are the rules sensible, and is anything left open?${lookOnly()}`),
+      ].join('\n')
+    }
+    function askSecurity(alias, data, at) {
+      const n = (v) => (v === null || v === undefined ? L('不知道', 'unknown') : v)
+      return [
+        L(`帮我看看 ${alias} 的安全情况（${fmtClock(at)} 看的）：`, `Please look at the security of ${alias} (checked ${fmtClock(at)}):`),
+        `${L('待装安全更新', 'Security updates pending')}${colon()}${data.updatesSec !== null && data.updatesSec !== undefined ? data.updatesSec : data.updates !== null && data.updates !== undefined ? L(`可升级 ${data.updates}`, `${data.updates} upgradable`) : L('不知道', 'unknown')}`,
+        `${L('需要重启', 'Reboot required')}${colon()}${data.reboot ? L('是', 'yes') : L('否', 'no')}`,
+        `${L('24 小时登录失败', 'Failed logins in 24 h')}${colon()}${n(data.loginFail)}`,
+        `fail2ban${colon()}${data.fail2ban ? L('在跑', 'running') : L('没有', 'not running')}`,
+        '',
+        L(`要不要处理、怎么处理${lookOnly()}？`, `Does anything need doing, and how?${lookOnly()}`),
+      ].join('\n')
+    }
+    /** 卡片标题行上的「+AI」：醒目但和 DSH 的蓝色协调；点它不会把卡片收起来 */
+    function AiChip({ c, onClick }) {
+      const [hover, setHover] = useState(false)
+      return h('button', {
+        type: 'button',
+        title: L('把这张卡的结论发到对话里，AI 在对话里回答', 'Send this card\'s findings to the conversation; the AI answers there'),
+        'aria-label': L('把这张卡发到对话里问 AI', 'Ask the AI about this card in the conversation'),
+        onClick: (e) => {
+          e.stopPropagation()
+          onClick()
+        },
+        onMouseEnter: () => setHover(true),
+        onMouseLeave: () => setHover(false),
+        style: {
+          display: 'inline-flex', alignItems: 'center', height: 18, padding: '0 7px', borderRadius: 9, cursor: 'pointer', flex: '0 0 auto', whiteSpace: 'nowrap',
+          border: `0.5px solid color-mix(in srgb, ${c.ai} ${hover ? 62 : 40}%, transparent)`,
+          background: `linear-gradient(135deg, color-mix(in srgb, ${c.accent} ${hover ? 22 : 12}%, transparent), color-mix(in srgb, ${c.ai} ${hover ? 28 : 18}%, transparent))`,
+          color: c.ai, fontSize: 10.5, fontWeight: 650, letterSpacing: 0.2, lineHeight: 1,
+        },
+      }, '+AI')
     }
 
     /** 从别的页签跳到文件页的某个目录（或回收站） */
@@ -3733,6 +3852,58 @@ window.__ModuleLoader__.load({
     // 哪边刷新了两边一起变
     const statusStore = new Map()
     const statusSubs = new Map()
+
+    // —— 「网络」卡片（网络体检）的状态：每台机器一份，底部面板和右侧栏共用 ——
+    // 体检要花半分钟、会用到公共探测网络，所以只在用户点了才跑；打开时只读上次的结果
+    const netStore = new Map()
+    const netSubs = new Map()
+    function netStateOf(alias) {
+      if (!netStore.has(alias)) netStore.set(alias, { view: null, loaded: false, loading: false, running: false, error: '', detail: false })
+      return netStore.get(alias)
+    }
+    function notifyNet(alias) {
+      for (const fn of netSubs.get(alias) ?? []) fn()
+    }
+    function useNetState(alias) {
+      const [, force] = useState(0)
+      useEffect(() => {
+        const fn = () => force((n) => n + 1)
+        if (!netSubs.has(alias)) netSubs.set(alias, new Set())
+        netSubs.get(alias).add(fn)
+        return () => netSubs.get(alias)?.delete(fn)
+      }, [alias])
+      return netStateOf(alias)
+    }
+    async function loadNet(alias) {
+      const st = netStateOf(alias)
+      if (st.loaded || st.loading) return
+      st.loading = true
+      try {
+        st.view = (await api('status/net/get', { alias })).net
+      } catch (error) {
+        st.error = error.message
+      } finally {
+        st.loading = false
+        st.loaded = true
+        notifyNet(alias)
+      }
+    }
+    async function runNet(alias) {
+      const st = netStateOf(alias)
+      if (st.running) return
+      st.running = true
+      st.error = ''
+      notifyNet(alias)
+      try {
+        st.view = (await api('status/net/check', { alias }, { timeoutMs: 120_000 })).net
+      } catch (error) {
+        st.error = error.message
+      } finally {
+        st.running = false
+        st.loaded = true
+        notifyNet(alias)
+      }
+    }
     const STATUS_EVENT = 'vpssh:status'
     function statusStateOf(alias, seed) {
       if (seed && statusStore.get(alias) !== seed) statusStore.set(alias, seed)
@@ -4109,11 +4280,16 @@ window.__ModuleLoader__.load({
         aiBox,
         attentionList,
         okRow,
-        showSections ? h(StatusSections, { c, data, judged, entry: canAct ? termEntry : null, sectionTitle, tag, dot, smallBtn, collapsed, toggleCollapsed }) : null)
+        showSections ? h(StatusSections, { c, alias, at: status.collectedAt, data, judged, entry: canAct ? termEntry : null, ask: canAct ? (text) => chat(text, L('已发到对话里，AI 正在看', 'Sent to the conversation; the AI is looking')) : null, sectionTitle, tag, dot, smallBtn, collapsed, toggleCollapsed }) : null)
     }
 
     /** 展开 / 最大化后的完整分区：资源环形图、磁盘，其余分区按各自特点排成卡片（瀑布流，高度随内容） */
-    function StatusSections({ c, data, judged, entry, sectionTitle, tag, dot, smallBtn, collapsed = new Set(), toggleCollapsed = () => {} }) {
+    function StatusSections({ c, alias, at, data, judged, entry, ask = null, sectionTitle, tag, dot, smallBtn, collapsed = new Set(), toggleCollapsed = () => {} }) {
+      const net = useNetState(alias)
+      const netSecs = useElapsed(net.running)
+      useEffect(() => {
+        if (alias) loadNet(alias)
+      }, [alias])
       const levelOf = (prefix) => {
         const hits = judged.attention.filter((i) => i.area === prefix)
         return hits.some((i) => i.level === 'danger') ? 'danger' : hits.length ? 'warn' : 'ok'
@@ -4184,7 +4360,7 @@ window.__ModuleLoader__.load({
         : null
 
       // —— 卡片的零件 ——
-      const card = (key, { icon, title, level = 'ok', right, body }) => {
+      const card = (key, { icon, title, level = 'ok', right, body, ai = null }) => {
         const open = !collapsed.has(key)
         return h('div', { key, style: { display: 'inline-block', width: '100%', boxSizing: 'border-box', breakInside: 'avoid', marginBottom: 8, borderRadius: 10, border: edge, padding: open ? '10px 8px 9px 12px' : '9px 8px 9px 12px', minWidth: 0, verticalAlign: 'top' } },
         // 点标题行（或右边的倒三角）收起 / 展开
@@ -4193,6 +4369,7 @@ window.__ModuleLoader__.load({
           h('span', { 'aria-hidden': 'true', style: { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: 6, background: level === 'warn' || level === 'danger' ? levelBg(c, level) : c.track, color: level === 'warn' || level === 'danger' ? levelColor(c, level) : c.secondary, flex: '0 0 auto' } }, h(Icon, { name: icon, size: 13 })),
           h('span', { role: 'heading', 'aria-level': 3, style: { fontSize: 12.5, fontWeight: 500, color: level === 'na' ? c.tertiary : c.text, whiteSpace: 'nowrap' } }, title),
           h('span', { style: { ...NUM, marginInlineStart: 'auto', fontSize: 11, color: c.tertiary, minWidth: 0, ...ellipsis } }, right || ''),
+          ai ? h(AiChip, { c, onClick: ai }) : null,
           h(Caret, { c, open, label: title, onToggle: () => toggleCollapsed(key) })),
         open ? h('div', { style: { paddingInlineEnd: 4 } }, body) : null)
       }
@@ -4218,6 +4395,30 @@ window.__ModuleLoader__.load({
           h('div', { style: { width: `${Math.max(3, Math.min(100, frac * 100))}%`, height: '100%', borderRadius: 2, background: c.accent } })))
 
       const cards = []
+      // 网络：国内连不连得上、AI 和流媒体能不能用、IP 干不干净。结论一项一行，数字收在「详细数据」里
+      if (alias) {
+        const v = net.view
+        const rows = v ? v.items.map((it) => h('div', { key: it.id, style: { display: 'flex', gap: 8, alignItems: 'flex-start', padding: '3px 0', fontSize: 12, lineHeight: 1.5, minWidth: 0 } },
+          h('span', { style: { display: 'inline-flex', paddingTop: 5 } }, dot(it.level, 7)),
+          h('div', { style: { minWidth: 0 } },
+            h('span', { style: { color: c.text, fontWeight: 500, marginInlineEnd: 6 } }, it.title),
+            h('span', { style: { color: it.level === 'danger' ? levelColor(c, 'danger') : c.secondary } }, it.text)))) : null
+        const details = v && net.detail
+          ? h('div', { style: { marginTop: 6, padding: '6px 8px', borderRadius: 7, background: c.track, fontSize: 11, lineHeight: 1.55, color: c.secondary, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } },
+            v.items.filter((i) => i.detail).map((i) => `${i.title}\n${i.detail}`).join('\n\n'))
+          : null
+        cards.push(card('net', { icon: 'globe', title: L('网络', 'Network'), level: v && v.worst !== 'na' ? v.worst : 'ok', ai: ask && v && !net.running ? () => ask(askNet(alias, v)) : null,
+          right: net.running ? '' : v ? L(`${fmtClock(v.checkedAt)} 体检`, `checked ${fmtClock(v.checkedAt)}`) : '',
+          body: h('div', null,
+            v ? null : h('div', { style: { fontSize: 12, lineHeight: 1.55, color: c.secondary, marginBottom: 6 } },
+              L('看看这台在国内连不连得上、ChatGPT 等 AI 和流媒体能不能用、IP 干不干净。大约 30 秒，不花 token。', 'Is this server reachable from China, do ChatGPT and other AI and streaming services work, how clean is the IP? About 30 seconds, no tokens.')),
+            rows,
+            net.error ? h('div', { style: { fontSize: 12, color: levelColor(c, 'danger'), padding: '4px 0' } }, net.error) : null,
+            h('div', { style: { display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8 } },
+              smallBtn(net.running ? waitingLabel(L('体检中…', 'Checking…'), netSecs) : v ? L('重新体检', 'Check again') : L('开始体检', 'Start check-up'), () => runNet(alias), { primary: !v, disabled: net.running }),
+              v && v.items.some((i) => i.detail) ? smallBtn(net.detail ? L('收起详细数据', 'Hide details') : L('详细数据', 'Details'), () => { net.detail = !net.detail; notifyNet(alias) }) : null),
+            details) }))
+      }
       // 服务：在跑多少、出问题的单列、常见服务名
       if (data.services) {
         const sv = data.services
@@ -4264,7 +4465,7 @@ window.__ModuleLoader__.load({
           h('span', { style: { ...NUM, fontFamily: DS.code, fontSize: 11.5, fontWeight: 600, color: c.text, background: c.track, borderRadius: 5, padding: '1px 0', width: 46, textAlign: 'center', flex: '0 0 auto' } }, p.port),
           h('span', { style: { flex: 1, minWidth: 0, fontSize: 12, color: c.secondary, ...ellipsis } }, p.proc || (data.priv === 'none' ? L('（要 root 才看得到进程）', '(needs root to see the process)') : '—')))
         const group = (title, list, max) => (list.length ? h('div', { key: title }, sub(`${title} · ${list.length}`), list.slice(0, max).map(portRow), more(list.length - max)) : null)
-        cards.push(card('ports', { icon: 'plug', title: L('端口', 'Ports'), right: data.ports.length ? L(`监听 ${data.ports.length} 个`, `${data.ports.length} listening`) : '',
+        cards.push(card('ports', { icon: 'plug', title: L('端口', 'Ports'), right: data.ports.length ? L(`监听 ${data.ports.length} 个`, `${data.ports.length} listening`) : '', ai: ask && data.ports.length ? () => ask(askPorts(alias, data, at)) : null,
           body: data.ports.length
             ? h('div', { style: { marginTop: -6 } }, group(L('对外开放', 'Public'), pub, 8), group(L('只在本机', 'Local only'), loc, 6))
             : empty(L('没有监听的端口', 'No listening ports')) }))
@@ -4272,7 +4473,7 @@ window.__ModuleLoader__.load({
       // 防火墙：用的哪个、开没开、放行了哪些
       if (data.firewall) {
         const fw = data.firewall
-        cards.push(card('fw', { icon: 'shield', title: L('防火墙', 'Firewall'), level: fw.type === 'unknown' ? 'na' : 'ok', right: fw.type === 'unknown' || fw.type === 'none' ? '' : fw.type,
+        cards.push(card('fw', { icon: 'shield', title: L('防火墙', 'Firewall'), level: fw.type === 'unknown' ? 'na' : 'ok', right: fw.type === 'unknown' || fw.type === 'none' ? '' : fw.type, ai: ask && fw.type !== 'unknown' ? () => ask(askFirewall(alias, data, at)) : null,
           body: fw.type === 'unknown' ? empty(naText('root')) : fw.type === 'none'
             ? empty(L('没有检测到 ufw / firewalld / nftables / iptables 规则（可能用的是服务商的防火墙）', 'No ufw / firewalld / nftables / iptables rules found (your provider\'s firewall may be in use)'))
             : h('div', null,
@@ -4320,7 +4521,7 @@ window.__ModuleLoader__.load({
           body: certs.length ? h('div', null, certs.slice(0, 8).map(certRow), more(certs.length - 8)) : empty(naText('root')) }))
       }
       // 安全：四个数
-      cards.push(card('sec', { icon: 'shieldCheck', title: L('安全', 'Security'), level: levelOf('security'),
+      cards.push(card('sec', { icon: 'shieldCheck', title: L('安全', 'Security'), level: levelOf('security'), ai: ask ? () => ask(askSecurity(alias, data, at)) : null,
         body: stats([
           [L('待装安全更新', 'Security updates'), data.updatesSec !== null ? data.updatesSec : data.updates !== null ? L(`可升级 ${data.updates}`, `${data.updates} upgradable`) : '—', data.updatesSec > 0 ? 'warn' : 'ok'],
           [L('需要重启', 'Reboot required'), data.reboot ? L('是', 'Yes') : L('否', 'No'), data.reboot ? 'warn' : 'ok'],
@@ -5975,7 +6176,7 @@ window.__ModuleLoader__.load({
     }
 
     // 给测试用的内部句柄（浏览器里没人碰它）
-    module.exports = { name, inject, apply, __test: { api, streamOrigin, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, AccountButton, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
+    module.exports = { name, inject, apply, __test: { api, streamOrigin, netStateOf, askNet, askPorts, askFirewall, askSecurity, AiChip, FoldCard, lang, langChanged, StatusView, PanelTabs, VpsStatusSidebar, MachineChip, SidebarOpenButton, refreshWait, termChrome, watchDefaultLayout, ManagePage, RecipesPage, StatusDashboard, isTouchDevice, landOnStatus, AccountButton, goChatWith, describeItem, sendToChat, waitingLabel, alertsFor, readBinding, writeBinding, ballLabel, chipTone, terminalUrl, normalizeTermPrefs, termChrome, minutesSince } }
     return module.exports
   },
 })

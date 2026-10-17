@@ -1,6 +1,7 @@
 // 开发测试用：经 Electron 的调试端口驱动桌面版窗口（npx electron . --remote-debugging-port=<端口>）
 //
 //   node scripts/cdp.js <端口> url                 当前地址
+//   node scripts/cdp.js <端口> accept              页面上正弹着的对话框点确定
 //   node scripts/cdp.js <端口> eval '<js>'          在当前页面执行，打印结果（confirm 等对话框自动点确定）
 //   node scripts/cdp.js <端口> nav <地址>           跳转
 //   node scripts/cdp.js <端口> shot <文件>          截图
@@ -33,7 +34,11 @@ const [port, cmd, arg, arg2] = process.argv.slice(2);
 	await new Promise((r) => (ws.onopen = r));
 	await send("Page.enable");
 	const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-	if (cmd === "url") {
+	if (cmd === "accept") {
+		// 页面上正弹着 confirm / alert：点确定
+		const r = await send("Page.handleJavaScriptDialog", { accept: true });
+		console.log(r.error ? "no dialog" : "accepted");
+	} else if (cmd === "url") {
 		console.log(page.url);
 	} else if (cmd === "eval") {
 		const r = await send("Runtime.evaluate", { expression: arg, awaitPromise: true, returnByValue: true, userGesture: true });
