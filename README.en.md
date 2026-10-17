@@ -62,6 +62,7 @@ Server: **Ubuntu 22.04+ or Debian 12+**, root or an account that can sudo, ports
 |---|---|---|
 | **Desktop · macOS** | No typing: fill in a form, then use vpssh in its own window | `vpssh-<version>-mac-arm64.dmg` (Apple silicon) / `-mac-x64.dmg` (Intel) from [Releases](https://github.com/AIcivilization/vpssh/releases/latest) |
 | **Desktop · Windows** | Same | `vpssh-<version>-win-x64.exe` from [Releases](https://github.com/AIcivilization/vpssh/releases/latest) |
+| **Android app** | Use vpssh on your phone once the server is installed: scan the QR code under VPS Manager → Phone & tablet; it trusts only that server's own certificate | `vpssh-<version>-android.apk` from [Releases](https://github.com/AIcivilization/vpssh/releases/latest) (allow installing unknown apps) |
 | **Server** | You are used to working on the server over SSH | One-line command, or the `vpssh-<version>-server-linux.tar.gz` package from [Releases](https://github.com/AIcivilization/vpssh/releases/latest) |
 | **Command line** | You have Node.js and like one command | `npx vpssh install root@your-server-ip` |
 
@@ -131,7 +132,7 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 | **Files** | Browse, drag in to upload, right-click to download, double-click to edit; deletes go to the trash and edits are backed up first; right-click "Let the AI look at this file" |
 | **Common tasks** | Ready-made recipes for lookups, installing common software and common fixes, with the plan shown first, no tokens spent |
 | **My commands** | Save your own commands under Common tasks (name, command, description, GitHub link) and click Run to run them in the conversation: read-only ones show the result right away; ones that change the server, or the first run, show the command and run on `/vps-yes`; commands containing passwords or keys are refused |
-| **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use |
+| **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use; on Android there is an app that adds servers by QR code and switches between them |
 | **Account and security** | Password sign-in with rate limiting; set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
 | **Model sources** (optional) | Turn on dsh-model in one click under VPS Manager → Model sources: 16 sources (WorkBuddy free credits, local models, subscriptions, API keys), failover across sources for same-name models, low-credit notices, daily check-ins; sign in, pick models and get API keys under Settings → dsh-model |
 | **Versions** | Check for updates and upgrade in one click from the web page, with automatic rollback on failure; uninstall from the web page too |

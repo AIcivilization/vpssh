@@ -1936,6 +1936,56 @@ async function handleUpdate(req, res, user) {
 	return json(202, { ok: true, from: info.current, to: info.latest });
 }
 
+//#region 根证书（手机 App 扫码连接用）
+
+/**
+ * 这台 Caddy 自己的根证书（tls internal 用它签发 IP 访问的证书）和它的 SHA-256 指纹。
+ * 根证书本来就是公开的东西，不需要登录：手机 App 扫「VPS 管理」里的二维码拿到指纹，再从这里取根证书、
+ * 核对指纹一致后只信任它（见 android/）。经 Caddy admin API 读，不用碰 Caddy 的数据目录
+ */
+let caCache = null;
+async function readCaddyRoot() {
+	if (caCache && Date.now() - caCache.at < 10 * 60_000) return caCache.value;
+	// 用 http.request，不用 fetch：fetch 自带 Sec-Fetch-Mode 等浏览器请求头，Caddy 的管理接口当成跨站请求一律 403（实测）
+	const body = await new Promise((resolve, reject) => {
+		const url = new URL(`${CADDY_ADMIN}/pki/ca/local`);
+		const req = http.get({ host: url.hostname, port: url.port || 80, path: url.pathname, timeout: 5000 }, (res) => {
+			const chunks = [];
+			res.on("data", (c) => chunks.push(c));
+			res.on("end", () => {
+				if (res.statusCode !== 200) return reject(new Error(`caddy pki ${res.statusCode}`));
+				try {
+					resolve(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+				} catch (err) {
+					reject(err);
+				}
+			});
+		});
+		req.on("timeout", () => req.destroy(new Error("caddy pki timeout")));
+		req.on("error", reject);
+	});
+	const pem = String(body.root_certificate || "").trim();
+	const b64 = pem.replace(/-----(BEGIN|END) CERTIFICATE-----/g, "").replace(/\s+/g, "");
+	if (!b64) throw new Error("no root certificate");
+	const sha256 = crypto.createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex");
+	const value = { pem: `${pem}\n`, sha256 };
+	caCache = { at: Date.now(), value };
+	return value;
+}
+
+async function handleCa(req, res) {
+	try {
+		const ca = await readCaddyRoot();
+		res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(ca));
+	} catch (err) {
+		res.writeHead(503, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify({ error: "unavailable", detail: String(err.message || err) }));
+	}
+}
+
+//#endregion
+
 //#region 重启 DSH（左下角账号菜单「重启」：在 DSH 里装了插件，重启后才加载）
 
 function handleRestart(req, res, user) {
@@ -2224,6 +2274,7 @@ function main() {
 				if (pathname === "/gate/selfcheck") return handleSelfcheckGuarded(req, res);
 				if (pathname === "/gate/ui.js") return handleUiJs(req, res);
 				if (pathname === "/gate/apple-touch-icon.png") return handleAppleTouchIcon(req, res);
+				if (pathname === "/gate/ca") return handleCa(req, res);
 				if (pathname === "/setup") return handleSetup(req, res);
 				if (!loadAdmin()) {
 					// 尚未完成初始设置：浏览器导航导向导，/api 保持 401

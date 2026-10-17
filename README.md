@@ -62,6 +62,7 @@ vpssh 装在你自己的服务器上，没有我们的服务器，AI 用你自�
 |---|---|---|
 | **桌面版 · macOS** | 不想敲命令：填表就装，装完在独立窗口里用 | [Releases](https://github.com/AIcivilization/vpssh/releases/latest) 里的 `vpssh-版本-mac-arm64.dmg`（Apple 芯片）/ `-mac-x64.dmg`（Intel） |
 | **桌面版 · Windows** | 同上 | [Releases](https://github.com/AIcivilization/vpssh/releases/latest) 里的 `vpssh-版本-win-x64.exe` |
+| **安卓 App** | 服务器装好后，手机上用：扫电脑上「VPS 管理 → 手机、平板」的二维码添加，只信任这台服务器自己的证书 | [Releases](https://github.com/AIcivilization/vpssh/releases/latest) 里的 `vpssh-版本-android.apk`（安装时允许「安装未知来源应用」） |
 | **服务器版** | 习惯 SSH 登录服务器操作 | 一键命令，或 [Releases](https://github.com/AIcivilization/vpssh/releases/latest) 里的 `vpssh-版本-server-linux.tar.gz` 安装包 |
 | **命令行** | 电脑上有 Node.js，喜欢一条命令搞定 | `npx vpssh install root@服务器IP` |
 
@@ -131,7 +132,7 @@ npx vpssh install root@服务器IP
 | **文件** | 浏览、拖进来上传、右键下载、双击编辑；删除进回收站，改文件前自动备份；右键「让 AI 看看这个文件」 |
 | **常用操作** | 现成的菜谱：查信息、装常见软件、常见排障，先看计划再执行，不花 token |
 | **我的一键命令** | 在「常用操作」里存自己常用的命令（名称、命令、说明、GitHub 链接），点「运行」在对话里执行：只读的直接出结果，会改动服务器的、或第一次运行的先给你看，发 `/vps-yes` 才执行；命令里写了密码、密钥会拒绝保存 |
-| **手机、平板** | 打开就是持续刷新的服务器状态；扫码登录，加到主屏幕全屏使用 |
+| **手机、平板** | 打开就是持续刷新的服务器状态；扫码登录，加到主屏幕全屏使用；安卓可装 App，扫码添加、多台服务器切换 |
 | **账号与安全** | 登录密码 + 限流；访问地址可以随时设域名、换域名、改回 IP；可以切成「只有我的设备能访问」（WireGuard） |
 | **模型来源**（可选） | 「VPS 管理 → 模型来源」一键启用 dsh-model：16 个来源（WorkBuddy 免费积分、本地模型、各家订阅、API key），同名模型跨来源自动切换、额度快用完时提醒、每日签到；在「设置 → dsh-model」里登录来源、选模型、领 API key |
 | **版本** | 网页里检查更新、一键升级，失败自动回滚；网页里也能卸载 |

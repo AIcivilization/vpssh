@@ -1,0 +1,26 @@
+:root { --bg: #0f1115; --panel: #171a20; --text: #e6e8ec; --muted: #9aa1ad; --line: #2a2f38; --accent: #4c84ff; --danger: #f06464; --ok: #3fc07a; }
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 -apple-system, "Roboto", "Noto Sans SC", sans-serif; }
+header { display: flex; align-items: center; gap: 10px; padding: 18px 16px 10px; }
+.mark { width: 34px; height: 34px; color: var(--accent); }
+.name { font-weight: 650; font-size: 18px; }
+.tag { color: var(--muted); font-size: 12px; }
+main { padding: 6px 16px 40px; }
+h2 { font-size: 14px; color: var(--muted); font-weight: 500; margin: 18px 0 8px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px; }
+.server { display: flex; align-items: center; gap: 12px; padding: 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; margin-bottom: 10px; }
+.server .info { flex: 1; min-width: 0; }
+.server .n { font-weight: 600; }
+.server .u { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.server .pin { color: var(--ok); font-size: 11px; }
+button { font: inherit; border-radius: 10px; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 10px 16px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.wide { width: 100%; padding: 14px; font-size: 16px; margin-top: 10px; }
+button.link { border: 0; background: none; color: var(--muted); padding: 6px; font-size: 13px; }
+input { width: 100%; font: inherit; padding: 12px; border-radius: 10px; border: 1px solid var(--line); background: #12151a; color: var(--text); margin-top: 8px; }
+.hint { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
+.error { overflow-wrap: anywhere; color: var(--danger); background: rgba(240,100,100,.1); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13.5px; }
+.ok { color: var(--ok); background: rgba(63,192,122,.1); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13.5px; }
+ol { padding-left: 20px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.foot { color: var(--muted); font-size: 12px; margin-top: 24px; text-align: center; }
+.foot a { color: var(--muted); }

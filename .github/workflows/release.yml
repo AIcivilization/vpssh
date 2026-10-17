@@ -4,6 +4,7 @@
 #      和完整安装包 vpssh-<版本>-server-linux.tar.gz（解开后 sudo bash vpssh-<版本>/server/install.sh），都附 SHA256
 #   2. 把 cli/（npx vpssh：在自己电脑上装到 VPS）发到 npm。需要仓库 Secret：NPM_TOKEN
 #   3. 桌面版 app/：Mac（dmg，Apple 芯片 + Intel）和 Windows（exe）各在自己的系统上打包、启动自检，挂到 Release
+#   4. 安卓版 android/：签名的 apk，挂到 Release。需要仓库 Secret：ANDROID_KEYSTORE_BASE64、ANDROID_KEYSTORE_PASSWORD、ANDROID_KEY_ALIAS、ANDROID_KEY_PASSWORD
 name: Release
 
 on:
@@ -121,3 +122,43 @@ jobs:
           ls dist
           if [[ "$RUNNER_OS" == macOS ]]; then files=(dist/*.dmg); else files=(dist/*.exe); fi
           gh release upload "$TAG" "${files[@]}" --clobber
+
+  # 安卓版 android/：原生外壳，签名后挂到 Release（vpssh-<版本>-android.apk）。
+  # 签名证书在仓库 Secret 里（ANDROID_KEYSTORE_BASE64 等）；没有就跳过，免得发出签名不一致、装不上升级的包
+  android:
+    needs: release
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || env.TAG }}
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 打包、签名、挂到 Release
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          VPSSH_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          VPSSH_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          VPSSH_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [[ -z "$KS_B64" ]]; then echo "::warning::没有安卓签名证书，跳过安卓版"; exit 0; fi
+          export VPSSH_ANDROID_KEYSTORE="$RUNNER_TEMP/release.jks"
+          echo "$KS_B64" | base64 -d > "$VPSSH_ANDROID_KEYSTORE"
+          ./gradlew --no-daemon assembleRelease
+          v="${TAG#v}"
+          apk="vpssh-$v-android.apk"
+          cp app/build/outputs/apk/release/app-release.apk "$apk"
+          "$ANDROID_HOME"/build-tools/$(ls "$ANDROID_HOME"/build-tools | sort -V | tail -1)/apksigner verify --print-certs "$apk" | grep -i "certificate DN"
+          sha256sum "$apk" > "$apk.sha256"
+          rm -f "$VPSSH_ANDROID_KEYSTORE"
+          gh release upload "$TAG" "$apk" "$apk.sha256" --clobber

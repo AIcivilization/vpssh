@@ -1132,7 +1132,17 @@ window.__ModuleLoader__.load({
       const host = window.location.hostname
       // 在手机上打开时不放二维码：自己扫不了自己的屏幕
       const phone = typeof window !== 'undefined' && window.innerWidth < 600
-      const qr = useAsync(() => (phone ? Promise.resolve(null) : api('qr', { text: url })), [url, phone])
+      // 用 IP 访问（自签证书）：二维码里带上这台根证书的指纹（#vpssh-ca=…）。手机相机扫了照样打开网页
+      // （# 后面的不发给服务器）；vpssh 安卓 App 扫了就知道只信任哪张根证书
+      const qr = useAsync(async () => {
+        if (phone) return null
+        let text = url
+        if (isIpHost(host)) {
+          const ca = await gateGet('/gate/ca')
+          if (ca?.sha256) text = `${url}#vpssh-ca=${ca.sha256}`
+        }
+        return { ...(await api('qr', { text })), text }
+      }, [url, phone])
       const small = { ...S.muted, fontSize: 12, lineHeight: 1.7 }
       const warn = { fontSize: 12, lineHeight: 1.5, color: 'var(--dsw-alias-state-warning-primary, #d29922)', marginTop: 4 }
       return h('div', { style: { ...S.card, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'center' } },
@@ -1152,7 +1162,8 @@ window.__ModuleLoader__.load({
               : L('手机扫码打开并登录，然后添加到主屏幕：', 'Scan with your phone, sign in, then add it to the home screen:')),
             h('div', null, L('iPhone（Safari）：分享 → 添加到主屏幕', 'iPhone (Safari): Share → Add to Home Screen')),
             h('div', null, L('安卓（Chrome）：菜单 ⋮ → 添加到主屏幕 / 安装应用', 'Android (Chrome): menu ⋮ → Add to Home screen / Install app')),
-            h('div', null, L('电脑：Chrome、Edge 地址栏右侧「安装」；Safari 文件 → 添加到程序坞', 'Computer: "Install" at the right of the Chrome / Edge address bar; Safari File → Add to Dock'))),
+            h('div', null, L('电脑：Chrome、Edge 地址栏右侧「安装」；Safari 文件 → 添加到程序坞', 'Computer: "Install" at the right of the Chrome / Edge address bar; Safari File → Add to Dock')),
+            h('div', null, L('安卓也可以装 vpssh App（在 GitHub 发布页下载 apk），在 App 里扫这个码添加这台服务器', 'On Android you can also install the vpssh app (apk on the GitHub release page) and scan this code in it to add this server'))),
           h('div', { style: { ...S.mono, fontSize: 11, opacity: 0.6, marginTop: 2 } }, url),
           isIpHost(host)
             ? h('div', { style: warn }, L('现在用 IP 访问（自签证书），手机会提示不安全，加到主屏幕后可能打不开。建议先配好域名。',

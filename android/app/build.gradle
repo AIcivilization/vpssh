@@ -1,0 +1,56 @@
+// vpssh 安卓版：一个原生外壳。版本号跟仓库根目录 manifest.json 的 vpssh 版本走
+import groovy.json.JsonSlurper
+
+plugins {
+    id "com.android.application"
+}
+
+def vpsshVersion = new JsonSlurper().parse(rootProject.file("../manifest.json")).vpssh
+def (major, minor, patch) = vpsshVersion.tokenize(".").collect { it.replaceAll(/\D.*$/, "").toInteger() }
+
+android {
+    namespace "io.github.aicivilization.vpssh"
+    compileSdk 35
+
+    defaultConfig {
+        applicationId "io.github.aicivilization.vpssh"
+        minSdk 29          // Android 10 起：读证书、存到「下载」目录都用得到新接口
+        targetSdk 35
+        versionCode major * 10000 + minor * 100 + patch
+        versionName vpsshVersion
+    }
+
+    // 发布签名：CI 里从仓库 Secret 解出来（见 .github/workflows/release.yml）；本机没有就只能打调试包
+    signingConfigs {
+        release {
+            def ks = System.getenv("VPSSH_ANDROID_KEYSTORE")
+            if (ks) {
+                storeFile file(ks)
+                storePassword System.getenv("VPSSH_ANDROID_KEYSTORE_PASSWORD")
+                keyAlias System.getenv("VPSSH_ANDROID_KEY_ALIAS")
+                keyPassword System.getenv("VPSSH_ANDROID_KEY_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig System.getenv("VPSSH_ANDROID_KEYSTORE") ? signingConfigs.release : null
+        }
+    }
+
+    buildFeatures {
+        buildConfig true
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // 扫码（二维码里是服务器地址和它根证书的指纹）
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
+}
