@@ -6,12 +6,14 @@ const os = require("node:os");
 const path = require("node:path");
 const { utils } = require("ssh2");
 const { identityFilesFor, localKeysFor } = require("../lib/localkeys.js");
+const { generatePair } = require("../lib/localkey.js");
 
 function setup() {
 	const home = fs.mkdtempSync(path.join(os.tmpdir(), "vpssh-home-"));
 	const ssh = path.join(home, ".ssh");
 	fs.mkdirSync(path.join(ssh, "config.d"), { recursive: true });
-	const key = (file, opts) => fs.writeFileSync(path.join(ssh, file), utils.generateKeyPairSync("ed25519", opts).private);
+	// 带口令的那把要 ssh2 直接生成；其余用会核对的 generatePair（ssh2 偶尔生成读不回的私钥）
+	const key = (file, opts) => fs.writeFileSync(path.join(ssh, file), opts ? utils.generateKeyPairSync("ed25519", opts).private : generatePair("t").private);
 	key("id_ed25519");
 	key("dsh_vps_ed25519");
 	key("work_key");
@@ -44,7 +46,7 @@ test("顺序：上次成功的 → config 指定的 → dsh_vps_ed25519 → id_*
 	try {
 		const app = path.join(home, "app", "id_ed25519");
 		fs.mkdirSync(path.dirname(app), { recursive: true });
-		fs.writeFileSync(app, utils.generateKeyPairSync("ed25519").private);
+		fs.writeFileSync(app, generatePair("app").private);
 		const keys = localKeysFor("203.0.113.10", { home, sshDir: ssh, appKey: app, preferred: path.join(ssh, "id_ed25519") });
 		assert.deepEqual(keys.map((k) => k.label), ["~/.ssh/id_ed25519", "~/.ssh/work_key", "~/.ssh/other_key", "~/.ssh/dsh_vps_ed25519", path.join("~", "app", "id_ed25519").replace(/\\/g, "/")]);
 		assert.equal(keys.at(-1).isApp, true);

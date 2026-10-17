@@ -19,11 +19,31 @@ function readLocalKey(dir) {
 	const file = keyPath(dir);
 	try {
 		const publicKey = fs.readFileSync(`${file}.pub`, "utf8").trim();
-		if (publicKey && fs.existsSync(file)) return { publicKey, path: file };
+		// 0.2.2–0.2.4 生成的私钥有极小概率是坏的（见 generatePair）：读不回来就当没有，下次重新生成
+		let parsed = utils.parseKey(fs.readFileSync(file));
+		if (Array.isArray(parsed)) parsed = parsed[0];
+		if (publicKey && !(parsed instanceof Error)) return { publicKey, path: file };
 	} catch {
 		/* 还没有 */
 	}
 	return { publicKey: null, path: file };
+}
+
+/**
+ * 生成一对能用的 ed25519 密钥。ssh2 生成的私钥约 0.5% 自己都读不回来（Malformed OpenSSH private key，
+ * 实测 2000 把里 10 把）：生成后立刻读回、核对公钥一致，不行就重来
+ */
+function generatePair(comment) {
+	for (let i = 0; i < 20; i++) {
+		const pair = utils.generateKeyPairSync("ed25519", { comment });
+		let parsed = utils.parseKey(Buffer.from(pair.private));
+		if (Array.isArray(parsed)) parsed = parsed[0];
+		if (parsed instanceof Error) continue;
+		const pub = pair.public.trim().split(/\s+/).slice(0, 2).join(" ");
+		const back = `${parsed.type} ${parsed.getPublicSSH().toString("base64")}`;
+		if (back === pub) return pair;
+	}
+	throw new Error("could not generate a usable ed25519 key");
 }
 
 /** 生成（已有就直接返回） */
@@ -33,7 +53,7 @@ function generateLocalKey(dir) {
 	const file = keyPath(dir);
 	fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
 	const host = os.hostname().replace(/[^A-Za-z0-9_.-]/g, "") || "desktop";
-	const pair = utils.generateKeyPairSync("ed25519", { comment: `vpssh@${host}` });
+	const pair = generatePair(`vpssh@${host}`);
 	fs.writeFileSync(file, pair.private, { mode: 0o600 });
 	fs.writeFileSync(`${file}.pub`, `${pair.public.trim()}\n`, { mode: 0o644 });
 	return readLocalKey(dir);
@@ -45,4 +65,4 @@ function authorizeCommand(publicKey) {
 	return `mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '${safe}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
 }
 
-module.exports = { keyPath, readLocalKey, generateLocalKey, authorizeCommand };
+module.exports = { keyPath, readLocalKey, generateLocalKey, generatePair, authorizeCommand };

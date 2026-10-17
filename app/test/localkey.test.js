@@ -7,6 +7,13 @@ const path = require("node:path");
 const { utils } = require("ssh2");
 const lk = require("../lib/localkey.js");
 
+test("生成的私钥一定读得回来（ssh2 偶尔生成坏的，要重来）", () => {
+	for (let i = 0; i < 1500; i++) {
+		const p = lk.generatePair("t");
+		assert.ok(!(utils.parseKey(Buffer.from(p.private)) instanceof Error));
+	}
+});
+
 test("生成 ed25519、只生成一次、私钥 0600；命令把公钥追加进 authorized_keys", () => {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "vpssh-key-"));
 	try {
