@@ -197,14 +197,16 @@ step1_prechecks() {
 		[[ -n "$dp" ]] && DSH_PORT="$dp"
 	fi
 
-	# 端口检查（重装时本机服务已占用这些端口，跳过）
+	# 内部端口（只听 127.0.0.1）：被同机别的程序占着就往后找空闲的，不让用户去停别人的服务。
+	# 重装时沿用原来的（上面读的），本机 vpssh 自己正占着它们
 	if [[ $REINSTALL -eq 0 ]]; then
-		local p
-		for p in "$DSH_PORT" "$GATE_PORT"; do
-			if port_busy "$p"; then
-				die "$(M "端口 $p 已被 $(port_owner "$p") 占用，请先释放" "Port $p is used by $(port_owner "$p"); free it first")"
-			fi
-		done
+		local want_gate=$GATE_PORT want_dsh=$DSH_PORT
+		GATE_PORT=$(first_free_port "$want_gate" "")
+		DSH_PORT=$(first_free_port "$want_dsh" "$GATE_PORT")
+		[[ -n "$GATE_PORT" && -n "$DSH_PORT" ]] || die "$(M "找不到空闲的内部端口（${want_gate} 往后 200 个都被占了）" "No free internal port (the 200 ports from ${want_gate} are all taken)")"
+		if [[ "$GATE_PORT" != "$want_gate" || "$DSH_PORT" != "$want_dsh" ]]; then
+			log "$(M "端口 ${want_gate}/${want_dsh} 有别的程序在用，vpssh 改用 ${GATE_PORT}/${DSH_PORT}（只在本机内部用，不用放行）" "Ports ${want_gate}/${want_dsh} are taken by other programs; vpssh uses ${GATE_PORT}/${DSH_PORT} instead (internal only, nothing to open)")"
+		fi
 	else
 		log "$(M "检测到已有安装（${INSTALL_ROOT}），进入修复/更新模式（保留 state/）" "Found an existing install (${INSTALL_ROOT}); repairing/updating it (state/ is kept)")"
 	fi
@@ -212,6 +214,15 @@ step1_prechecks() {
 }
 
 port_busy() { ss -ltnH "sport = :$1" 2>/dev/null | grep -q .; }
+# 从 $1 往后找第一个空闲端口（跳过 $2），最多找 200 个；找不到输出空
+first_free_port() {
+	local p
+	for ((p = $1; p < $1 + 200; p++)); do
+		[[ "$p" == "${2:-}" ]] && continue
+		port_busy "$p" || { printf '%s' "$p"; return 0; }
+	done
+	return 0
+}
 # 主 Caddyfile 是不是别的产品的（比如同机的 dsh-vps）。不算别人的：没有、vpssh 自己的、
 # Caddy 装好时自带的样例（/usr/share/caddy）、vpssh 卸载时留下的空壳（卸载后 Caddy 还开着 80，实测）
 caddy_has_other_site() {
