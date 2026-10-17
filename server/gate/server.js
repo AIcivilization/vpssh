@@ -26,6 +26,7 @@ const path = require("node:path");
 const { spawn } = require("node:child_process");
 // 站点块模板与 gate 同源管理：install.sh、bin/vpssh 也调用它，只此一份
 const { caddySiteBlock, readVpnEnv } = require("./site-block.js");
+const model = require("./model.js");
 
 //#region 配置
 
@@ -96,7 +97,9 @@ const WORKSPACE_DIR = process.env.VPSSH_WORKSPACE || path.join(os.homedir(), "vp
 // vpssh 插件由 install.sh 装好，向导不再让用户挑插件（vpssh 默认不装别的插件）
 // pnpm 12 起默认带约 1 天的发布冷却期（minimumReleaseAge），`pnpm add <pkg>` 会装到一天前的旧版。
 // 插件作者修 bug 后用户就该拿到修复，这里关掉冷却期：预装与插件市场安装都取真正的最新版。
-const PLUGIN_ENV = { pnpm_config_minimum_release_age: "0" };
+// package_import_method=copy：DSH 装任何插件都会把 profile 里的插件重新导入一遍，vpssh 自己的插件
+// 在 /opt/vpssh/plugin（归 root），默认的硬链接方式导不过来（实测：从 DSH 里装 dsh-model 报 Operation not permitted）
+const PLUGIN_ENV = { pnpm_config_minimum_release_age: "0", pnpm_config_package_import_method: "copy" };
 // 本产品仓库入口：放在 gate 自己的页面（登录 / 初始向导 / 启动等待），
 // 不碰 DSH 原生界面，DSH 升级不受影响。
 const REPO_URL = "https://github.com/AIcivilization/vpssh";
@@ -1611,7 +1614,7 @@ ${token ? `<input type="hidden" name="token" value="${esc(token)}">` : ""}
 <p class="hint">${L("需已将 A 记录解析到本服务器；留空则沿用当前访问方式。Caddy 自动签发证书。", "Its A record must already point at this server; leave empty to keep the current address. Caddy issues the certificate automatically.")}</p>
 <label for="k">DeepSeek API Key${L("（可选）", " (optional)")}</label>
 <input id="k" name="apiKey" type="password" autocomplete="off" placeholder="sk-...">
-<p class="hint">${L("现在填写最省事；跳过也可稍后在登录后的「添加 API Key」引导，或设置 → 模型 → DeepSeek 中填写。", "Easiest to fill in now; you can also add it later from the \"Add API key\" prompt after signing in, or under Settings → Models → DeepSeek.")}</p>
+<p class="hint">${L("现在填写最省事；跳过也可稍后在登录后的「添加 API Key」引导，或设置 → 模型 → DeepSeek 中填写。没有 key？登录后在「VPS 管理 → 模型来源」启用，接入 WorkBuddy 免费积分等。", "Easiest to fill in now; you can also add it later from the \"Add API key\" prompt after signing in, or under Settings → Models → DeepSeek. No key? After signing in, turn on VPS Manager → Model sources to use WorkBuddy free credits and more.")}</p>
 <button type="submit">${L("完成设置", "Finish setup")}</button>
 </form>
 ${repoLink()}
@@ -1923,6 +1926,63 @@ async function handleUpdate(req, res, user) {
 	return json(202, { ok: true, from: info.current, to: info.latest });
 }
 
+//#region 模型来源（dsh-model，见 model.js）
+
+let modelJobs = null;
+function modelRunner() {
+	if (!modelJobs) modelJobs = model.createJobRunner({ env: { ...process.env, ...PLUGIN_ENV }, restartDsh, log });
+	return modelJobs;
+}
+
+function serverMirror() {
+	try {
+		return JSON.parse(fs.readFileSync(path.join(STATE_DIR, "config.json"), "utf8")).mirror === "cn";
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * GET：dsh-model 装没装、服务在不在跑、正在进行的任务和日志（页面轮询；DSH 重启期间也能看）。
+ * POST { action: enable | disable | restart }：启用 / 停用 dsh-model，或只重启 DSH（加载更新后的插件）。
+ */
+async function handleModel(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method === "GET") return json(200, { ...model.status(process.env), job: modelRunner().get() });
+	if (req.method !== "POST") return json(405, { error: "method not allowed" });
+	const origin = req.headers.origin;
+	let sameOrigin = false;
+	try {
+		sameOrigin = origin !== void 0 && new URL(origin).host === requestAuthority(req.headers);
+	} catch {
+		/* 非法 Origin */
+	}
+	if (!sameOrigin || String(req.headers["sec-fetch-site"] || "") === "cross-site") return json(403, { error: "cross-origin request refused" });
+	let body = {};
+	try {
+		body = JSON.parse((await readBody(req, 4096)) || "{}");
+	} catch {
+		return json(400, { error: "bad request" });
+	}
+	const action = String(body.action || "");
+	// 页面跟 DSH 的界面语言走，带过来就照它；否则看浏览器
+	const lang = body.lang === "zh" || body.lang === "en" ? body.lang : requestLang(req) === "zh" ? "zh" : "en";
+	if (action === "restart") {
+		log(`dsh restart requested by ${user} (model page)`);
+		setTimeout(() => restartDsh("requested from the model page"), 300);
+		return json(202, { ok: true });
+	}
+	if (action !== "enable" && action !== "disable") return json(400, { error: "unknown action" });
+	if (!modelRunner().start(action, { lang, mirror: serverMirror() })) return json(409, { error: lang === "zh" ? "已经有一个任务在进行" : "A task is already running" });
+	log(`model ${action} started by ${user}`);
+	return json(202, { ok: true });
+}
+
+//#endregion
+
 // 注入 DSH 页面的升级提示条（同源脚本，无外部依赖）。
 // 只做提示与确认；真正的升级由 root 服务执行，失败会自动回滚。
 // 语言跟随 DSH「设置 → 通用 → 语言」：DSH 把当前语言同步到 <html lang>（中文为 zh-CN），
@@ -2155,6 +2215,7 @@ function main() {
 				if (pathname === "/gate/password") return handlePassword(req, res, user);
 				if (pathname === "/gate/uninstall") return handleUninstall(req, res, user);
 				if (pathname === "/gate/domain") return handleDomain(req, res, user);
+				if (pathname === "/gate/model") return handleModel(req, res, user);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {

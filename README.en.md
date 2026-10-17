@@ -51,6 +51,7 @@ vpssh runs on your own server. There is no server of ours, and the AI uses your 
 - **Common tasks without tokens**: look things up or install Docker / Nginx / fail2ban and more from ready-made recipes, with the plan shown before anything runs; `/vps-help` lists every free command.
 - **Gets along with existing sites**: a machine that already serves a site (e.g. dsh-vps with Caddy on 80/443) is fine. vpssh adds one line to Caddy's config; with a domain both share 443, told apart by name.
 - **Fearless upgrades**: one-click upgrades back up first and return to the previous version if anything fails; uninstalling keeps your data by default.
+- **Works without a model key**: turn on Model sources (provided by [dsh-model](https://github.com/AIcivilization/dsh-model)) and WorkBuddy free credits, subscriptions such as Codex / Kimi, and API keys for Gemini / Groq / OpenRouter / SiliconFlow / DeepSeek come together right in the model list.
 - **Chinese and English**: the interface, the installer and the command line follow the system language.
 
 ## Download and install
@@ -104,6 +105,7 @@ Both take options (with the one-liner: `| sudo bash -s -- <options>`):
 | `--mirror cn` | Server in mainland China: download Node and DeepSeek Harness from mirrors there |
 | `--port <port>` | The port the browser uses (default 443; switches to 8443 when another site on the machine holds 443 and there is no domain) |
 | `--ip <IP>` | Without a domain, use this IP (default: the detected public IP) |
+| `--model` | Also turn on Model sources (dsh-model) so you can start without a model key (in the desktop app: "Also turn on model sources") |
 
 The installer prints an address with a one-time token; open it for first-time setup. If a firewall (ufw, firewalld) is on, the needed ports are opened for you; a cloud provider's security group lives outside the machine, so open the port in its console (the installer tells you which).
 
@@ -129,10 +131,15 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 | **Common tasks** | Ready-made recipes for lookups, installing common software and common fixes, with the plan shown first, no tokens spent |
 | **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use |
 | **Account and security** | Password sign-in with rate limiting; set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
+| **Model sources** (optional) | Turn on dsh-model in one click under VPS Manager → Model sources: 16 sources (WorkBuddy free credits, local models, subscriptions, API keys), failover across sources for same-name models, low-credit notices, daily check-ins; sign in, pick models and get API keys under Settings → dsh-model |
 | **Versions** | Check for updates and upgrade in one click from the web page, with automatic rollback on failure; uninstall from the web page too |
 
 <p align="center">
   <img src="docs/screenshots/manage.jpg" alt="VPS Manager: machines, phone QR code, account and security, version" width="820">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/models.jpg" alt="Model sources: dsh-model's settings page inside vpssh" width="820">
 </p>
 
 ## Using it
@@ -155,6 +162,7 @@ sudo vpssh repair       # when the page does not open: restart services, rewrite
 sudo vpssh status       # services and configuration at a glance
 sudo vpssh setup-url    # get the first-time setup link again
 sudo vpssh reset-admin  # forgot the admin password: run first-time setup again
+sudo vpssh model enable # turn on Model sources (dsh-model); status to check, disable to turn off
 sudo vpssh uninstall    # backs up first and keeps the data unless you add --delete-data
 ```
 
@@ -202,6 +210,8 @@ Lost the link: `sudo vpssh setup-url`. Forgot the password: `sudo vpssh reset-ad
 <summary><b>Does the AI cost money?</b></summary>
 
 vpssh is free. The AI uses your own model key, billed by the model provider; status checks, recipes and `/vps-*` commands spend no tokens.
+
+No key? Turn on VPS Manager → Model sources and start with WorkBuddy's free credits. Using subscriptions (Codex, Kimi and others) outside their official clients may break the provider's terms and put the account at risk, so decide for yourself; high-risk sources are hidden by default.
 </details>
 
 ## What's inside

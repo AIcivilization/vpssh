@@ -127,11 +127,12 @@ function InstallForm() {
 	const ssh = sshFields();
 	const domain = text("domain", "", "vps.example.com");
 	const mirror = h("input", { type: "checkbox", name: "mirror" });
+	const model = h("input", { type: "checkbox", name: "model" });
 	const manual = h("div", { hidden: true }, h("div", { class: "hint" }, L("SSH 登录服务器后执行（装最新发布版）：", "Log in to the server over SSH and run (installs the latest release):")), h("pre", { class: "cmd" }, INSTALL_CMD));
 	const btn = h("button", { class: "primary", type: "submit" }, L("安装到这台 VPS", "Install on this VPS"));
 	const form = h("form", { class: "card", onsubmit: async (e) => {
 		e.preventDefault();
-		const data = { action: "install", ...ssh.read(), domain: domain.value.trim(), mirror: mirror.checked };
+		const data = { action: "install", ...ssh.read(), domain: domain.value.trim(), mirror: mirror.checked, model: model.checked };
 		if (!data.host) return err.show(L("请填写服务器 IP 或域名", "Enter the server IP or hostname"));
 		const target = `${data.user || "root"}@${data.host}`;
 		if (!confirm(L(
@@ -146,6 +147,7 @@ function InstallForm() {
 		ssh,
 		field(L("访问域名（可选）", "Domain (optional)"), domain, L("已把 A 记录解析到这台服务器的域名，填了自动签发 HTTPS 证书；不填用 IP 访问，之后可在向导里补填", "A domain whose A record points at this server gets an automatic HTTPS certificate; without one vpssh uses the IP, and you can add a domain in the setup wizard later")),
 		h("label", { class: "check" }, mirror, L("服务器在国内（Node 与 DSH 从 npmmirror 下载）", "Server in mainland China (download Node and DSH from npmmirror)")),
+		h("label", { class: "check" }, model, L("同时启用模型来源（dsh-model：WorkBuddy 免费积分、各家订阅、API key 汇成一处，没有模型 key 也能用）", "Also turn on model sources (dsh-model: WorkBuddy free credits, subscriptions and API keys in one place; works without a model key)")),
 		h("div", { class: "actions" }, btn, h("a", { onclick: () => { manual.hidden = !manual.hidden; } }, L("想自己在服务器上执行？", "Prefer to run it on the server yourself?"))),
 		manual);
 	main.append(h("h1", null, L("安装到 VPS", "Install on a VPS")), form);

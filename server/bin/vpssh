@@ -376,6 +376,60 @@ cmd_restart() {
 
 ## endregion
 
+## region: model（模型来源：dsh-model，见 gate/model.js）
+
+# 以 vpssh 用户、带上 gate.env 的环境跑 gate/model.js（和网页「VPS 管理 → 模型来源」同一份代码）
+model_js() {
+	local args=() line
+	while IFS= read -r line; do
+		[[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && args+=("$line")
+	done <"$ROOT/state/gate.env"
+	(cd /home/vpssh && runuser -u vpssh -- env "${args[@]}" HOME=/home/vpssh LANG="${LANG:-C.UTF-8}" "$(command -v node)" "$ROOT/gate/model.js" "$@")
+}
+
+cmd_model() {
+	require_root
+	local sub="${1:-status}"
+	[[ -f "$ROOT/gate/model.js" ]] && grep -q '^DSH_MODEL_MODE=' "$ROOT/state/gate.env" 2>/dev/null \
+		|| die "$(M "这一版 vpssh 还没有模型来源：先 sudo vpssh upgrade" "This vpssh does not have model sources yet: run sudo vpssh upgrade first")"
+	# 后台服务要 vpssh 用户的 systemd（linger）：安装时已开；这里再确认一次
+	local uid
+	uid=$(id -u vpssh)
+	loginctl enable-linger vpssh 2>/dev/null || true
+	for _ in $(seq 1 20); do [[ -S "/run/user/$uid/bus" ]] && break; sleep 1; done
+	local lang mirror=()
+	lang=$(M zh en)
+	grep -q '"mirror": *"cn"' "$ROOT/state/config.json" 2>/dev/null && mirror=(--mirror)
+	case "$sub" in
+	status)
+		model_js status | node -e '
+const s = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const zh = process.argv[1] === "zh";
+const L = (a, b) => (zh ? a : b);
+const yn = (v) => (v ? L("是", "yes") : L("否", "no"));
+console.log(L("模型来源（dsh-model）", "Model sources (dsh-model)"));
+console.log(`  ${L("已安装", "installed")}: ${s.installed ? s.version : L("否", "no")}`);
+console.log(`  ${L("引擎在跑", "engine running")}: ${yn(s.engine)}  ${L("守护进程在跑", "daemon running")}: ${yn(s.daemon)}`);
+if (!s.userServices) console.log(L("  vpssh 用户的后台服务没起来：sudo loginctl enable-linger vpssh", "  vpssh user services are not up: sudo loginctl enable-linger vpssh"));
+' "$lang"
+		;;
+	enable | disable)
+		model_js "$sub" --lang "$lang" ${mirror[@]+"${mirror[@]}"} || die "$(M "没成功（见上面的输出）" "That did not work (see the output above)")"
+		log "$(M "重启 vpssh，加载变化…" "Restarting vpssh to load the change…")"
+		systemctl restart "$SERVICE"
+		wait_healthy 120 || warn "$(M "vpssh 还没起来：sudo vpssh status" "vpssh is not up yet: sudo vpssh status")"
+		if [[ "$sub" == enable ]]; then
+			log "$(M "模型来源已启用：网页左下角「设置 → dsh-model」里接入来源（WorkBuddy 免费积分、各家订阅、API key）" "Model sources are on: connect sources under Settings (bottom left) → dsh-model (WorkBuddy free credits, subscriptions, API keys)")"
+		else
+			log "$(M "模型来源已停用，DSH 的模型配置已还原" "Model sources are off; DSH's model config is restored")"
+		fi
+		;;
+	*) die "$(M "用法：sudo vpssh model status|enable|disable" "Usage: sudo vpssh model status|enable|disable")" ;;
+	esac
+}
+
+## endregion
+
 ## region: repair
 
 # 本机 sshd 的端口。不能直接 $(sshd -T | ...)：Ubuntu 新版按需启动 ssh 时 /run/sshd 可能还不存在，
@@ -1153,6 +1207,7 @@ Usage: sudo vpssh <command>
   reset-admin [--yes] Delete the admin account and run first-time setup again (new token)
   setup-url           Print the first-time setup link (with its one-time token)
   vpn ...             "Only my devices" access through WireGuard (sudo vpssh vpn for help)
+  model status|enable|disable  Model sources (dsh-model): WorkBuddy free credits, subscriptions and API keys in one place
   tunnel              Reach vpssh through an SSH tunnel instead
   ownshost [on|off|status]  Settings patch for access over a domain
   selfcheck           Run the self-check
@@ -1173,6 +1228,7 @@ vpssh 管理命令
   selfcheck           手动触发回归自检探针
   uninstall [--delete-data]  卸载 vpssh（先备份；默认保留数据）
   repair [--public]   网页打不开时救援：拉起服务、重写站点、放行端口（--public 关掉「仅我的设备」）
+  model status|enable|disable  模型来源（dsh-model）：WorkBuddy 免费积分、各家订阅、API key 汇成一处
 EOF
 }
 
@@ -1192,6 +1248,7 @@ uninstall-run) cmd_uninstall_run ;;
 install-units) cmd_install_units ;;
 upgrade-run) cmd_upgrade_run ;;
 vpn) shift; cmd_vpn "$@" ;;
+model) shift; cmd_model "$@" ;;
 tunnel) cmd_tunnel ;;
 "" | -h | --help) usage ;;
 *) usage; die "$(M "未知子命令: $1" "Unknown command: $1")" ;;

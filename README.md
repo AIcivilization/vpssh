@@ -51,6 +51,7 @@ vpssh 装在你自己的服务器上，没有我们的服务器，AI 用你自�
 - **不花 token 的常用操作**：查信息、装 Docker / Nginx / fail2ban 等常见软件走现成的菜谱，先给你看计划再执行；`/vps-help` 列出全部免费命令。
 - **和现有网站和平共处**：机器上已经有网站（比如 dsh-vps 用 Caddy 占着 80/443）也能装，vpssh 只给 Caddy 加一行配置，有域名时两边共用 443、按域名区分。
 - **升级不怕**：一键升级前自动备份，升级失败自动回到原来的版本；卸载默认保留数据。
+- **没有模型 key 也能用**：打开「模型来源」（由 [dsh-model](https://github.com/AIcivilization/dsh-model) 提供），WorkBuddy 免费积分、Codex / Kimi 等订阅、Gemini / Groq / OpenRouter / 硅基流动 / DeepSeek 等 API key 汇成一处，直接出现在模型列表里。
 - **中文、英文**：界面、安装过程、命令行提示都跟随系统语言。
 
 ## 下载与安装
@@ -104,6 +105,7 @@ sudo bash vpssh-0.1.12/server/install.sh
 | `--mirror cn` | 服务器在国内：Node 和 DeepSeek Harness 从国内镜像下载 |
 | `--port 端口` | 浏览器访问的端口（默认 443；443 被同机别的网站占着、又没有域名时自动换成 8443） |
 | `--ip IP` | 不用域名时用这个 IP（默认自动探测公网 IP） |
+| `--model` | 装完顺带启用「模型来源」（dsh-model），没有模型 key 也能开始用（桌面版里是「同时启用模型来源」） |
 
 装完会打印一个带一次性令牌的地址，浏览器打开它进入初始设置。防火墙（ufw、firewalld）开着的话安装时会自动放行端口；云厂商的安全组在机器外面，要在控制台里放行（装完会提示是哪个端口）。
 
@@ -129,10 +131,15 @@ npx vpssh install root@服务器IP
 | **常用操作** | 现成的菜谱：查信息、装常见软件、常见排障，先看计划再执行，不花 token |
 | **手机、平板** | 打开就是持续刷新的服务器状态；扫码登录，加到主屏幕全屏使用 |
 | **账号与安全** | 登录密码 + 限流；访问地址可以随时设域名、换域名、改回 IP；可以切成「只有我的设备能访问」（WireGuard） |
+| **模型来源**（可选） | 「VPS 管理 → 模型来源」一键启用 dsh-model：16 个来源（WorkBuddy 免费积分、本地模型、各家订阅、API key），同名模型跨来源自动切换、额度快用完时提醒、每日签到；在「设置 → dsh-model」里登录来源、选模型、领 API key |
 | **版本** | 网页里检查更新、一键升级，失败自动回滚；网页里也能卸载 |
 
 <p align="center">
   <img src="docs/screenshots/manage.jpg" alt="VPS 管理：机器、手机扫码、账号与安全、版本" width="820">
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/models.jpg" alt="模型来源：在 vpssh 里的 dsh-model 设置页" width="820">
 </p>
 
 ## 用法
@@ -155,6 +162,7 @@ sudo vpssh repair       # 网页打不开时：拉起服务、重写站点、放
 sudo vpssh status       # 看各服务和配置
 sudo vpssh setup-url    # 重新取初始设置链接
 sudo vpssh reset-admin  # 忘了管理员密码：重新走初始设置
+sudo vpssh model enable # 启用模型来源（dsh-model）；status 看状态，disable 停用
 sudo vpssh uninstall    # 卸载：先备份，默认保留数据（加 --delete-data 才删）
 ```
 
@@ -202,6 +210,8 @@ sudo vpssh uninstall    # 卸载：先备份，默认保留数据（加 --delete
 <summary><b>AI 要花钱吗？</b></summary>
 
 vpssh 免费。AI 用你自己的模型 key，按模型厂商的价格计费；查状态、常用操作菜谱、`/vps-*` 命令都不花 token。
+
+没有 key 也行：在「VPS 管理 → 模型来源」启用后，用 WorkBuddy 的免费积分开始用。订阅类来源（Codex、Kimi 等）在官方客户端之外使用，可能不符合服务商条款，账号有风险，请自行判断；高风险来源默认隐藏。
 </details>
 
 ## 组成

@@ -38,3 +38,7 @@ test("打开地址：带令牌的设置链接优先，去掉颜色", () => {
 	assert.equal(findOpenUrl(" Open      : https://vps.example.com\n"), "https://vps.example.com");
 	assert.equal(findOpenUrl("nothing here"), "");
 });
+
+test("--model 原样交给安装脚本", () => {
+	assert.deepEqual(parseArgs(["install", "h", "--model"]).install, ["--model"]);
+});

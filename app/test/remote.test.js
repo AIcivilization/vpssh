@@ -41,3 +41,10 @@ test("装完的信息：访问地址和根证书", () => {
 	assert.deepEqual(info, { host: "1.2.3.4:8443", rootPem: pem });
 	assert.deepEqual(parseInfo("HOST=vps.example.com\n"), { host: "vps.example.com", rootPem: "" });
 });
+
+test("勾了「同时启用模型来源」：安装脚本带 --model", () => {
+	const { installArgs } = require("../lib/remote.js");
+	const v = validate({ host: "h", model: true }).value;
+	assert.deepEqual(installArgs(v), ["--model"]);
+	assert.equal(validate({ action: "uninstall", host: "h", model: true }).value.model, false);
+});

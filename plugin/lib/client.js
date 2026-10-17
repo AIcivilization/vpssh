@@ -1346,6 +1346,105 @@ window.__ModuleLoader__.load({
           msg ? h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } }, msg) : null))
     }
 
+    /**
+     * 模型来源：dsh-model（多家模型汇成一处，直接进 DSH 的模型列表）。启用 / 停用由登录网关在后台做
+     * （装插件 → 设置 → 重启 DSH，见 server/gate/model.js），这里只显示状态、进度。
+     * 来源登录、选模型、领 API key、更新都在 dsh-model 自己的设置页里。
+     */
+    function ModelCard() {
+      const [st, setSt] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [msg, setMsg] = useState('')
+      const [reloading, setReloading] = useState(false)
+      const logRef = useRef(null)
+      const load = useCallback(async () => {
+        const next = await gateGet('/gate/model')
+        if (next) setSt(next)
+        return next
+      }, [])
+      useEffect(() => { load() }, [load])
+      const running = st?.job?.state === 'running'
+      // 任务进行中每 2 秒看一次；做完了网关会重启 DSH：等它回来，刷新页面加载 dsh-model 的设置页
+      useEffect(() => {
+        if (!running) return undefined
+        const t = setInterval(async () => {
+          const next = await load()
+          if (next?.job?.state === 'done') {
+            clearInterval(t)
+            setReloading(true)
+            const started = Date.now()
+            const wait = setInterval(async () => {
+              const health = await gateGet('/gate/health')
+              if (Date.now() - started > 6000 && health?.dshCookie) {
+                clearInterval(wait)
+                window.location.reload()
+              }
+            }, 2000)
+          }
+        }, 2000)
+        return () => clearInterval(t)
+      }, [running, load])
+      useEffect(() => {
+        if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
+      }, [st?.job?.lines?.length])
+
+      async function act(action) {
+        if (action === 'disable' && !window.confirm(L(
+          '停用模型来源？\n\n会停掉 dsh-model 的后台服务、把 DSH 的模型配置原样还原、移除 dsh-model。各家的登录凭据先备份到服务器的 /home/vpssh/dsh-model-auth-backup-<时间>；以后再启用要重新登录各个来源。',
+          'Turn off model sources?\n\nThis stops dsh-model\'s background services, restores DSH\'s model config exactly and removes dsh-model. Sign-in credentials are first backed up to /home/vpssh/dsh-model-auth-backup-<time> on the server; turning it back on means signing in to the sources again.'))) return
+        setBusy(true)
+        setMsg('')
+        try {
+          const res = await fetch('/gate/model', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ action, lang: L('zh', 'en') }),
+            signal: AbortSignal.timeout(20_000),
+          })
+          const body = await res.json().catch(() => ({}))
+          if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`)
+          if (action === 'restart') {
+            setReloading(true)
+            setTimeout(() => window.location.reload(), 9000)
+          } else await load()
+        } catch (e) {
+          setMsg(String(e.message || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      if (!st) return null
+      const job = st.job
+      const on = st.installed
+      const summary = running
+        ? (job.action === 'enable' ? L('正在启用…', 'Turning on…') : L('正在停用…', 'Turning off…'))
+        : on ? L(`已启用 · dsh-model ${st.version}${st.engine ? '' : ' · 引擎没在跑'}`, `On · dsh-model ${st.version}${st.engine ? '' : ' · engine not running'}`)
+          : L('未启用 · WorkBuddy 免费积分、各家订阅、API key 汇成一处', 'Off · WorkBuddy free credits, subscriptions and API keys in one place')
+      return h(FoldCard, { id: 'models', title: L('模型来源', 'Model sources'), summary },
+        h('div', { style: { fontSize: 12, lineHeight: 1.9 } },
+          h('div', null, L(
+            '把多家模型汇成一处，直接出现在 DSH 的模型列表里：WorkBuddy（免费积分）、Codex / Kimi / Grok 等订阅，Gemini、Groq、OpenRouter、硅基流动、DeepSeek 等 API key；同名模型跨来源自动切换，额度快用完时提醒。',
+            'Many model sources in one place, right in DSH\'s model list: WorkBuddy (free credits), subscriptions such as Codex / Kimi / Grok, API keys for Gemini, Groq, OpenRouter, SiliconFlow, DeepSeek and more; same-name models fail over across sources, with a heads-up when credits run low.')),
+          h('div', { style: S.muted }, L(
+            '由 dsh-model 提供（从 npm 原样安装，在这台服务器上运行）。订阅类来源在官方客户端之外使用，可能不符合服务商条款，账号有风险；高风险来源默认隐藏。',
+            'Provided by dsh-model (installed unmodified from npm, running on this server). Using subscriptions outside their official clients may break the provider\'s terms and put the account at risk; high-risk sources are hidden by default.')),
+          on ? h('div', { style: { marginTop: 8 } },
+            h('div', null, L(`dsh-model ${st.version} · 引擎${st.engine ? '在跑' : '没在跑'} · 守护进程${st.daemon ? '在跑' : '没在跑'}`, `dsh-model ${st.version} · engine ${st.engine ? 'running' : 'not running'} · daemon ${st.daemon ? 'running' : 'not running'}`)),
+            h('div', null, L('接入来源、选模型、领 API key、更新：左下角「设置 → dsh-model」。', 'Connect sources, pick models, get API keys, update: Settings (bottom left) → dsh-model.'))) : null,
+          !st.userServices && !on ? h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } },
+            L('这台服务器还没开启所需的后台服务权限：先在服务器上执行 sudo vpssh upgrade（或 sudo vpssh model enable）。', 'This server is not set up for the background services yet: run sudo vpssh upgrade (or sudo vpssh model enable) on the server first.')) : null,
+          h('div', { style: { ...S.row, marginTop: 8 } },
+            !on ? h(Btn, { kind: 'primary', disabled: busy || running || reloading || !st.userServices, onClick: () => act('enable') }, L('启用模型来源', 'Turn on model sources')) : null,
+            on ? h(Btn, { disabled: busy || running || reloading, onClick: () => act('restart'), title: L('dsh-model 自己更新后，重启一下才加载新的设置页', 'After dsh-model updates itself, restart to load its new settings page') }, L('重启界面服务', 'Restart the UI service')) : null,
+            on ? h(Btn, { kind: 'danger', disabled: busy || running || reloading, onClick: () => act('disable') }, L('停用', 'Turn off')) : null),
+          job && (running || job.state === 'failed' || reloading) ? h('pre', { ref: logRef, style: { ...S.pre, maxHeight: 220, overflow: 'auto', marginTop: 8 } }, job.lines.slice(-200).join('\n')) : null,
+          reloading ? h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } }, L('完成，正在重启界面服务，几秒后页面自动刷新…', 'Done; restarting the UI service, the page reloads in a few seconds…')) : null,
+          job?.state === 'failed' && !running ? h('div', { style: { ...S.err, marginTop: 8, marginBottom: 0 } }, job.error) : null,
+          msg ? h('div', { style: { ...S.err, marginTop: 8, marginBottom: 0 } }, msg) : null))
+    }
+
     function duration(sec) {
       if (sec < 3600) return L(`${Math.max(1, Math.round(sec / 60))} 分钟`, `${Math.max(1, Math.round(sec / 60))} min`)
       if (sec < 86400) return L(`${Math.round(sec / 3600)} 小时`, `${Math.round(sec / 3600)} h`)
@@ -1590,6 +1689,7 @@ window.__ModuleLoader__.load({
         // —— 服务器这一层（来自登录网关）：手机、账号、版本 ——
         gate.data?.health ? h(HomeScreenCard, { health: gate.data.health }) : null,
         gate.data?.health ? h(AccountCard, { health: gate.data.health }) : null,
+        gate.data?.health ? h(ModelCard) : null,
         h(VersionCard, { plugin: d?.version, update: gate.data?.update }),
 
         settings ? h('div', { style: S.card },

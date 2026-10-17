@@ -136,6 +136,23 @@ fi
 ## region: 步骤 3：停服务、移除 unit
 
 log "$(M "步骤 2/6：停止并移除 $SERVICE" "Step 2/6: stop and remove $SERVICE")"
+# 模型来源（dsh-model）：它的后台服务是 vpssh 用户的用户级服务，不停掉会在 linger 下一直跑。
+# 交给它自己的卸载：停服务、把 DSH 的模型配置原样还原、移除插件；保留数据时连各家的登录一起留着
+MODEL_BIN=/home/vpssh/.dsh/profiles/web/node_modules/dsh-model/bin/dsh-model.js
+if [[ -f "$MODEL_BIN" && -f "$INSTALL_ROOT/state/gate.env" ]] && id "$DSH_USER" >/dev/null 2>&1; then
+	log "$(M "停用模型来源（dsh-model）" "Turning off model sources (dsh-model)")"
+	model_env=()
+	while IFS= read -r line; do
+		[[ "$line" =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] && model_env+=("$line")
+	done <"$INSTALL_ROOT/state/gate.env"
+	keep=()
+	[[ $KEEP_DATA -eq 1 ]] && keep=(--keep-auth)
+	(cd /home/vpssh && runuser -u "$DSH_USER" -- env "${model_env[@]}" HOME=/home/vpssh DSH_MODEL_MODE=local \
+		"$(command -v node)" "$MODEL_BIN" uninstall --yes --remove-plugin ${keep[@]+"${keep[@]}"} </dev/null) \
+		|| warn "$(M "dsh-model 没卸干净：之后可执行 sudo -u vpssh dsh-model uninstall" "dsh-model was not fully removed")"
+fi
+loginctl disable-linger "$DSH_USER" 2>/dev/null || true
+rm -f /home/vpssh/.config/environment.d/60-vpssh.conf
 systemctl stop "$SERVICE" 2>/dev/null || true
 systemctl disable "$SERVICE" 2>/dev/null || true
 rm -f "$UNIT_FILE"

@@ -50,6 +50,7 @@ SSH 选项：
   --mirror cn        服务器在国内：从国内镜像下载
   --ip <IP>          不用域名时用这个 IP 访问
   --port <端口>      浏览器访问的端口
+  --model            同时启用模型来源（dsh-model：WorkBuddy 免费积分、各家订阅、API key 汇成一处）
   --ref <版本>       装指定版本（标签或分支，默认最新发布版）
   --no-open          装完不自动打开浏览器
 
@@ -77,6 +78,7 @@ Install options (passed to the installer on the server):
   --mirror cn        Server in mainland China: download from mirrors there
   --ip <IP>          Without a domain, use this IP
   --port <port>      Port the browser uses
+  --model            Also turn on model sources (dsh-model: WorkBuddy free credits, subscriptions, API keys)
   --ref <version>    Install this tag or branch (default: the latest release)
   --no-open          Do not open the browser afterwards
 
@@ -121,6 +123,9 @@ function parseArgs(argv) {
 				break;
 			case "--ref":
 				out.ref = need(a);
+				break;
+			case "--model":
+				out.install.push(a);
 				break;
 			case "--no-open":
 				out.open = false;

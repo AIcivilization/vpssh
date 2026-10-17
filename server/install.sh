@@ -54,6 +54,7 @@ DOMAIN=""
 MIRROR=""
 FORCE_IP=""
 FORCE_PORT=""
+WITH_MODEL=0 # --model：装完顺带启用「模型来源」（dsh-model）
 
 log()  { printf '\033[1;32m[install]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[install]\033[0m %s\n' "$*" >&2; }
@@ -70,6 +71,7 @@ vpssh 安装脚本
   --mirror cn       国内镜像：Node 和 DSH 都从 npmmirror 下载
   --ip <IP>         不传 --domain 时用这个 IP 访问（默认自动探测公网 IP；内网、多 IP、测试机时用）
   --port <端口>     浏览器访问的端口（默认 443；443 被同机别的网站占着时自动换成 8443）
+  --model           装完顺带启用「模型来源」（dsh-model：WorkBuddy 免费积分、各家订阅、API key 汇成一处）
 EOF
 	else
 		cat <<'EOF'
@@ -79,6 +81,7 @@ Usage: sudo bash install.sh [--domain <domain>] [--mirror cn] [--ip <IP>]
   --mirror cn        Download Node and DSH from npmmirror (mainland China)
   --ip <IP>          Without --domain, use this IP (default: detect the public IP; for private networks, several IPs, test machines)
   --port <port>      Port the browser uses (default 443; switches to 8443 when another site on this machine holds 443)
+  --model            Also enable model sources (dsh-model: WorkBuddy free credits, subscriptions and API keys in one place)
 EOF
 	fi
 }
@@ -89,6 +92,7 @@ while [[ $# -gt 0 ]]; do
 	--mirror) MIRROR="${2:?--mirror 需要一个值}"; shift 2 ;;
 	--ip) FORCE_IP="${2:?--ip 需要一个值}"; shift 2 ;;
 	--port) FORCE_PORT="${2:?--port 需要一个值}"; shift 2 ;;
+	--model) WITH_MODEL=1; shift ;;
 	-h | --help) usage; exit 0 ;;
 	*) die "$(M "未知参数: $1（--help 查看用法）" "Unknown option: $1 (see --help)")" ;;
 	esac
@@ -495,6 +499,14 @@ step5_plugin() {
 	runuser -u "$DSH_USER" -- env HOME=/home/vpssh DSH_HOME="$DSH_HOME_DIR" pnpm_config_minimum_release_age=0 pnpm_config_package_import_method=copy \
 		node "$dsh_bin" plugin --profile web add "file:$dst" \
 		|| die "$(M "vpssh 插件登记到 DSH 失败" "Registering the vpssh plugin with DSH failed")"
+	# 以后在 DSH 里装 / 更新 / 卸任何插件（插件页、dsh-model 自己的「更新」），DSH 都会把 profile 里的
+	# 插件重新导入一遍；vpssh 的插件归 root，默认的硬链接导入会 Operation not permitted（实测）。
+	# 写进 profile 的 pnpm-workspace.yaml：不靠环境变量，谁来装都生效；DSH 不会改掉这一行
+	local ws="$DSH_HOME_DIR/profiles/web/pnpm-workspace.yaml"
+	if [[ -f "$ws" ]] && ! grep -q '^packageImportMethod:' "$ws"; then
+		printf 'packageImportMethod: copy\n' >>"$ws"
+		chown "$DSH_USER": "$ws"
+	fi
 	log "$(M "vpssh 插件已安装" "vpssh plugin installed")"
 }
 
@@ -527,6 +539,8 @@ step6_gate() {
 	node --check "$INSTALL_ROOT/gate/server.js" || die "$(M "gate/server.js 语法检查失败" "gate/server.js failed its syntax check")"
 	fetch_file gate/site-block.js "$INSTALL_ROOT/gate/site-block.js"
 	node --check "$INSTALL_ROOT/gate/site-block.js" || die "$(M "gate/site-block.js 语法检查失败" "gate/site-block.js failed its syntax check")"
+	fetch_file gate/model.js "$INSTALL_ROOT/gate/model.js"
+	node --check "$INSTALL_ROOT/gate/model.js" || die "$(M "gate/model.js 语法检查失败" "gate/model.js failed its syntax check")"
 	fetch_file bin/vpssh "$INSTALL_ROOT/bin/vpssh"
 	# 卸载脚本留一份在服务器上：sudo vpssh uninstall、网页上的「卸载」都用它
 	fetch_file uninstall.sh "$INSTALL_ROOT/uninstall.sh"
@@ -673,6 +687,17 @@ step8_systemd() {
 	local trusted="$TRUSTED_HOST"
 	local cfg_domain="$CFG_DOMAIN"
 
+	# 模型来源（dsh-model）的后台服务是 vpssh 用户的用户级 systemd 服务：开 linger，
+	# 开机就有它的 systemd，不用谁登录。没装 dsh-model 时这里什么也不跑
+	local uid
+	uid=$(id -u "$DSH_USER")
+	if command -v loginctl >/dev/null 2>&1 && loginctl enable-linger "$DSH_USER" 2>/dev/null; then
+		for _ in $(seq 1 20); do [[ -S "/run/user/$uid/bus" ]] && break; sleep 1; done
+		[[ -S "/run/user/$uid/bus" ]] || warn "$(M "vpssh 用户的后台服务还没起来（/run/user/$uid/bus 不在），「模型来源」暂时用不了" "vpssh's user services are not up yet (/run/user/$uid/bus missing); model sources will not work for now")"
+	else
+		warn "$(M "开不了 linger（loginctl），「模型来源」用不了；其他功能不受影响" "Could not enable linger (loginctl); model sources will not work, everything else is fine")"
+	fi
+
 	# gate.env：集中管理运行环境变量（0600 属主 vpssh，M3 向导改域名后重写并 restart 即可）
 	cat >"$INSTALL_ROOT/state/gate.env" <<EOF
 GATE_HOME=$INSTALL_ROOT
@@ -686,9 +711,41 @@ DSH_PORT=$DSH_PORT
 VPSSH_PUBLIC_PORT=$PUBLIC_PORT
 VPSSH_PORT_FORCED=$PORT_FORCED
 VPSSH_CADDY_SHARED=$CADDY_SHARED
+XDG_RUNTIME_DIR=/run/user/$uid
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$uid/bus
+DSH_MODEL_MODE=local
+DSH_MODEL_HOME=/home/vpssh/.dsh-model
+DSH_MODEL_DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
+DSH_MODEL_DSH_VERSION=$DSH_VERSION
 EOF
 	chmod 600 "$INSTALL_ROOT/state/gate.env"
 	chown "$DSH_USER" "$INSTALL_ROOT/state/gate.env"
+
+	# 模型来源（dsh-model）的后台服务由 vpssh 用户的 systemd 起，拿不到 gate.env：同样的设置写进它的
+	# environment.d，所有用户级服务都继承。最要紧的是 DSH_MODEL_MODE=local：dsh-model 一看到 /opt/dsh-vps
+	# 就按 dsh-vps 的方式去改 dsh-vps 的 DSH（同机装着 dsh-vps 时），必须明确告诉它在 vpssh 里（实测）
+	local envd=/home/vpssh/.config/environment.d
+	mkdir -p "$envd"
+	cat >"$envd/60-vpssh.conf" <<EOF
+# 由 vpssh 安装脚本生成：vpssh 用户的后台服务（模型来源 dsh-model）用。卸载 vpssh 时删除
+DSH_MODEL_MODE=local
+DSH_HOME=$DSH_HOME_DIR
+DSH_MODEL_HOME=/home/vpssh/.dsh-model
+DSH_MODEL_DSH_BIN=$INSTALL_ROOT/dsh/current/node_modules/@deepseek-ai/dsh/lib/bin.js
+DSH_MODEL_DSH_VERSION=$DSH_VERSION
+pnpm_config_minimum_release_age=0
+pnpm_config_package_import_method=copy
+EOF
+	chown -R "$DSH_USER": /home/vpssh/.config
+	# 正在跑的用户级 systemd 立刻用上（environment.d 只在它启动时读），已有的 dsh-model 服务重启一下
+	if [[ -S "/run/user/$uid/bus" ]]; then
+		local kv=()
+		mapfile -t kv < <(grep -E '^[A-Za-z_]+=' "$envd/60-vpssh.conf")
+		runuser -u "$DSH_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+			systemctl --user set-environment "${kv[@]}" 2>/dev/null || true
+		runuser -u "$DSH_USER" -- env XDG_RUNTIME_DIR="/run/user/$uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" \
+			systemctl --user try-restart dsh-model-engine.service dsh-model-bridge.service 2>/dev/null || true
+	fi
 
 	# config.json：安装元数据
 	cat >"$INSTALL_ROOT/state/config.json" <<EOF
@@ -804,6 +861,12 @@ step10_verify() {
 		fi
 		sleep 2
 	done
+
+	if [[ $WITH_MODEL -eq 1 && $healthy -eq 1 ]]; then
+		log "$(M "启用模型来源（dsh-model）…" "Enabling model sources (dsh-model)…")"
+		"$INSTALL_ROOT/bin/vpssh" model enable \
+			|| warn "$(M "模型来源没启用成功（vpssh 本身不受影响）；稍后在「VPS 管理 → 模型来源」里再点一次，或 sudo vpssh model enable" "Model sources were not enabled (vpssh itself is fine); try again under VPS Manager → Model sources, or sudo vpssh model enable")"
+	fi
 
 	local url="https://$TRUSTED_HOST"
 	local open_url="$url"

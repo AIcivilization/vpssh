@@ -33,22 +33,23 @@ function validate(body) {
 	const keyPath = typeof b.keyPath === "string" ? b.keyPath.trim() : "";
 	const domain = action === "install" ? String(b.domain ?? "").trim().toLowerCase() : "";
 	const mirror = action === "install" && b.mirror === true;
+	const model = action === "install" && b.model === true;
 	const deleteData = action === "uninstall" && b.deleteData === true;
 	if (!host || host.length > 253 || !HOST_RE.test(host)) return { error: ["服务器地址格式不对（填公网 IP 或能解析到它的域名）", "Not a server address (use the public IP, or a name that resolves to it)"] };
 	if (!Number.isInteger(port) || port < 1 || port > 65535) return { error: ["SSH 端口应为 1–65535", "The SSH port must be 1–65535"] };
 	if (!USER_RE.test(user)) return { error: ["用户名格式不对", "Not a valid user name"] };
 	if (password.length > 1024) return { error: ["密码太长", "Password too long"] };
 	if (domain && (domain.length > 253 || !DOMAIN_RE.test(domain))) return { error: ["访问域名格式不对（例如 vps.example.com）", "Not a valid domain (e.g. vps.example.com)"] };
-	return { value: { action, host, port, user, password, keyPath, domain, mirror, deleteData } };
+	return { value: { action, host, port, user, password, keyPath, domain, mirror, model, deleteData } };
 }
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /** 交给安装脚本的参数 */
-function installArgs({ domain, mirror }) {
+function installArgs({ domain, mirror, model }) {
 	// VPSSH_DEV_INSTALL_ARGS：只给开发测试用（比如测试机用 --ip 127.0.0.1），界面上没有
 	const dev = (process.env.VPSSH_DEV_INSTALL_ARGS || "").split(/\s+/).filter(Boolean);
-	return [...(domain ? ["--domain", domain] : []), ...(mirror ? ["--mirror", "cn"] : []), ...dev];
+	return [...(domain ? ["--domain", domain] : []), ...(mirror ? ["--mirror", "cn"] : []), ...(model ? ["--model"] : []), ...dev];
 }
 
 /**
