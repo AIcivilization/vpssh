@@ -175,7 +175,7 @@ export function registerRoutes(ctx, deps = {}) {
       recipes: list.map((r) => ({
         id: r.id, kind: r.kind, name: r.name, desc: r.desc, tags: r.tags,
         source: r.source, tier: r.tier, requires: r.requires,
-        params: r.params, incomplete: r.incomplete,
+        params: r.params, incomplete: r.incomplete, url: r.url || '',
       })),
       recipeErrors: errors,
       recipeConflicts: conflicts,
@@ -348,6 +348,19 @@ export function registerRoutes(ctx, deps = {}) {
       source: 'panel',
       preApproved: true, // 机器设置页「基础配置」里按的保存就是同意
     }), { write: true })
+
+  // —— 常用操作页的「我的一键命令」：新建 / 改 / 删 / 读 ——
+  route('recipes/custom/get', async ({ id }) => (await import('./recipe-store.js')).readCustomCommand({ id, env }))
+  route('recipes/custom/save', async (body) => {
+    const r = await (await import('./recipe-store.js')).saveCustomCommand({ ...body, env })
+    if (!r.ok) throw new Error(r.hint)
+    return r
+  }, { write: true })
+  route('recipes/custom/delete', async ({ id }) => {
+    const r = await (await import('./recipe-store.js')).deleteCustomCommand({ id, env })
+    if (!r.ok) throw new Error(r.hint)
+    return r
+  }, { write: true })
 
   route('recipes/verify', async ({ id, alias }) =>
     recipeAction({ ctx, action: 'verify', id, alias, env, runner, source: 'panel' }))

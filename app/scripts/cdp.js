@@ -2,6 +2,7 @@
 //
 //   node scripts/cdp.js <端口> url                 当前地址
 //   node scripts/cdp.js <端口> accept              页面上正弹着的对话框点确定
+//   node scripts/cdp.js <端口> type '<文字>' [noenter]  往焦点处打字，再按回车
 //   node scripts/cdp.js <端口> eval '<js>'          在当前页面执行，打印结果（confirm 等对话框自动点确定）
 //   node scripts/cdp.js <端口> nav <地址>           跳转
 //   node scripts/cdp.js <端口> shot <文件>          截图
@@ -38,6 +39,14 @@ const [port, cmd, arg, arg2] = process.argv.slice(2);
 		// 页面上正弹着 confirm / alert：点确定
 		const r = await send("Page.handleJavaScriptDialog", { accept: true });
 		console.log(r.error ? "no dialog" : "accepted");
+	} else if (cmd === "type") {
+		// 往当前焦点处打字（真实的输入事件），再按回车
+		await send("Input.insertText", { text: arg });
+		await wait(400);
+		if (arg2 !== "noenter") {
+			for (const type of ["keyDown", "keyUp"]) await send("Input.dispatchKeyEvent", { type, key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13, text: type === "keyDown" ? "\r" : undefined });
+		}
+		console.log("typed");
 	} else if (cmd === "url") {
 		console.log(page.url);
 	} else if (cmd === "eval") {

@@ -130,6 +130,7 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 | **Web terminal** | Reconnects to the same session after a dropped connection or a closed page; works on phones too |
 | **Files** | Browse, drag in to upload, right-click to download, double-click to edit; deletes go to the trash and edits are backed up first; right-click "Let the AI look at this file" |
 | **Common tasks** | Ready-made recipes for lookups, installing common software and common fixes, with the plan shown first, no tokens spent |
+| **My commands** | Save your own commands under Common tasks (name, command, description, GitHub link) and click Run to run them in the conversation: read-only ones show the result right away; ones that change the server, or the first run, show the command and run on `/vps-yes`; commands containing passwords or keys are refused |
 | **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use |
 | **Account and security** | Password sign-in with rate limiting; set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
 | **Model sources** (optional) | Turn on dsh-model in one click under VPS Manager → Model sources: 16 sources (WorkBuddy free credits, local models, subscriptions, API keys), failover across sources for same-name models, low-credit notices, daily check-ins; sign in, pick models and get API keys under Settings → dsh-model |

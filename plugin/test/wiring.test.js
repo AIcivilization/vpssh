@@ -94,7 +94,7 @@ test('同一个 DSH 里加载了两份（插件市场热挂载 + profile）：�
   first.effect = (fn) => { disposers.push(fn()) } // 仿 cordis：卸载时调用返回的函数
   apply(first, cfg)
   await new Promise((r) => setTimeout(r, 100))
-  assert.equal(first._commands.length, 22)
+  assert.equal(first._commands.length, 23)
 
   const second = fakeCtx()
   apply(second, cfg)
@@ -109,11 +109,11 @@ test('同一个 DSH 里加载了两份（插件市场热挂载 + profile）：�
   const third = fakeCtx()
   apply(third, cfg)
   await new Promise((r) => setTimeout(r, 100))
-  assert.equal(third._commands.length, 22, '第一份走了，新加载的那份正常接班')
+  assert.equal(third._commands.length, 23, '第一份走了，新加载的那份正常接班')
   assert.deepEqual(third._warnings, [])
 })
 
-test('apply：5 个工具、22 条命令、1 个 skill、本机工具守卫、VPS 模式监听，全部注册成功', async () => {
+test('apply：5 个工具、23 条命令、1 个 skill、本机工具守卫、VPS 模式监听，全部注册成功', async () => {
   const ctx = fakeCtx()
   const home = await mkdtemp(join(tmpdir(), 'vpssh-apply-'))
   apply(ctx, { env: { HOME: home, DSH_HOME: join(home, '.dsh') } })
@@ -126,7 +126,7 @@ test('apply：5 个工具、22 条命令、1 个 skill、本机工具守卫、VP
     'vps_exec', 'vps_hosts', 'vps_recipe', 'vps_task', 'vps_write_file',
   ])
   const names = ctx._commands.map((c) => c.name)
-  assert.equal(names.length, 22, names.join(','))
+  assert.equal(names.length, 23, names.join(','))
   for (const n of names) assert.match(n, /^vps-/, '所有命令必须同前缀，否则打 /vps 只筛出一半')
   assert.equal(ctx._skills.length, 1)
   assert.match(ctx._skills[0].name, /^[a-z0-9]+(?:-[a-z0-9]+)*$/, 'DSH 的 skill 名规则')
@@ -680,4 +680,61 @@ test('/vps-sh 迷你终端：记住目录、目录没了回家目录、交互命
   // 只读命令超时：提示用 --bg
   const slow = await sh.handler(inv('sleep 5'))
   assert.match(slow.text, /超过 2 秒还没结束，已停止等待。跑得久的命令在前面加 --bg 放到后台/)
+})
+
+test('我的一键命令：存、改、删；疑似密码不让存；第一次运行先确认，之后只读的直接跑，会改动的每次都要 /vps-yes', async () => {
+  const { env, runner } = await sandbox()
+  const { saveCustomCommand, deleteCustomCommand, readCustomCommand } = await import('../lib/recipe-store.js')
+  const { loadRecipes } = await import('../lib/recipes.js')
+
+  // 校验：名称、命令必填；链接只认 https；命令里像密码的不让存
+  assert.equal((await saveCustomCommand({ name: '', run: 'uptime', env })).ok, false)
+  assert.match((await saveCustomCommand({ name: 'x', run: 'uptime', url: 'http://a.com', env })).hint, /https/)
+  assert.match((await saveCustomCommand({ name: 'x', run: 'mysql -u root --password=hunter2secret', env })).hint, /密码/)
+
+  const saved = await saveCustomCommand({ name: 'Uptime check', run: 'uptime', desc: '看看开机多久', url: 'https://github.com/a/b', env })
+  assert.equal(saved.ok, true)
+  assert.equal(saved.id, 'my-cmd-uptime-check')
+  assert.equal(saved.tier, 'read')
+  // 同名再建一条：自动加尾巴，不覆盖
+  assert.equal((await saveCustomCommand({ name: 'Uptime check', run: 'echo vpssh-ok', env })).id, 'my-cmd-uptime-check-2')
+  const restart = await saveCustomCommand({ name: '重启 nginx', run: 'systemctl restart nginx', env })
+  assert.match(restart.id, /^my-cmd-[a-z0-9]+$/)
+  assert.notEqual(restart.tier, 'read', '会改东西的命令档位自动按内容判定')
+
+  const { byId } = await loadRecipes({ env })
+  assert.equal(byId.get('my-cmd-uptime-check').kind, 'command')
+  assert.equal(byId.get('my-cmd-uptime-check').url, 'https://github.com/a/b')
+  assert.equal((await readCustomCommand({ id: 'my-cmd-uptime-check', env })).command.desc, '看看开机多久')
+  // 改
+  assert.equal((await saveCustomCommand({ id: 'my-cmd-uptime-check', name: 'Uptime check', run: 'echo vpssh-ok', env })).ok, true)
+  assert.equal((await loadRecipes({ env })).byId.get('my-cmd-uptime-check').run, 'echo vpssh-ok')
+
+  const registered = []
+  registerCommands({ commands: { register: (d) => { registered.push(d); return () => {} } } }, { env, runner })
+  const run = registered.find((c) => c.name === 'vps-run')
+  const yes = registered.find((c) => c.name === 'vps-yes')
+  const inv = (rawInput) => ({ rawInput, agent: { session: { id: 'sess-run' } } })
+
+  // 第一次：先给看命令，不执行
+  const first = await run.handler(inv('my-cmd-uptime-check -h hk'))
+  assert.equal(first.kind, 'success')
+  assert.match(first.text.split('\n')[0], /尚未执行 · 第一次运行.*确认发 \/vps-yes/)
+  assert.match(first.text, /echo vpssh-ok/)
+  const done = await yes.handler(inv(''))
+  assert.match(done.text.split('\n')[0], /^\[hk\] Uptime check：完成/)
+  // 确认过、只读：直接跑
+  const again = await run.handler(inv('my-cmd-uptime-check -h hk'))
+  assert.match(again.text.split('\n')[0], /^\[hk\] Uptime check：完成/)
+  // 会改东西的：确认过一次也照样每次要 /vps-yes
+  await run.handler(inv(`${restart.id} -h hk`))
+  await yes.handler(inv(''))
+  const changing = await run.handler(inv(`${restart.id} -h hk`))
+  assert.match(changing.text.split('\n')[0], /尚未执行 · 这条命令会改动服务器|尚未执行 · 这条命令有高风险操作/)
+
+  // 列表、删除
+  assert.match((await run.handler(inv(''))).text, /my-cmd-uptime-check/)
+  assert.equal((await deleteCustomCommand({ id: 'my-cmd-uptime-check', env })).ok, true)
+  assert.equal((await deleteCustomCommand({ id: 'install-nginx', env })).ok, false, '内置的删不了')
+  assert.equal((await loadRecipes({ env })).byId.has('my-cmd-uptime-check'), false)
 })

@@ -3,7 +3,7 @@
 // 用户扩充菜谱库的主要方式：AI 把刚做成的一件事改写成幂等菜谱，用户确认后落盘。
 // 落盘前做三件事：id 加 my- 前缀（不许冒充内置）、格式校验、疑似凭据扫描。
 
-import { writeFile } from 'node:fs/promises'
+import { rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import YAML from 'yaml'
 import { ensureDirs, trustHash } from './config.js'
@@ -124,4 +124,65 @@ export async function saveUserRecipe({ ctx, recipe: draft, agent, callId, signal
     tier: recipe.tier,
     hint: L(`已保存到「我的」菜谱：${id}（/vps-recipes 里来源标「我的」）。要改就再存一遍同名的，要删就删掉 ${file}`, `Saved to "mine": ${id} (marked "mine" in /vps-recipes). To change it, save again with the same id; to delete it, delete ${file}`),
   }
+}
+
+// ——— 一键命令（常用操作页上用户自己填的：名称、命令、说明、GitHub 链接）———
+// 用户在界面上亲手填的，不经 AI，所以不弹确认就保存；但第一次运行（或改过之后）照样要确认一次（菜谱哈希没被信任过），
+// 之后按命令本身的档位走：只读的直接跑，会改东西的要确认。命令里有疑似密码、密钥就不让存
+
+const CMD_PREFIX = 'my-cmd-'
+
+/** 名字里的英文数字做 id，没有就随机 */
+function commandId(name) {
+  const slug = String(name ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return `${CMD_PREFIX}${slug || Math.random().toString(36).slice(2, 8)}`
+}
+
+export async function saveCustomCommand({ id, name, run, desc = '', url = '', env = process.env }) {
+  const title = String(name ?? '').trim()
+  const script = String(run ?? '').replace(/\r\n?/g, '\n').trim()
+  if (!title) return { ok: false, hint: L('要填命令名称', 'Enter a name') }
+  if (title.length > 60) return { ok: false, hint: L('名称太长（最多 60 个字）', 'Name too long (60 characters at most)') }
+  if (!script) return { ok: false, hint: L('要填命令', 'Enter the command') }
+  if (script.length > 20_000) return { ok: false, hint: L('命令太长', 'Command too long') }
+  const link = String(url ?? '').trim()
+  if (link && !/^https:\/\/\S+$/.test(link)) return { ok: false, hint: L('链接要以 https:// 开头', 'The link must start with https://') }
+  const secrets = scanForSecrets(script)
+  if (secrets.length) {
+    return { ok: false, hint: L(`命令里有疑似密码或密钥（${secrets.map((s) => s.what).join('、')}）。别把它们写进命令：放在服务器上的文件或环境变量里，命令里去读`, `The command seems to contain a password or key (${secrets.map((s) => s.what).join(', ')}). Keep them out of the command: put them in a file or environment variable on the server and read them from there`) }
+  }
+  const { byId } = await loadRecipes({ env })
+  let finalId = id && String(id).startsWith(CMD_PREFIX) ? String(id) : commandId(title)
+  if (!id) {
+    // 新建：和已有的（内置或别的命令）撞名就加个尾巴
+    let n = 2
+    const base = finalId
+    while (byId.has(finalId)) finalId = `${base}-${n++}`
+  } else if (byId.get(finalId) && byId.get(finalId).source !== 'mine') {
+    return { ok: false, hint: L('只能改自己加的命令', 'Only your own commands can be edited') }
+  }
+  const recipe = validateRecipe({ id: finalId, kind: 'command', name: title, desc: String(desc ?? '').trim(), url: link, shell: 'bash', risk: 'read', timeout: 600, run: script }, { source: 'mine', file: '' })
+  const p = await ensureDirs(env)
+  const body = YAML.stringify({
+    schema: 1,
+    recipes: [{ id: recipe.id, kind: 'command', name: recipe.name, desc: recipe.desc || undefined, url: recipe.url || undefined, shell: 'bash', risk: 'read', timeout: 600, run: recipe.run }],
+  })
+  const header = ['# 由 vpssh 保存的一键命令（常用操作页）', `# 保存时间：${new Date().toISOString()}`, ''].join('\n')
+  await writeFile(join(p.recipesDir, `${recipe.id}.yml`), header + body, { mode: 0o600 })
+  return { ok: true, id: recipe.id, tier: recipe.tier }
+}
+
+export async function deleteCustomCommand({ id, env = process.env }) {
+  if (!String(id ?? '').startsWith(CMD_PREFIX)) return { ok: false, hint: L('只能删自己加的命令', 'Only your own commands can be deleted') }
+  const p = await ensureDirs(env)
+  await rm(join(p.recipesDir, `${id}.yml`), { force: true })
+  return { ok: true }
+}
+
+/** 编辑时要的原样内容 */
+export async function readCustomCommand({ id, env = process.env }) {
+  const { byId } = await loadRecipes({ env })
+  const r = byId.get(id)
+  if (!r || r.kind !== 'command' || r.source !== 'mine') return { ok: false, hint: L('没有这条命令', 'No such command') }
+  return { ok: true, command: { id: r.id, name: r.name, desc: r.desc, url: r.url, run: r.run } }
 }

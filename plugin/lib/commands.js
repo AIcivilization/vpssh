@@ -8,7 +8,7 @@
 
 import { bindSession, effectiveConfirm, paths, readHosts, resolveTarget, sessionBinding, sessionCwd, setSessionCwd, writeHosts } from './config.js'
 import { execAction, hostContext, probeHost, probeIfUnknown, recipeAction, taskAction } from './actions.js'
-import { classifyScript } from './risk.js'
+import { classifyScript, maxTier } from './risk.js'
 import { loadRecipes, recipeText } from './recipes.js'
 import { L } from './i18n.js'
 import { runRemote } from './engine.js'
@@ -431,6 +431,57 @@ export function registerCommands(ctx, deps = {}) {
       }
     },
   }, { group: '看信息', usage: L('/vps-q <菜谱id>', '/vps-q <recipe id>'), short: L('跑任意一条查询菜谱（没有专属命令的那些）', 'Run any query recipe (those without a command of their own)') })
+
+  // —— 一键命令（常用操作页「我的一键命令」）：只读、跑过的直接出结果；会改东西或第一次跑，先给看命令，发 /vps-yes 才执行 ——
+  reg({
+    name: 'vps-run',
+    description: L('运行「常用操作 → 我的一键命令」里的一条。只读的直接出结果；会改东西或第一次运行，先给你看命令，发 /vps-yes 才执行。用法：/vps-run <命令id>', 'Runs one of your commands from Common tasks → My commands. Read-only ones run right away; ones that change things, or the first run, show the command first and run on /vps-yes. Usage: /vps-run <command id>'),
+    input: { hint: L('<命令id>', '<command id>') },
+    async handler(invocation) {
+      try {
+        const args = parseArgs(invocation.rawInput)
+        const id = args.rest[0]
+        const { list, byId } = await loadRecipes({ env })
+        const mine = list.filter((r) => r.kind === 'command')
+        if (!id) {
+          return { kind: 'error', text: mine.length
+            ? L(`用法：/vps-run <命令id>\n你的命令：${mine.map((r) => `${r.id}（${r.name}）`).join('、')}`, `Usage: /vps-run <command id>\nYour commands: ${mine.map((r) => `${r.id} (${r.name})`).join(', ')}`)
+            : L('还没有自己的命令：在左栏「常用操作 → 我的一键命令」里新建', 'No commands of your own yet: add one under Common tasks → My commands in the left rail') }
+        }
+        const recipe = byId.get(id)
+        if (!recipe || recipe.kind !== 'command') return { kind: 'error', text: L(`没有这条命令：${id}`, `No such command: ${id}`) }
+        const alias = await resolveAlias(args.host, env, invocation)
+        const { isTrusted } = await import('./config.js')
+        const trusted = await isTrusted(recipe.hash, env)
+        const tier = trusted ? recipe.tier : maxTier(recipe.tier, 'change')
+        const execute = async () => {
+          const res = await recipeAction({ action: 'run', id, alias, env, runner, source: 'command', ctx, preApproved: true })
+          const out = String(res.output ?? '').trim()
+          return {
+            kind: res.ok ? 'success' : 'error',
+            text: capText([L(`[${alias}] ${recipe.name}：${res.ok ? '完成' : res.hint ?? '失败'}`, `[${alias}] ${recipe.name}: ${res.ok ? 'done' : res.hint ?? 'failed'}`), out ? '' : undefined, out || undefined].filter((x) => x !== undefined).join('\n')),
+          }
+        }
+        if (tier === 'read' || args.flags.has('yes')) return execute()
+        arm(invocation, { alias, again: `/vps-run ${id}`, execute })
+        const why = !trusted
+          ? L('第一次运行（或改过之后）要先确认一次', 'first run (or changed since), so it needs one confirmation')
+          : tier === 'danger' ? L('这条命令有高风险操作', 'this command does something risky') : L('这条命令会改动服务器', 'this command changes the server')
+        return {
+          kind: 'success',
+          text: capText([
+            L(`[${alias}] ${recipe.name}：尚未执行 · ${why} · 确认发 /vps-yes`, `[${alias}] ${recipe.name}: not run yet · ${why} · to confirm, send /vps-yes`),
+            recipe.desc || undefined,
+            '',
+            L('命令：', 'Command:'),
+            recipe.run.trim(),
+          ].filter((x) => x !== undefined).join('\n')),
+        }
+      } catch (error) {
+        return { kind: 'error', text: error.message }
+      }
+    },
+  }, { group: '安装与任务', usage: L('/vps-run <命令id>', '/vps-run <command id>'), short: L('运行「我的一键命令」里的一条', 'Run one of My commands') })
 
   // —— 机器清单与当前机器 ——
   reg({

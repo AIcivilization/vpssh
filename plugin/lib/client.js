@@ -1815,11 +1815,98 @@ window.__ModuleLoader__.load({
       get inspect() { return L('体检', 'Health checks') },
     }
 
+    /**
+     * 「我的一键命令」：用户自己存的常用命令（名称、命令、说明、GitHub 链接）。点「运行」回到对话、填好 /vps-run：
+     * 只读的直接出结果；会改东西或第一次运行，先给看命令，发 /vps-yes 才执行（服务器端 recipe-store.js / commands.js）
+     */
+    function CustomCommands({ commands, onChanged, onUse }) {
+      const blank = { id: '', name: '', run: '', desc: '', url: '' }
+      const [form, setForm] = useState(null) // null = 不在编辑
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const set = (k) => (v) => setForm((f) => ({ ...f, [k]: v }))
+      const edit = async (c) => {
+        setError('')
+        try {
+          const r = await api('recipes/custom/get', { id: c.id })
+          setForm({ ...blank, ...r.command })
+        } catch (e) {
+          setError(e.message)
+        }
+      }
+      const save = async () => {
+        setBusy(true)
+        setError('')
+        try {
+          await api('recipes/custom/save', form)
+          setForm(null)
+          onChanged()
+        } catch (e) {
+          setError(e.message)
+        } finally {
+          setBusy(false)
+        }
+      }
+      const remove = async (c) => {
+        if (!window.confirm(L(`删除命令「${c.name}」？`, `Delete the command "${c.name}"?`))) return
+        try {
+          await api('recipes/custom/delete', { id: c.id })
+          onChanged()
+        } catch (e) {
+          setError(e.message)
+        }
+      }
+      const tierTag = (t) => t === 'read'
+        ? L('只读', 'read-only')
+        : t === 'danger' ? L('高风险', 'risky') : L('会改动', 'changes things')
+      const editor = form ? h('div', { style: { ...S.note, marginTop: 8 } },
+        h('div', { style: S.grid },
+          h(Field, { label: L('命令名称', 'Name') }, h(Input, { value: form.name, onChange: set('name'), placeholder: L('比如：查看 nginx 日志', 'e.g. Show the nginx log') })),
+          h(Field, { label: L('GitHub（可选）', 'GitHub (optional)'), hint: L('这条命令的出处或说明页，https:// 开头', 'Where the command comes from, or its docs; starts with https://') },
+            h(Input, { value: form.url, onChange: set('url'), placeholder: 'https://github.com/…' }))),
+        h('div', { style: { marginTop: 8 } },
+          h(Field, { label: L('命令', 'Command'), hint: L('在服务器上用 bash 执行，可以写多行。别把密码、密钥写进来（会拒绝保存）', 'Runs with bash on the server; several lines are fine. Keep passwords and keys out (saving is refused)') },
+            h('textarea', {
+              style: { ...S.input, width: '100%', minHeight: 90, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 12, resize: 'vertical' },
+              value: form.run, spellCheck: false, placeholder: 'tail -n 100 /var/log/nginx/error.log',
+              onChange: (e) => set('run')(e.target.value),
+            }))),
+        h('div', { style: { marginTop: 8 } },
+          h(Field, { label: L('说明（可选）', 'Description (optional)') }, h(Input, { value: form.desc, onChange: set('desc'), placeholder: L('这条命令是干什么的', 'What the command does') }))),
+        h('div', { style: { ...S.row, marginTop: 10 } },
+          h(Btn, { kind: 'primary', disabled: busy, onClick: save }, busy ? L('保存中…', 'Saving…') : L('保存', 'Save')),
+          h(Btn, { disabled: busy, onClick: () => { setForm(null); setError('') } }, L('取消', 'Cancel')))) : null
+      return h('div', { style: S.card },
+        h('div', { style: { ...S.spread, marginBottom: 4 } },
+          h('div', { style: { ...S.h2, margin: 0 } }, L('我的一键命令', 'My commands')),
+          form ? null : h(Btn, { kind: 'primary', onClick: () => { setError(''); setForm(blank) } }, L('＋ 新建', '+ New'))),
+        h('div', { style: { ...S.muted, fontSize: 12, marginBottom: 6 } },
+          L('把常用的命令存起来，点「运行」在对话里执行：只读的直接出结果；会改动服务器的、或第一次运行的，先给你看命令，发 /vps-yes 才执行。',
+            'Save commands you use often and click Run to run them in the conversation: read-only ones show the result right away; ones that change the server, or the first run, show the command first and run on /vps-yes.')),
+        error ? h('div', { style: { ...S.err, marginTop: 6 } }, error) : null,
+        editor,
+        commands.length ? commands.map((c, i) => h('div', { key: c.id, style: { ...S.spread, padding: '8px 0', borderTop: i || form ? line : 'none', alignItems: 'flex-start' } },
+          h('div', { style: { minWidth: 0, flex: 1 } },
+            h('div', { style: { fontWeight: 500 } }, c.name,
+              h('span', { style: { ...S.muted, fontSize: 11, marginLeft: 8 } }, tierTag(c.tier))),
+            c.desc ? h('div', { style: { ...S.muted, fontSize: 12 } }, c.desc) : null,
+            h('div', { style: { ...S.muted, fontSize: 11, marginTop: 2 } },
+              h('span', { style: S.mono }, c.id),
+              c.url ? h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer', style: { marginLeft: 10, color: T.accent } }, 'GitHub ↗') : null)),
+          h('div', { style: { ...S.row, flex: '0 0 auto' } },
+            h(Btn, { kind: 'primary', onClick: () => onUse(c) }, L('运行', 'Run')),
+            h(Btn, { onClick: () => edit(c) }, L('编辑', 'Edit')),
+            h(Btn, { kind: 'danger', onClick: () => remove(c) }, L('删除', 'Delete')))))
+          : form ? null : h('div', { style: { ...S.muted, fontSize: 12, padding: '6px 0' } }, L('还没有。点「＋ 新建」存第一条。', 'None yet. Click + New to save your first one.')))
+    }
+
     function RecipesPage() {
       useLang()
-      const overview = useAsync(() => api('overview', {}), [])
+      const [reload, setReload] = useState(0)
+      const overview = useAsync(() => api('overview', {}), [reload])
       const [msg, setMsg] = useState('')
-      const recipes = (overview.data?.recipes ?? []).filter((r) => !r.incomplete)
+      const commands = (overview.data?.recipes ?? []).filter((r) => r.kind === 'command')
+      const recipes = (overview.data?.recipes ?? []).filter((r) => !r.incomplete && r.kind !== 'command')
       const groups = new Map()
       for (const r of recipes) {
         const k = r.kind || 'other'
@@ -1830,6 +1917,10 @@ window.__ModuleLoader__.load({
         const res = await goChatWith(`/vps-install ${r.id}`)
         setMsg(res === 'copied' ? L(`已复制 /vps-install ${r.id}，到对话里粘贴发送`, `Copied /vps-install ${r.id}; paste it into a conversation`) : res === 'none' ? L(`在对话里发送：/vps-install ${r.id}`, `Send this in a conversation: /vps-install ${r.id}`) : '')
       }
+      const runCommand = async (c) => {
+        const res = await goChatWith(`/vps-run ${c.id}`)
+        setMsg(res === 'copied' ? L(`已复制 /vps-run ${c.id}，到对话里粘贴发送`, `Copied /vps-run ${c.id}; paste it into a conversation`) : res === 'none' ? L(`在对话里发送：/vps-run ${c.id}`, `Send this in a conversation: /vps-run ${c.id}`) : '')
+      }
       return h('div', { style: { height: '100%', overflow: 'auto' } },
         h('div', { style: { ...S.root, ...panelPage, height: 'auto' } },
           h('div', { style: S.h1 }, L('常用操作', 'Common tasks')),
@@ -1839,6 +1930,7 @@ window.__ModuleLoader__.load({
           msg ? h('div', { style: S.note }, msg) : null,
           h(ErrorBar, { error: overview.error }),
           overview.loading && !overview.data ? h('div', { style: S.muted }, L('读取中…', 'Loading…')) : null,
+          overview.data ? h(CustomCommands, { commands, onChanged: () => setReload((n) => n + 1), onUse: runCommand }) : null,
           [...groups.entries()].map(([kind, list]) => h('div', { key: kind, style: S.card },
             h('div', { style: { ...S.h2, marginTop: 0 } }, RECIPE_KIND[kind] ?? kind),
             list.map((r, i) => h('div', { key: r.id, style: { ...S.spread, padding: '6px 0', borderTop: i ? line : 'none' } },
