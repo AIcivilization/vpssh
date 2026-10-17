@@ -38,8 +38,9 @@ test("日志：进度、设置链接、退出码", () => {
 test("装完的信息：访问地址和根证书", () => {
 	const pem = "-----BEGIN CERTIFICATE-----\nAAAA\n-----END CERTIFICATE-----";
 	const info = parseInfo(`VPSSH_INFO_BEGIN\nHOST=1.2.3.4:8443\nCERT_BEGIN\n${pem}\nCERT_END\nVPSSH_INFO_END\n`);
-	assert.deepEqual(info, { host: "1.2.3.4:8443", rootPem: pem });
-	assert.deepEqual(parseInfo("HOST=vps.example.com\n"), { host: "vps.example.com", rootPem: "" });
+	assert.deepEqual(info, { host: "1.2.3.4:8443", rootPem: pem, ips: [] });
+	assert.deepEqual(parseInfo("HOST=vps.example.com\n"), { host: "vps.example.com", rootPem: "", ips: [] });
+	assert.deepEqual(parseInfo("HOST=1.2.3.4\nIPS=10.0.0.5 172.17.0.1 fd00::1 \n").ips, ["10.0.0.5", "172.17.0.1"]);
 });
 
 test("勾了「同时启用模型来源」：安装脚本带 --model", () => {

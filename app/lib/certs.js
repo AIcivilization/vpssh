@@ -16,7 +16,7 @@ function inDate(cert, now) {
  * chainPems：网站给的证书链（第一张是网站证书）；rootPem：钉住的根证书。
  * 返回 true = 可信
  */
-function verifyWithRoot({ hostname, chainPems, rootPem, now = new Date() }) {
+function verifyWithRoot({ hostname, chainPems, rootPem, altNames = [], now = new Date() }) {
 	if (!rootPem || !chainPems?.length) return false;
 	let root, certs;
 	try {
@@ -27,7 +27,10 @@ function verifyWithRoot({ hostname, chainPems, rootPem, now = new Date() }) {
 	}
 	const leaf = certs[0];
 	const host = String(hostname).replace(/^\[|\]$/g, "");
-	const nameOk = net.isIP(host) ? leaf.checkIP(host) !== undefined : leaf.checkHost(host) !== undefined;
+	// altNames：这台服务器网卡上的地址（装机 / 连接时经 SSH 读到的）。和别人共用 Caddy 时，浏览器按 IP 访问
+	// 不报网站名，拿到的是签给网卡地址的证书（gate/site-block.js）；仍然要能验到这台自己的根证书
+	const names = [host, ...altNames.filter((n) => net.isIP(n))];
+	const nameOk = names.some((n) => (net.isIP(n) ? leaf.checkIP(n) !== undefined : leaf.checkHost(n) !== undefined));
 	if (!nameOk) return false;
 	if (!inDate(root, now)) return false;
 	for (let i = 0; i < certs.length; i++) {

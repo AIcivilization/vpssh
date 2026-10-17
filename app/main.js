@@ -161,7 +161,7 @@ function setupCertificates() {
 			for (const sv of store.byHostname(hostname)) console.log("   server", sv.url, "root", sv.rootPem ? new (require("node:crypto").X509Certificate)(sv.rootPem).subject : "none", "verify", verifyWithRoot({ hostname, chainPems, rootPem: sv.rootPem }));
 		}
 		for (const server of store.byHostname(hostname)) {
-			if (server.rootPem && verifyWithRoot({ hostname, chainPems, rootPem: server.rootPem })) return callback(0);
+			if (server.rootPem && verifyWithRoot({ hostname, chainPems, rootPem: server.rootPem, altNames: server.ips || [] })) return callback(0);
 		}
 		callback(-3);
 	});
@@ -333,7 +333,7 @@ function registerIpc() {
 				const known = store.list().find((s) => s.ssh && s.ssh.host === v.value.host && Number(s.ssh.port) === v.value.port);
 				const info = await readServerInfo(v.value, { knownFingerprint: known?.hostKey || "" });
 				if (!info.rootPem) return { error: L("这台服务器上没找到 vpssh 的证书：确认 vpssh 已经装好", "No vpssh certificate found on that server: check that vpssh is installed") };
-				Object.assign(server, { rootPem: info.rootPem, hostKey: info.fingerprint, ssh: { host: v.value.host, port: v.value.port, user: v.value.user, keyPath: info.usedKey || "" } });
+				Object.assign(server, { rootPem: info.rootPem, ips: info.ips || [], hostKey: info.fingerprint, ssh: { host: v.value.host, port: v.value.port, user: v.value.user, keyPath: info.usedKey || "" } });
 			} catch (err) {
 				return { error: errText(err) };
 			}
@@ -366,6 +366,7 @@ function finishJob(opts, r, emit) {
 		ssh: { host: opts.host, port: opts.port, user: opts.user, keyPath: r.usedKey || "" },
 		hostKey: r.fingerprint,
 		rootPem: opts.domain ? "" : r.rootPem,
+		ips: r.ips || [],
 		setupUrl: r.setupUrl || undefined, // 向导做完就删（见 did-navigate）
 	});
 	buildMenu();

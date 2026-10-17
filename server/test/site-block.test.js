@@ -42,3 +42,11 @@ test("80/443 是别的程序（nginx）的：自己的 Caddy 关掉 HTTP 跳转�
 	assert.doesNotMatch(caddySiteBlock("1.2.3.4:8443", { offDefaultPorts: true, shared: true }), /auto_https/);
 	assert.doesNotMatch(caddySiteBlock("1.2.3.4"), /auto_https/);
 });
+
+test("共用 Caddy + 用 IP：网卡上的地址也签证书（浏览器按 IP 访问不报网站名、云主机网卡是内网地址时照样有证书）", () => {
+	const b = caddySiteBlock("203.0.113.77:8443", { shared: true, extraIps: ["10.0.0.5", "203.0.113.77", "fe80::1"] });
+	assert.match(b, /^203\.0\.113\.77:8443, 10\.0\.0\.5:8443 \{$/m);
+	// 自己的 Caddy（能写 default_sni）、用域名：不加
+	assert.match(caddySiteBlock("203.0.113.77:8443", { extraIps: ["10.0.0.5"] }), /^203\.0\.113\.77:8443 \{$/m);
+	assert.match(caddySiteBlock("vps.example.com", { shared: true, extraIps: ["10.0.0.5"] }), /^vps\.example\.com \{$/m);
+});

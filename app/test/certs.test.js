@@ -41,6 +41,11 @@ test("证书链：对的根、对的地址才可信", { skip: !haveOpenssl() && 
 		// 过期
 		assert.equal(verifyWithRoot({ hostname: "203.0.113.10", chainPems: chain, rootPem: a.root, now: new Date(Date.now() + 30 * 864e5) }), false);
 		assert.equal(verifyWithRoot({ hostname: "203.0.113.10", chainPems: chain, rootPem: "" }), false);
+		// 共用 Caddy、浏览器按 IP 访问时拿到签给网卡地址的证书：网卡地址在 altNames 里才认，根证书照样要对
+		const nic = makeChain(dir, "n", "10.0.0.5");
+		assert.equal(verifyWithRoot({ hostname: "203.0.113.10", chainPems: [nic.leaf, nic.int], rootPem: nic.root }), false);
+		assert.equal(verifyWithRoot({ hostname: "203.0.113.10", chainPems: [nic.leaf, nic.int], rootPem: nic.root, altNames: ["10.0.0.5"] }), true);
+		assert.equal(verifyWithRoot({ hostname: "203.0.113.10", chainPems: [nic.leaf, nic.int], rootPem: a.root, altNames: ["10.0.0.5"] }), false);
 	} finally {
 		fs.rmSync(dir, { recursive: true, force: true });
 	}

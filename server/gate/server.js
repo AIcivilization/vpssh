@@ -25,7 +25,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 // 站点块模板与 gate 同源管理：install.sh、bin/vpssh 也调用它，只此一份
-const { caddySiteBlock, readVpnEnv } = require("./site-block.js");
+const { caddySiteBlock, readVpnEnv, localIps } = require("./site-block.js");
 const model = require("./model.js");
 
 //#region 配置
@@ -1340,7 +1340,7 @@ function persistTrustedHost(domain) {
 // 站点块模板在 gate/site-block.js（install.sh 与 vpssh vpn 共用）。
 // 改域名时必须带上当前隧道策略，否则「仅隧道可访问」会被改域名动作悄悄抹掉。
 function siteBlock(host) {
-	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED, altPort: PORT_FORCED ? 0 : PUBLIC_PORT, offDefaultPorts: Boolean(FOREIGN_WEB) });
+	return caddySiteBlock(host, { gatePort: GATE_PORT, vpn: readVpnEnv(STATE_DIR), shared: CADDY_SHARED, altPort: PORT_FORCED ? 0 : PUBLIC_PORT, offDefaultPorts: Boolean(FOREIGN_WEB), extraIps: localIps() });
 }
 
 async function applyDomainChange(domain) {

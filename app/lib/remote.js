@@ -124,6 +124,8 @@ function attachScript(action) {
 const INFO_SCRIPT = [
 	"echo VPSSH_INFO_BEGIN",
 	"sed -n 's/^DSH_TRUSTED_HOST=//p' /opt/vpssh/state/gate.env 2>/dev/null | head -1 | sed 's/^/HOST=/'",
+	// 网卡上的地址：和别人共用 Caddy 时，浏览器按 IP 访问拿到的证书可能是签给网卡地址的（见 gate/site-block.js）
+	"printf 'IPS=%s\\n' \"$(hostname -I 2>/dev/null)\"",
 	`if [ -f ${CADDY_ROOT} ]; then echo CERT_BEGIN; cat ${CADDY_ROOT}; echo CERT_END; fi`,
 	"echo VPSSH_INFO_END",
 ].join("\n") + "\n";
@@ -131,8 +133,9 @@ const INFO_SCRIPT = [
 function parseInfo(text) {
 	const s = String(text);
 	const host = (s.match(/^HOST=(\S+)$/m) || [])[1] || "";
+	const ips = ((s.match(/^IPS=(.*)$/m) || [])[1] || "").trim().split(/\s+/).filter((ip) => /^\d+\.\d+\.\d+\.\d+$/.test(ip));
 	const cert = (s.match(/CERT_BEGIN\n([\s\S]*?-----END CERTIFICATE-----)\s*\nCERT_END/) || [])[1] || "";
-	return { host, rootPem: cert.trim() };
+	return { host, rootPem: cert.trim(), ips };
 }
 
 const strip = (s) => String(s).replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "");

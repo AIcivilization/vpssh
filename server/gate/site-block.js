@@ -23,6 +23,7 @@
 
 const fs = require("node:fs");
 const net = require("node:net");
+const os = require("node:os");
 const path = require("node:path");
 
 const DEFAULT_SUBNET = "10.7.0.0/24";
@@ -69,11 +70,29 @@ function hostName(host) {
 	return net.isIP(h) === 6 ? h : h.replace(/:\d+$/, "");
 }
 
+/** 这台机器网卡上的 IPv4 地址（不含本机回环），最多 4 个 */
+function localIps() {
+	const out = [];
+	for (const list of Object.values(os.networkInterfaces())) {
+		for (const a of list || []) if (a.family === "IPv4" && !a.internal && !out.includes(a.address)) out.push(a.address);
+	}
+	return out.slice(0, 4);
+}
+
 function caddySiteBlock(host, opts = {}) {
 	const port = opts.gatePort || DEFAULT_GATE_PORT;
 	// 用域名（走 443）时也听「域名:访问端口」：带端口的旧地址照样能进（gate 会换成主地址再转给 DSH）
 	const altPort = Number(opts.altPort) || 0;
-	const address = altPort && altPort !== 443 && !isIpHost(host) && !/:\d+$/.test(String(host)) ? `${host}, ${host}:${altPort}` : host;
+	let address = altPort && altPort !== 443 && !isIpHost(host) && !/:\d+$/.test(String(host)) ? `${host}, ${host}:${altPort}` : host;
+	// 和别人共用 Caddy、用 IP 访问：浏览器按 IP 打开时不报网站名（没有 SNI），共用的 Caddy 又不能由 vpssh 写
+	// default_sni（全局设置是别人的），Caddy 就按「连接到达的网卡地址」找证书。云主机多是 NAT，网卡上只有
+	// 内网地址，于是找不到证书、握手直接失败（实测）。给网卡上的地址也各签一张，没有网站名时照样有证书可用
+	if (opts.shared && isIpHost(host) && Array.isArray(opts.extraIps) && opts.extraIps.length) {
+		const m = /:(\d+)$/.exec(String(host));
+		const suffix = net.isIP(String(host)) === 6 || !m ? "" : `:${m[1]}`;
+		const extra = opts.extraIps.filter((ip) => net.isIP(ip) === 4 && ip !== hostName(host)).map((ip) => `${ip}${suffix}`);
+		if (extra.length) address = [host, ...extra].join(", ");
+	}
 	const vpn = opts.vpn || { on: false, subnet: DEFAULT_SUBNET };
 	// IP 站点：浏览器按 IP 访问时不发 SNI，Caddy 会退而按本机网卡地址找证书；
 	// 云主机网卡上多是内网地址（公网 IP 经 NAT），于是找不到证书、握手失败。
@@ -117,7 +136,7 @@ function readShared(stateDir) {
 	return readConfig(stateDir).caddyShared === true;
 }
 
-module.exports = { caddySiteBlock, readVpnEnv, readShared, isIpHost, hostName, DEFAULT_SUBNET, DEFAULT_GATE_PORT };
+module.exports = { caddySiteBlock, readVpnEnv, readShared, isIpHost, hostName, localIps, DEFAULT_SUBNET, DEFAULT_GATE_PORT };
 
 if (require.main === module) {
 	const host = process.argv[2];
@@ -132,5 +151,5 @@ if (require.main === module) {
 	const cfg = readConfig(state);
 	const altPort = process.argv[6] !== undefined ? Number(process.argv[6]) : cfg.portForced ? 0 : Number(cfg.publicPort) || 0;
 	const offDefaultPorts = process.argv[7] !== undefined ? process.argv[7] === "1" : Boolean(cfg.foreignWeb);
-	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared, altPort, offDefaultPorts }));
+	process.stdout.write(caddySiteBlock(host, { gatePort, vpn: readVpnEnv(state), shared, altPort, offDefaultPorts, extraIps: localIps() }));
 }
