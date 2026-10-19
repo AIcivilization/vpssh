@@ -80,7 +80,7 @@ Next time the app opens straight on the last server, still signed in. The Server
 
 - The password is used once and never saved.
 - Over an IP address the app trusts only that server's own certificate (read over SSH during install), so there is no "not secure" warning.
-- The builds are not signed with an Apple / Microsoft developer certificate yet: if the Mac says it cannot verify the app the first time, click "Open Anyway" under System Settings → Privacy & Security; on Windows, choose "More info → Run anyway".
+- The builds are not signed with an Apple / Microsoft developer certificate yet, so the system stops them once the first time; see ["The system blocked it the first time I opened it"](#first-open) in the FAQ.
 
 <br clear="right">
 
@@ -134,7 +134,7 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 | **Common tasks** | Ready-made recipes for lookups, installing common software and common fixes, with the plan shown first, no tokens spent |
 | **My commands** | Save your own commands under Common tasks (name, command, description, GitHub link) and click Run to run them in the conversation: read-only ones show the result right away; ones that change the server, or the first run, show the command and run on `/vps-yes`; commands containing passwords or keys are refused |
 | **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use; on Android there is an app that adds servers by QR code and switches between them |
-| **Account and security** | Password sign-in with rate limiting; set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
+| **Account and security** | Password sign-in with rate limiting and optional two-step verification (6-digit codes from an authenticator app); set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
 | **Model sources** (optional) | Turn on dsh-model in one click under VPS Manager → Model sources: 16 sources (WorkBuddy free credits, local models, subscriptions, API keys), failover across sources for same-name models, low-credit notices, daily check-ins; sign in, pick models and get API keys under Settings → dsh-model |
 | **Backup and restore** | One click backs up and downloads conversations, settings, the machine list, the key used to reach your machines, model sources and the sign-in account, encrypted with the admin password; restoring saves the current data first and puts it back if anything fails; restore onto another server works too |
 | **Versions** | Check for updates and upgrade in one click from the web page, with automatic rollback on failure; uninstall from the web page too; the desktop and Android apps tell you when a new version is out |
@@ -167,6 +167,7 @@ sudo vpssh repair       # when the page does not open: restart services, rewrite
 sudo vpssh status       # services and configuration at a glance
 sudo vpssh setup-url    # get the first-time setup link again
 sudo vpssh reset-admin  # forgot the admin password: run first-time setup again
+sudo vpssh reset-2fa    # lost your phone: turn two-step verification off
 sudo vpssh model enable # turn on Model sources (dsh-model); status to check, disable to turn off
 sudo vpssh restore <file> # restore a backup downloaded under Backup and restore (when the page does not open)
 sudo vpssh uninstall    # backs up first and keeps the data unless you add --delete-data
@@ -177,10 +178,35 @@ sudo vpssh uninstall    # backs up first and keeps the data unless you add --del
 - The page sits behind a sign-in: password (scrypt), rate limiting, session cookie.
 - The AI runs as an unprivileged system user. It cannot run commands or read and write files directly on the vpssh server; to work on that machine it also goes through SSH with risk-tiered approval.
 - SSH private keys are held by a separate `vpssh-keyd` service: the process the AI runs in cannot read them, only ask for a signature.
+- Optional two-step verification: signing in also needs the 6-digit code from an authenticator app (VPS Manager → Account and security); lost the phone? `sudo vpssh reset-2fa`.
 - You can restrict access to your own devices: `sudo vpssh vpn setup` (WireGuard).
+- Downloaded backups are encrypted with the admin password; even the account the AI runs as on the server cannot open them.
+- Found a security problem? Report it privately, see [SECURITY.md](SECURITY.md).
 - Desktop app: passwords are not saved; the SSH host fingerprint is recorded on first connect and a mismatch is refused later; over an IP address only that server's own root certificate is trusted.
 
 ## FAQ
+
+<a id="first-open"></a>
+<details>
+<summary><b>The system blocked it the first time I opened it (Mac cannot verify it, a blue Windows warning, Android will not install it)</b></summary>
+
+vpssh does not have a paid Apple or Microsoft developer certificate yet, so the system cannot tell who made it and stops it once. The installers are built by GitHub Actions, and the release page lists their SHA-256. Allow it once and it opens normally from then on:
+
+**Mac**
+1. Drag vpssh into Applications and open it. When it says it cannot verify the app is free of malware, click Done (not Move to Trash).
+2. Open System Settings → Privacy & Security, scroll to the bottom, click "Open Anyway" next to "vpssh was blocked to protect your Mac", and confirm with your login password.
+3. On macOS 14 and earlier you can also Control-click vpssh in Applications → Open → Open.
+4. If it says the app "is damaged and can't be opened", run this in Terminal and open it again:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/vpssh.app
+```
+
+**Windows**: on the blue "Windows protected your PC" screen, click "More info" → "Run anyway".
+
+**Android**: open the downloaded apk, allow your browser to "install unknown apps" when asked, then tap Install. If Play Protect warns, tap "Install anyway".
+</details>
+
 
 <details>
 <summary><b>Another site already uses 80/443 on the server. Can I still install?</b></summary>

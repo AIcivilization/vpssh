@@ -1239,6 +1239,118 @@ window.__ModuleLoader__.load({
     }
 
     /** 账号与安全：管理员、修改密码（要当前密码）、访问方式 */
+    /**
+     * 两步验证：登录时除了密码，还要手机验证器 App（Google Authenticator、Microsoft Authenticator…）里的 6 位数字。
+     * 开：输密码 → 扫二维码 → 输一次 6 位数字确认。关：密码 + 6 位数字。手机丢了：sudo vpssh reset-2fa
+     */
+    const TWO_FACTOR_ERRORS = {
+      wrong_password: () => L('密码不对。', 'The password is wrong.'),
+      wrong_code: () => L('6 位数字不对，看验证器里最新的那个。', 'Wrong code; use the latest one in your authenticator app.'),
+      setup_expired: () => L('设置超时了，重新来一遍。', 'Setup timed out; start again.'),
+      rate_limited: () => L('尝试次数过多，请稍后再试。', 'Too many attempts. Try again later.'),
+      already_enabled: () => L('已经开着了，刷新页面看看。', 'It is already on; reload the page.'),
+    }
+
+    function TwoFactorSection() {
+      const status = useAsync(() => gateGet('/gate/2fa'), [])
+      const [step, setStep] = useState('') // '' | password | scan | disable
+      const [password, setPassword] = useState('')
+      const [code, setCode] = useState('')
+      const [setup, setSetup] = useState(null)
+      const [qr, setQr] = useState(null)
+      const [busy, setBusy] = useState(false)
+      const [error, setError] = useState('')
+      const [msg, setMsg] = useState('')
+      const reset = () => {
+        setStep('')
+        setPassword('')
+        setCode('')
+        setSetup(null)
+        setQr(null)
+        setError('')
+      }
+      const call = async (body) => {
+        const res = await fetch('/gate/2fa', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20_000),
+        })
+        const out = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(TWO_FACTOR_ERRORS[out.error] ? TWO_FACTOR_ERRORS[out.error]() : out.error || `HTTP ${res.status}`)
+        return out
+      }
+      const run = async (fn) => {
+        setError('')
+        setBusy(true)
+        try {
+          await fn()
+        } catch (e) {
+          setError(String(e.message || e))
+        } finally {
+          setBusy(false)
+        }
+      }
+      const start = () => run(async () => {
+        const out = await call({ action: 'setup', password })
+        setSetup(out)
+        setQr(await api('qr', { text: out.uri }))
+        setPassword('')
+        setStep('scan')
+      })
+      const enable = () => run(async () => {
+        await call({ action: 'enable', code })
+        reset()
+        setMsg(L('两步验证已打开。下次登录（包括手机、桌面版）要输验证器里的 6 位数字。', 'Two-step verification is on. From the next sign-in (phones and the desktop app too) you will need the 6-digit code.'))
+        status.reload()
+      })
+      const disable = () => run(async () => {
+        await call({ action: 'disable', password, code })
+        reset()
+        setMsg(L('两步验证已关掉，登录只要密码。', 'Two-step verification is off; signing in needs only the password.'))
+        status.reload()
+      })
+      if (!status.data) return null
+      const on = status.data.enabled
+      const small = { ...S.muted, fontSize: 12, lineHeight: 1.7 }
+      return h('div', { style: { borderTop: line, marginTop: 10, paddingTop: 10, fontSize: 12, lineHeight: 1.8 } },
+        h('div', { style: S.spread },
+          h('div', null,
+            h('span', null, L('两步验证：', 'Two-step verification: ')),
+            on ? h(Badge, { tone: 'ok' }, L('已开', 'On')) : h('span', { style: S.muted }, L('没开', 'Off'))),
+          step ? null : h(Btn, { onClick: () => { setMsg(''); setStep(on ? 'disable' : 'password') } }, on ? L('关掉…', 'Turn off…') : L('打开…', 'Turn on…'))),
+        step === '' && !on ? h('div', { style: small }, L('开了以后，登录除了密码还要手机验证器 App 里的 6 位数字：密码泄露了别人也进不来。', 'Once on, signing in also needs the 6-digit code from an authenticator app on your phone, so a leaked password is not enough.')) : null,
+        msg ? h('div', { style: { ...S.note, marginTop: 6, marginBottom: 0 } }, msg) : null,
+        step === 'password' ? h('div', { style: { marginTop: 6 } },
+          h('div', { style: small }, L('手机上先装一个验证器 App（Google Authenticator、Microsoft Authenticator、1Password 等都行）。', 'First install an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password and so on).')),
+          h('div', { style: { ...S.row, marginTop: 6, alignItems: 'flex-end', gap: 8 } },
+            h('div', { style: { maxWidth: 260, flex: 1 } }, h(Field, { label: L('管理员密码', 'Admin password') }, h(Input, { type: 'password', value: password, onChange: setPassword }))),
+            h(Btn, { kind: 'primary', disabled: busy || !password, onClick: start }, L('下一步', 'Next')),
+            h(Btn, { onClick: reset }, L('取消', 'Cancel')))) : null,
+        step === 'scan' && setup ? h('div', { style: { marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 14, alignItems: 'flex-start' } },
+          qr ? h('svg', {
+            viewBox: `-2 -2 ${qr.n + 4} ${qr.n + 4}`, width: 150, height: 150, shapeRendering: 'crispEdges', role: 'img', 'aria-label': L('验证器二维码', 'Authenticator QR code'),
+            style: { flex: 'none', background: '#fff', borderRadius: 6 },
+          }, h('path', { d: qr.d, fill: '#000' })) : null,
+          h('div', { style: { flex: '1 1 240px', minWidth: 0 } },
+            h('div', null, L('1. 用验证器 App 扫这个二维码（扫不了就手动输入密钥）：', '1. Scan this code with the authenticator app (or type the key in by hand):')),
+            h(Copyable, { text: setup.secret }),
+            h('div', { style: { marginTop: 6 } }, L('2. 输入 App 里 vpssh 那一项现在显示的 6 位数字：', '2. Enter the 6-digit code the app now shows for vpssh:')),
+            h('div', { style: { ...S.row, marginTop: 4, gap: 8 } },
+              h('div', { style: { width: 140 } }, h(Input, { value: code, onChange: setCode, placeholder: '123456' })),
+              h(Btn, { kind: 'primary', disabled: busy || code.replace(/\s/g, '').length !== 6, onClick: enable }, L('打开两步验证', 'Turn on')),
+              h(Btn, { onClick: reset }, L('取消', 'Cancel'))),
+            h('div', { style: small }, L('手机丢了、App 删了：在服务器上执行 sudo vpssh reset-2fa 关掉。', 'Lost the phone or deleted the app? Run sudo vpssh reset-2fa on the server to turn it off.')))) : null,
+        step === 'disable' ? h('div', { style: { marginTop: 6 } },
+          h('div', { style: { ...S.row, alignItems: 'flex-end', gap: 8 } },
+            h('div', { style: { maxWidth: 220, flex: 1 } }, h(Field, { label: L('管理员密码', 'Admin password') }, h(Input, { type: 'password', value: password, onChange: setPassword }))),
+            h('div', { style: { width: 140 } }, h(Field, { label: L('6 位数字', '6-digit code') }, h(Input, { value: code, onChange: setCode, placeholder: '123456' }))),
+            h(Btn, { kind: 'danger', disabled: busy || !password || code.replace(/\s/g, '').length !== 6, onClick: disable }, L('关掉', 'Turn off')),
+            h(Btn, { onClick: reset }, L('取消', 'Cancel')))) : null,
+        error ? h('div', { style: { ...S.err, marginTop: 8, marginBottom: 0 } }, error) : null)
+    }
+
     function AccountCard({ health }) {
       const [open, setOpen] = useState(false)
       const [form, setForm] = useState({ current: '', next: '', confirm: '' })
@@ -1292,6 +1404,7 @@ window.__ModuleLoader__.load({
           h('div', null, L('访问方式：', 'Access: '), tunnel
             ? L('仅我的设备（WireGuard）', 'Only my devices (WireGuard)')
             : L('公网可访问，凭账号登录', 'Public, behind the sign-in'))),
+        h(TwoFactorSection),
         done ? h('div', { style: { ...S.note, marginTop: 8 } }, L('密码已修改。这台设备保持登录；其他设备（包括手机）要用新密码重新登录。',
           'Password changed. This device stays signed in; every other device (phones included) must sign in again with the new password.')) : null,
         open

@@ -13,6 +13,7 @@
 #   vpn                 仅我可访问：WireGuard 隧道（setup/add/revoke/list/status/on/off）——保留但不在帮助里列出
 #   tunnel              仅我可访问：SSH 本地端口转发（零安装，打印用法）——保留但不在帮助里列出
 #   backup              打包 DSH_HOME + state 到 backups/（保留最近 3 份）
+#   reset-2fa           关掉两步验证（手机丢了、验证器 App 删了时用）
 #   restore <文件>       从网页「备份与恢复」下载的加密备份恢复（要备份时的管理员密码）
 #   backup-run / restore-run  执行网页上的备份、恢复请求（由 vpssh-backup / vpssh-restore.service 以 root 调用）
 #   selfcheck           手动触发升级回归自检探针
@@ -71,6 +72,24 @@ cmd_backup() {
 		rm -f $old
 		log "$(M "已清理旧备份" "Removed old backups")"
 	fi
+}
+
+# 手机丢了进不去：关掉两步验证（admin.json 去掉 totp），密码照旧。网关每次请求都重读 admin.json，不用重启
+cmd_reset_2fa() {
+	require_root
+	local f="$ROOT/state/admin.json"
+	[[ -f "$f" ]] || die "$(M "还没有管理员账号" "There is no admin account yet")"
+	node -e '
+const fs = require("fs"); const f = process.argv[1];
+const a = JSON.parse(fs.readFileSync(f, "utf8"));
+if (!a.totp) { console.log("off"); process.exit(0); }
+delete a.totp; fs.writeFileSync(f, JSON.stringify(a, null, 2)); console.log("reset");' "$f" >/tmp/vpssh-2fa.$$ || die "$(M "改不了 $f" "Could not update $f")"
+	if [[ "$(cat /tmp/vpssh-2fa.$$)" == off ]]; then
+		log "$(M "两步验证本来就没开" "Two-step verification was not on")"
+	else
+		log "$(M "两步验证已关掉：用密码就能登录，登录后可以在「VPS 管理 → 账号与安全」重新开" "Two-step verification is off: sign in with the password, then turn it on again under VPS Manager → Account and security")"
+	fi
+	rm -f /tmp/vpssh-2fa.$$
 }
 
 # 网页「备份与恢复」和命令行恢复：都交给 gate/backup.js（加密、核对、换数据、自检、失败换回去）
@@ -1261,6 +1280,7 @@ Usage: sudo vpssh <command>
   uninstall [--delete-data]  Uninstall vpssh (backs up first; keeps the data unless --delete-data)
   restart             Restart vpssh
   backup              Back up the data to /opt/vpssh/backups/ (keeps 3)
+  reset-2fa           Turn off two-step verification (lost phone)
   restore <file>      Restore from an encrypted backup downloaded from VPS Manager → Backup and restore
   reset-admin [--yes] Delete the admin account and run first-time setup again (new token)
   setup-url           Print the first-time setup link (with its one-time token)
@@ -1283,6 +1303,7 @@ vpssh 管理命令
   reset-admin [--yes] 删除管理员与向导锁，重新走初始设置（换发令牌）
   setup-url          打印初始设置链接（含一次性令牌）
   backup              备份数据到 /opt/vpssh/backups/（保留 3 份）
+  reset-2fa           关掉两步验证（手机丢了时用）
   restore <文件>       从「VPS 管理 → 备份与恢复」下载的加密备份恢复
   selfcheck           手动触发回归自检探针
   uninstall [--delete-data]  卸载 vpssh（先备份；默认保留数据）
@@ -1300,6 +1321,7 @@ rollback) cmd_rollback ;;
 reset-admin) shift; cmd_reset_admin "$@" ;;
 setup-url) cmd_setup_url ;;
 backup) cmd_backup ;;
+reset-2fa) cmd_reset_2fa ;;
 backup-run) cmd_backup_run ;;
 restore) shift; cmd_restore "$@" ;;
 restore-run) cmd_restore_run ;;

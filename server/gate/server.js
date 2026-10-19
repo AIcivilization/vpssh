@@ -27,6 +27,7 @@ const { spawn } = require("node:child_process");
 // 站点块模板与 gate 同源管理：install.sh、bin/vpssh 也调用它，只此一份
 const { caddySiteBlock, readVpnEnv, localIps } = require("./site-block.js");
 const model = require("./model.js");
+const totp = require("./totp.js");
 
 //#region 配置
 
@@ -740,6 +741,21 @@ ${repoLink()}
 </html>`;
 }
 
+/** 登录第二步：验证器 App 里的 6 位数字（样式同登录页） */
+function loginCodePage({ pending, error, lang = "zh", req }) {
+	const L = translator(lang);
+	const page = loginPage({ error, next: "/", lang, req });
+	const form = `<form method="post" action="/login">
+<input type="hidden" name="pending" value="${esc(pending)}">
+<p class="notice">${L("这个账号开了两步验证。打开手机上的验证器 App，输入 vpssh 那一项的 6 位数字。", "Two-step verification is on for this account. Open the authenticator app on your phone and enter the 6-digit code for vpssh.")}</p>
+<label for="c">${L("验证码", "Code")}</label>
+<input id="c" name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus>
+<button type="submit">${L("验证", "Verify")}</button>
+<p class="sub" style="margin:14px 0 0">${L("手机丢了：在服务器上执行 sudo vpssh reset-2fa 关掉两步验证。", "Lost your phone? Run sudo vpssh reset-2fa on the server to turn two-step verification off.")}</p>
+</form>`;
+	return page.replace(/<form method="post" action="\/login">[\s\S]*?<\/form>/, () => form);
+}
+
 function safeNext(value) {
 	return typeof value === "string" && /^\/(?!\/)/.test(value) && value.length <= 2048 ? value : "/";
 }
@@ -797,6 +813,7 @@ async function handleLogin(req, res) {
 		sendText(res, 400, "bad request");
 		return;
 	}
+	if (form.has("pending")) return handleLoginCode(req, res, form, admin, ip, lang);
 	const username = String(form.get("username") || "");
 	const password = String(form.get("password") || "");
 	const next = safeNext(form.get("next"));
@@ -804,6 +821,12 @@ async function handleLogin(req, res) {
 		recordLoginFailure(ip);
 		log(`login failure from ${ip} for ${JSON.stringify(username)}`);
 		sendHtml(res, 200, loginPage({ error: L("用户名或密码错误。", "Wrong username or password."), next, lang, req }));
+		return;
+	}
+	// 开了两步验证：密码对了还要验证器里的 6 位数字（第二个页面；密码不用再输一遍）
+	if (admin.totp?.secret) {
+		log(`login password ok from ${ip} (${username}); asking for the 2-step code`);
+		sendHtml(res, 200, loginCodePage({ pending: signPending(admin, form.get("remember") === "1", next), lang, req }));
 		return;
 	}
 	clearLoginFailures(ip);
@@ -815,6 +838,128 @@ async function handleLogin(req, res) {
 	});
 	res.end();
 }
+
+//#region 两步验证（验证器 App 的 6 位数字，见 totp.js）
+
+const PENDING_TTL_MS = 5 * 60_000;
+// 用过的 30 秒（防同一个数字被截下来再用一次）；重启 gate 就忘了，最多多认一次
+let lastTotpCounter = -1;
+
+/** 密码已经对了、等 6 位数字的那一步：签名的小票（5 分钟内有效，绑定当前管理员记录，改密码就作废） */
+function signPending(admin, remember, next) {
+	const body = `${b64u(Buffer.from(JSON.stringify({ r: remember ? 1 : 0, n: next, e: Date.now() + PENDING_TTL_MS }), "utf8"))}`;
+	return `${body}.${sessionMac(admin, `pending.${body}`)}`;
+}
+
+function readPending(admin, value) {
+	const [body, mac] = String(value || "").split(".");
+	if (!body || !mac || !timingSafeEqualStr(mac, sessionMac(admin, `pending.${body}`))) return null;
+	try {
+		const p = JSON.parse(Buffer.from(body, "base64url").toString("utf8"));
+		return Number(p.e) > Date.now() ? { remember: p.r === 1, next: safeNext(p.n) } : null;
+	} catch {
+		return null;
+	}
+}
+
+/** 第二步：核对 6 位数字。返回 true = 已经回应（成功跳转或显示错误） */
+function handleLoginCode(req, res, form, admin, ip, lang) {
+	const L = translator(lang);
+	const pending = admin ? readPending(admin, form.get("pending")) : null;
+	if (!pending || !admin.totp?.secret) {
+		sendHtml(res, 200, loginPage({ error: L("登录超时了，请重新输入密码。", "That took too long; enter your password again."), next: "/", lang, req }));
+		return;
+	}
+	const counter = totp.verify(admin.totp.secret, form.get("code"), { notBefore: lastTotpCounter });
+	if (counter < 0) {
+		recordLoginFailure(ip);
+		log(`login 2-step code wrong from ${ip}`);
+		if (loginRateLimited(ip)) {
+			sendHtml(res, 429, loginPage({ error: L("尝试次数过多，请稍后再试。", "Too many attempts. Try again later."), next: "/", lang, req }));
+			return;
+		}
+		sendHtml(res, 200, loginCodePage({ pending: form.get("pending"), error: L("验证码不对（或者已经用过了），看验证器里最新的那个。", "Wrong code (or already used); use the latest one in your authenticator app."), lang, req }));
+		return;
+	}
+	lastTotpCounter = counter;
+	clearLoginFailures(ip);
+	log(`login ok from ${ip} (${admin.username}, 2-step)`);
+	res.writeHead(303, { location: pending.next, "set-cookie": sessionCookieHeader(req, admin, pending.remember), "cache-control": "no-store" });
+	res.end();
+}
+
+/**
+ * 「VPS 管理 → 账号与安全 → 两步验证」
+ * GET：开没开。POST { action: setup, password }：核对密码，给一个新密钥（还没生效）；
+ * { action: enable, code }：用新密钥算出的 6 位数字对了才开；{ action: disable, password, code }：密码和 6 位数字都对才关。
+ * 手机丢了：服务器上 sudo vpssh reset-2fa
+ */
+const totpSetup = new Map(); // user -> { secret, expiresAt }
+
+async function handleTwoFactor(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	const admin = loadAdmin();
+	if (!admin || admin.username !== user) return json(409, { error: "admin_changed" });
+	if (req.method === "GET") return json(200, { enabled: Boolean(admin.totp?.secret), enabledAt: admin.totp?.enabledAt || null });
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	if (!sameOriginWrite(req)) return json(403, { error: "cross_origin" });
+	const ip = clientIp(req);
+	if (loginRateLimited(ip)) return json(429, { error: "rate_limited" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	const password = typeof body?.password === "string" ? body.password : "";
+	const checkPassword = () => {
+		if (verifyAdmin(admin, admin.username, password)) return true;
+		recordLoginFailure(ip);
+		log(`2-step change rejected (wrong password) from ${ip}`);
+		return false;
+	};
+	if (body?.action === "setup") {
+		if (admin.totp?.secret) return json(409, { error: "already_enabled" });
+		if (!checkPassword()) return json(400, { error: "wrong_password" });
+		clearLoginFailures(ip);
+		const secret = totp.generateSecret();
+		totpSetup.set(user, { secret, expiresAt: Date.now() + 15 * 60_000 });
+		return json(200, { secret, uri: totp.otpauthUri({ secret, account: admin.username }) });
+	}
+	if (body?.action === "enable") {
+		const pending = totpSetup.get(user);
+		if (!pending || pending.expiresAt < Date.now()) return json(409, { error: "setup_expired" });
+		const counter = totp.verify(pending.secret, body.code);
+		if (counter < 0) {
+			recordLoginFailure(ip);
+			return json(400, { error: "wrong_code" });
+		}
+		lastTotpCounter = Math.max(lastTotpCounter, counter);
+		totpSetup.delete(user);
+		saveAdminTotp({ secret: pending.secret, enabledAt: Date.now() });
+		clearLoginFailures(ip);
+		log(`2-step verification turned on by ${user}`);
+		return json(200, { ok: true, enabled: true });
+	}
+	if (body?.action === "disable") {
+		if (!admin.totp?.secret) return json(200, { ok: true, enabled: false });
+		if (!checkPassword()) return json(400, { error: "wrong_password" });
+		if (totp.verify(admin.totp.secret, body.code) < 0) {
+			recordLoginFailure(ip);
+			return json(400, { error: "wrong_code" });
+		}
+		saveAdminTotp(null);
+		clearLoginFailures(ip);
+		log(`2-step verification turned off by ${user}`);
+		return json(200, { ok: true, enabled: false });
+	}
+	return json(400, { error: "bad_request" });
+}
+
+//#endregion
 
 function handleLogout(req, res) {
 	res.writeHead(303, {
@@ -1522,7 +1667,18 @@ function writeAdminRecord(username, password) {
 		scrypt: SCRYPT_PARAMS,
 		createdAt: Date.now(),
 	};
+	// 改密码不关两步验证（同一个管理员）；reset-admin 删了 admin.json 才一起没了
+	const previous = loadAdmin();
+	if (previous && previous.username === username && previous.totp) record.totp = previous.totp;
 	fs.writeFileSync(adminPath(), JSON.stringify(record, null, 2), { mode: 0o600 });
+}
+
+function saveAdminTotp(value) {
+	const admin = loadAdmin();
+	if (!admin) return;
+	if (value) admin.totp = value;
+	else delete admin.totp;
+	fs.writeFileSync(adminPath(), JSON.stringify(admin, null, 2), { mode: 0o600 });
 }
 
 /** 安装时用的 registry：install.sh --mirror cn 记在 config.json 里，与 DSH 本体同源。 */
@@ -2488,6 +2644,7 @@ function main() {
 				if (pathname === "/gate/model") return handleModel(req, res, user);
 				if (pathname === "/gate/restart") return handleRestart(req, res, user);
 				if (pathname === "/gate/backup") return handleBackup(req, res, user);
+				if (pathname === "/gate/2fa") return handleTwoFactor(req, res, user);
 				if (pathname === "/gate/restore") return handleRestore(req, res, user);
 				proxyHttp(req, res);
 			})

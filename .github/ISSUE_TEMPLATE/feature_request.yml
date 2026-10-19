@@ -1,0 +1,19 @@
+name: 功能建议 · Feature request
+description: 想要 vpssh 多做点什么 · Something you would like vpssh to do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 想解决什么问题 · What problem would it solve
+      description: 平时怎么用、哪里不方便 · How you use vpssh and what gets in the way
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: 希望怎么做 · What you have in mind
+  - type: textarea
+    id: other
+    attributes:
+      label: 现在怎么凑合 · How you work around it today

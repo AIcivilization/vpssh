@@ -1,0 +1,47 @@
+name: 问题报告 · Bug report
+description: 有东西坏了、和说明不一样 · Something is broken or does not work as described
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        谢谢报告！请别贴密码、密钥、令牌、服务器 IP 等敏感信息。安全漏洞请走「安全问题」私下报告。
+        Thanks! Please do not paste passwords, keys, tokens or server IPs. Security issues go through the private report instead.
+  - type: dropdown
+    id: edition
+    attributes:
+      label: 用的是哪个 · Which edition
+      options:
+        - 网页（服务器上的 vpssh）· Web page (vpssh on the server)
+        - 桌面版 Mac · Desktop app on Mac
+        - 桌面版 Windows · Desktop app on Windows
+        - 安卓 App · Android app
+        - 安装脚本 / 命令行 · Install script / command line
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: vpssh 版本 · vpssh version
+      description: 「VPS 管理 → 版本」或 `sudo vpssh status` · VPS Manager → Version, or `sudo vpssh status`
+      placeholder: "0.3.1"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: 服务器系统 · Server OS
+      placeholder: "Ubuntu 24.04 / Debian 12"
+  - type: textarea
+    id: what
+    attributes:
+      label: 发生了什么 · What happened
+      description: 做了什么、看到了什么、本来应该怎样 · What you did, what you saw, what you expected
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 · Logs
+      description: 安装失败贴安装输出的最后几十行；网页问题可以贴 `sudo journalctl -u vpssh -n 50` · For install failures, the last lines of the output; for the web page, `sudo journalctl -u vpssh -n 50`
+      render: text

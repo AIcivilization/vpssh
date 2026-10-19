@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 安全问题 · Security vulnerability
+    url: https://github.com/AIcivilization/vpssh/security/advisories/new
+    about: 请私下报告，不要公开发 issue · Report privately, please do not open a public issue
+  - name: 问题与讨论 · Questions and ideas
+    url: https://github.com/AIcivilization/vpssh/discussions
+    about: 怎么用、想法、经验分享 · How-to questions, ideas and tips
