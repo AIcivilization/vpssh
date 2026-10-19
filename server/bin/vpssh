@@ -13,6 +13,8 @@
 #   vpn                 仅我可访问：WireGuard 隧道（setup/add/revoke/list/status/on/off）——保留但不在帮助里列出
 #   tunnel              仅我可访问：SSH 本地端口转发（零安装，打印用法）——保留但不在帮助里列出
 #   backup              打包 DSH_HOME + state 到 backups/（保留最近 3 份）
+#   restore <文件>       从网页「备份与恢复」下载的加密备份恢复（要备份时的管理员密码）
+#   backup-run / restore-run  执行网页上的备份、恢复请求（由 vpssh-backup / vpssh-restore.service 以 root 调用）
 #   selfcheck           手动触发升级回归自检探针
 #   install-units       安装浏览器一键升级所需的 systemd 单元（install.sh / update-gate 调用）
 #   upgrade-run         执行浏览器发起的升级请求（由 vpssh-upgrade.service 以 root 调用）
@@ -69,6 +71,26 @@ cmd_backup() {
 		rm -f $old
 		log "$(M "已清理旧备份" "Removed old backups")"
 	fi
+}
+
+# 网页「备份与恢复」和命令行恢复：都交给 gate/backup.js（加密、核对、换数据、自检、失败换回去）
+backup_js() {
+	[[ -f "$ROOT/gate/backup.js" ]] || die "$(M "缺少 $ROOT/gate/backup.js（先 sudo vpssh upgrade）" "$ROOT/gate/backup.js is missing (run sudo vpssh upgrade first)")"
+	VPSSH_ROOT="$ROOT" node "$ROOT/gate/backup.js" "$@"
+}
+
+# 网页发起的：结果写在 state/*.status.json 里给网页看，这里出错不再让 systemd 记一次失败
+cmd_backup_run() { require_root; backup_js backup-run || true; }
+cmd_restore_run() { require_root; backup_js restore-run || true; }
+
+cmd_restore() {
+	require_root
+	local file="${1:-}" pw
+	[[ -n "$file" && -f "$file" ]] || die "$(M "用法：sudo vpssh restore <备份文件>（网页「VPS 管理 → 备份与恢复」下载的 .vpssh-backup）" "Usage: sudo vpssh restore <backup file> (the .vpssh-backup downloaded from VPS Manager → Backup and restore)")"
+	read -rsp "$(M "备份时的管理员密码: " "Admin password at the time of the backup: ")" pw </dev/tty
+	echo
+	printf '%s' "$pw" | backup_js restore "$file"
+	log "$(M "恢复完成。用备份时的管理员密码登录。" "Restored. Sign in with the admin password from the time of the backup.")"
 }
 
 ## endregion
@@ -1140,7 +1162,34 @@ Type=oneshot
 ExecStart=$ROOT/bin/vpssh uninstall-run
 TimeoutStartSec=15min
 UNIT
+	# 网页上的「备份与恢复」：gate 写 state/backup.request、state/restore.request，root 跑 gate/backup.js
+	local kind
+	for kind in backup restore; do
+		cat >"/etc/systemd/system/vpssh-$kind.path" <<UNIT
+# vpssh：监听网页上的${kind}请求（由 vpssh install-units 生成）
+[Unit]
+Description=vpssh: watch for a $kind request from the browser
+
+[Path]
+PathExists=$ROOT/state/$kind.request
+Unit=vpssh-$kind.service
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+		cat >"/etc/systemd/system/vpssh-$kind.service" <<UNIT
+# vpssh：执行网页上发起的${kind}（由 vpssh install-units 生成）
+[Unit]
+Description=vpssh: run a $kind requested from the browser
+
+[Service]
+Type=oneshot
+ExecStart=$ROOT/bin/vpssh $kind-run
+TimeoutStartSec=30min
+UNIT
+	done
 	systemctl daemon-reload
+	systemctl enable --now vpssh-backup.path vpssh-restore.path >/dev/null 2>&1 || die "$(M "启用 vpssh-backup.path / vpssh-restore.path 失败" "Could not enable vpssh-backup.path / vpssh-restore.path")"
 	systemctl enable --now vpssh-upgrade.path >/dev/null 2>&1 || die "$(M "启用 vpssh-upgrade.path 失败" "Could not enable vpssh-upgrade.path")"
 	systemctl enable --now vpssh-uninstall.path >/dev/null 2>&1 || die "$(M "启用 vpssh-uninstall.path 失败" "Could not enable vpssh-uninstall.path")"
 	log "$(M "浏览器一键升级、网页卸载已启用（vpssh-upgrade.path、vpssh-uninstall.path）" "Web upgrade and uninstall enabled (vpssh-upgrade.path, vpssh-uninstall.path)")"
@@ -1212,6 +1261,7 @@ Usage: sudo vpssh <command>
   uninstall [--delete-data]  Uninstall vpssh (backs up first; keeps the data unless --delete-data)
   restart             Restart vpssh
   backup              Back up the data to /opt/vpssh/backups/ (keeps 3)
+  restore <file>      Restore from an encrypted backup downloaded from VPS Manager → Backup and restore
   reset-admin [--yes] Delete the admin account and run first-time setup again (new token)
   setup-url           Print the first-time setup link (with its one-time token)
   vpn ...             "Only my devices" access through WireGuard (sudo vpssh vpn for help)
@@ -1233,6 +1283,7 @@ vpssh 管理命令
   reset-admin [--yes] 删除管理员与向导锁，重新走初始设置（换发令牌）
   setup-url          打印初始设置链接（含一次性令牌）
   backup              备份数据到 /opt/vpssh/backups/（保留 3 份）
+  restore <文件>       从「VPS 管理 → 备份与恢复」下载的加密备份恢复
   selfcheck           手动触发回归自检探针
   uninstall [--delete-data]  卸载 vpssh（先备份；默认保留数据）
   repair [--public]   网页打不开时救援：拉起服务、重写站点、放行端口（--public 关掉「仅我的设备」）
@@ -1249,6 +1300,9 @@ rollback) cmd_rollback ;;
 reset-admin) shift; cmd_reset_admin "$@" ;;
 setup-url) cmd_setup_url ;;
 backup) cmd_backup ;;
+backup-run) cmd_backup_run ;;
+restore) shift; cmd_restore "$@" ;;
+restore-run) cmd_restore_run ;;
 selfcheck) cmd_selfcheck ;;
 repair) shift; cmd_repair "$@" ;;
 uninstall) shift; cmd_uninstall "$@" ;;

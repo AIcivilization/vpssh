@@ -16,5 +16,6 @@ if (location.protocol === "file:") {
 		connect: (form) => ipcRenderer.invoke("connect", form),
 		openExternal: (url) => ipcRenderer.invoke("open-external", url),
 		onJob: (cb) => ipcRenderer.on("job", (_e, ev) => cb(ev)),
+		onUpdate: (cb) => ipcRenderer.on("update", (_e, info) => cb(info)),
 	});
 }

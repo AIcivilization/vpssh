@@ -1,4 +1,4 @@
-# 发布一个 vpssh 版本时（GitHub Release 发布出去）：
+# 发布一个 vpssh 版本时（GitHub Release 发布出去）：先跑全部测试（test.yml），通过了才往下：
 #   1. 服务器版：server/install.sh（一键安装命令
 #      https://github.com/AIcivilization/vpssh/releases/latest/download/install.sh 永远是最新发布版）
 #      和完整安装包 vpssh-<版本>-server-linux.tar.gz（解开后 sudo bash vpssh-<版本>/server/install.sh），都附 SHA256
@@ -23,7 +23,14 @@ permissions:
   contents: write
 
 jobs:
+  # 先跑全部测试（同 test.yml），不过就什么都不发
+  test:
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ inputs.ref || github.event.release.tag_name || inputs.tag }}
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     env:
       TAG: ${{ github.event.release.tag_name || inputs.tag }}

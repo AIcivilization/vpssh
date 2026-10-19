@@ -1359,6 +1359,195 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 备份与恢复：备份在服务器上打包、用管理员密码加密（里面有管机器用的钥匙），下载到自己电脑；
+     * 恢复 = 把下载的文件传上来，root 换掉数据（这台机器的地址、端口不变），先留底、失败自动换回去。
+     * 真正干活的是服务器上 root 跑的 gate/backup.js；这里只发请求、轮询状态
+     */
+    const BACKUP_ERRORS = {
+      wrong_password: () => L('管理员密码不对。', 'The admin password is wrong.'),
+      rate_limited: () => L('尝试次数过多，请稍后再试。', 'Too many attempts. Try again later.'),
+      busy: () => L('正在备份或恢复，等它做完。', 'A backup or restore is already running; wait for it to finish.'),
+      no_upload: () => L('先选备份文件。', 'Choose a backup file first.'),
+      not_backup: () => L('这不是 vpssh 的备份文件（.vpssh-backup）。', 'This is not a vpssh backup file (.vpssh-backup).'),
+      too_large: () => L('文件太大（上限 2 GB）。', 'The file is too large (2 GB at most).'),
+      bad_entry: () => L('备份里有不该有的东西，没有恢复。', 'The backup contains something it should not; nothing was restored.'),
+      selfcheck: () => L('恢复后 vpssh 没通过自检，已经换回原来的数据。', 'vpssh failed its self-check after the restore; the previous data is back.'),
+    }
+    const backupError = (code, fallback) => (BACKUP_ERRORS[code] ? BACKUP_ERRORS[code]() : fallback || code || L('出错了', 'Something went wrong'))
+    const restoreError = (st) => st?.error === 'wrong_password'
+      ? L('备份时的管理员密码不对（或者文件坏了），没有恢复。', 'The admin password from the time of the backup is wrong (or the file is damaged); nothing was restored.')
+      : backupError(st?.error, st?.detail)
+
+    function BackupCard() {
+      const [info, setInfo] = useState(null)
+      const [password, setPassword] = useState('')
+      const [busy, setBusy] = useState('')
+      const [error, setError] = useState('')
+      const [restoreOpen, setRestoreOpen] = useState(false)
+      const [file, setFile] = useState(null)
+      const [progress, setProgress] = useState(null)
+      const [current, setCurrent] = useState('')
+      const [old, setOld] = useState('')
+      const [phase, setPhase] = useState('') // restoring | relogin
+      const fileRef = useRef(null)
+      const load = async () => {
+        const next = await gateGet('/gate/backup')
+        if (next) setInfo(next)
+        return next
+      }
+      useEffect(() => {
+        load()
+      }, [])
+      const post = async (url, body, method = 'POST') => {
+        const res = await fetch(url, {
+          method,
+          credentials: 'same-origin',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(20_000),
+        })
+        const out = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(backupError(out.error, `HTTP ${res.status}`))
+        return out
+      }
+      const download = () => {
+        window.location.href = '/gate/backup?download=1'
+      }
+      const backup = async () => {
+        setError('')
+        setBusy('backup')
+        try {
+          const before = info?.file?.at || 0
+          await post('/gate/backup', { password })
+          setPassword('')
+          for (let i = 0; i < 400; i++) {
+            await new Promise((r) => setTimeout(r, 1500))
+            const next = await load()
+            if (next?.backup?.state === 'failed') throw new Error(backupError(next.backup.error, next.backup.detail))
+            if (next?.backup?.state === 'success' && next.file && next.file.at > before) {
+              download()
+              return
+            }
+          }
+          throw new Error(L('备份太久没做完，稍后刷新看看。', 'The backup is taking too long; refresh later.'))
+        } catch (e) {
+          setError(String(e.message || e))
+        } finally {
+          setBusy('')
+        }
+      }
+      const upload = (f) => new Promise((resolve, reject) => {
+        // 用 XHR：要显示上传进度（fetch 拿不到）
+        const xhr = new XMLHttpRequest()
+        xhr.open('PUT', '/gate/restore')
+        xhr.withCredentials = true
+        xhr.upload.onprogress = (e) => e.lengthComputable && setProgress(Math.round((e.loaded / e.total) * 100))
+        xhr.onload = () => {
+          let body = {}
+          try {
+            body = JSON.parse(xhr.responseText)
+          } catch {
+            // 不是 JSON
+          }
+          if (xhr.status === 200) resolve(body)
+          else reject(new Error(backupError(body.error, `HTTP ${xhr.status}`)))
+        }
+        xhr.onerror = () => reject(new Error(L('上传断了', 'The upload was interrupted')))
+        xhr.send(f)
+      })
+      const restore = async () => {
+        if (!window.confirm(L('用这份备份换掉现在的数据？\n\n对话、机器清单、钥匙、登录账号都换成备份里的；这台服务器的地址、端口不变。\n现在的数据会先留底在服务器的 /opt/vpssh/backups/。\n页面会断开 1–2 分钟，之后用备份时的管理员密码登录。',
+          'Replace the current data with this backup?\n\nConversations, the machine list, keys and the sign-in account all become the backup\'s; this server\'s address and ports stay.\nThe current data is saved first under /opt/vpssh/backups/ on the server.\nThe page goes away for 1–2 minutes; then sign in with the admin password from the time of the backup.'))) return
+        setError('')
+        setBusy('restore')
+        try {
+          setProgress(0)
+          await upload(file)
+          setProgress(null)
+          await post('/gate/restore', { password: current, backupPassword: old })
+          setCurrent('')
+          setOld('')
+          setPhase('restoring')
+          // 恢复中网关会重启；换了会话密钥后这里的登录就失效了（要用备份时的密码重新登录）
+          for (let i = 0; i < 300; i++) {
+            await new Promise((r) => setTimeout(r, 2000))
+            let res
+            try {
+              res = await fetch('/gate/backup', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(10_000) })
+            } catch {
+              continue // 正在重启
+            }
+            if (!String(res.headers.get('content-type') || '').includes('application/json')) {
+              if (res.status >= 500) continue
+              setPhase('relogin')
+              return
+            }
+            const next = await res.json().catch(() => null)
+            if (!next) continue
+            setInfo(next)
+            if (next.restore?.state === 'failed') {
+              setPhase('')
+              throw new Error(restoreError(next.restore))
+            }
+            if (next.restore?.state === 'success') {
+              setPhase('relogin')
+              return
+            }
+          }
+        } catch (e) {
+          setError(String(e.message || e))
+          setProgress(null)
+          fetch('/gate/restore', { method: 'DELETE', credentials: 'same-origin' }).catch(() => {})
+        } finally {
+          setBusy('')
+        }
+      }
+      const last = info?.file
+      const summary = last
+        ? L(`最近一次：${new Date(last.at).toLocaleString()}`, `Last backup: ${new Date(last.at).toLocaleString()}`)
+        : L('还没有备份过', 'No backup yet')
+      if (phase === 'relogin') {
+        return h('div', { style: S.card },
+          h('div', { style: { ...S.h2, marginTop: 0 } }, L('恢复完成', 'Restored')),
+          h('div', { style: { fontSize: 12, lineHeight: 1.8 } }, L('数据已经换成备份里的。请用备份时的管理员密码重新登录。', 'The data now comes from the backup. Sign in again with the admin password from the time of the backup.')),
+          h('div', { style: { ...S.row, marginTop: 8 } }, h(Btn, { kind: 'primary', onClick: () => window.location.reload() }, L('重新登录', 'Sign in again'))))
+      }
+      return h(FoldCard, { id: 'backup', title: L('备份与恢复', 'Backup and restore'), summary },
+        h('div', { style: { fontSize: 12, lineHeight: 1.8 } },
+          h('div', null, L('备份里有：对话和设置、机器清单、管机器用的钥匙、模型来源、登录账号。文件用管理员密码加密，下载到自己电脑上保存。',
+            'A backup holds conversations and settings, the machine list, the key used to reach your machines, model sources and the sign-in account. It is encrypted with the admin password and downloaded to your computer.')),
+          h('div', { style: S.muted }, L('换服务器、服务器坏了：在新服务器上装好 vpssh，再在这里「从备份恢复」。忘了备份时的管理员密码，备份就打不开。',
+            'Moving to a new server, or this one died: install vpssh there, then use "Restore from a backup" here. Without the admin password from the time of the backup, the file cannot be opened.')),
+          last ? h('div', { style: { ...S.row, marginTop: 8, gap: 8 } },
+            h('span', { style: S.mono }, last.name),
+            h('span', { style: S.muted }, fmtBytes(last.size)),
+            h(Btn, { onClick: download }, L('下载', 'Download'))) : null,
+          h('div', { style: { ...S.row, marginTop: 8, alignItems: 'flex-end', gap: 8 } },
+            h('div', { style: { maxWidth: 260, flex: 1 } },
+              h(Field, { label: L('管理员密码', 'Admin password') }, h(Input, { type: 'password', value: password, onChange: setPassword, disabled: Boolean(busy) }))),
+            h(Btn, { kind: 'primary', disabled: Boolean(busy) || !password, onClick: backup }, busy === 'backup' ? L('正在备份…', 'Backing up…') : L('备份并下载', 'Back up and download'))),
+          error ? h('div', { style: { ...S.err, marginTop: 8, marginBottom: 0 } }, error) : null,
+          phase === 'restoring' ? h('div', { style: { ...S.note, marginTop: 8, marginBottom: 0 } }, L('正在恢复，页面会断开一会儿，别关……', 'Restoring; the page will go away for a moment, keep it open…')) : null,
+          h('div', { style: { borderTop: line, marginTop: 12, paddingTop: 10 } },
+            !restoreOpen ? h(Btn, { onClick: () => setRestoreOpen(true), disabled: Boolean(busy) }, L('从备份恢复…', 'Restore from a backup…'))
+              : h('div', null,
+                h('div', { style: { fontWeight: 600, marginBottom: 4 } }, L('从备份恢复', 'Restore from a backup')),
+                h('div', { style: S.muted }, L('对话、机器清单、钥匙、登录账号换成备份里的；这台服务器的地址、端口、证书不变。现在的数据先留底在服务器的 /opt/vpssh/backups/，恢复不成功会自动换回去。',
+                  'Conversations, the machine list, keys and the sign-in account become the backup\'s; this server\'s address, ports and certificate stay. The current data is saved first under /opt/vpssh/backups/ on the server, and comes back automatically if the restore fails.')),
+                h('input', { ref: fileRef, type: 'file', accept: '.vpssh-backup', style: { display: 'none' }, onChange: (e) => setFile(e.target.files?.[0] || null) }),
+                h('div', { style: { ...S.row, marginTop: 8, gap: 8 } },
+                  h(Btn, { onClick: () => fileRef.current?.click(), disabled: Boolean(busy) }, L('选择备份文件', 'Choose backup file')),
+                  file ? h('span', { style: S.mono }, `${file.name} · ${fmtBytes(file.size)}`) : null),
+                h('div', { style: { ...S.grid, marginTop: 8, maxWidth: 540 } },
+                  h(Field, { label: L('现在的管理员密码', 'Current admin password') }, h(Input, { type: 'password', value: current, onChange: setCurrent, disabled: Boolean(busy) })),
+                  h(Field, { label: L('备份时的管理员密码', 'Admin password at backup time'), hint: L('和现在的一样就不用填', 'Leave empty if it is the same') }, h(Input, { type: 'password', value: old, onChange: setOld, disabled: Boolean(busy) }))),
+                progress !== null ? h('div', { style: { ...S.muted, marginTop: 6 } }, L(`上传中 ${progress}%`, `Uploading ${progress}%`)) : null,
+                h('div', { style: { ...S.row, marginTop: 10 } },
+                  h(Btn, { kind: 'danger', disabled: Boolean(busy) || !file || !current, onClick: restore }, busy === 'restore' ? L('恢复中…', 'Restoring…') : L('开始恢复', 'Restore')),
+                  h(Btn, { disabled: Boolean(busy), onClick: () => { setRestoreOpen(false); setFile(null); setCurrent(''); setOld('') } }, L('取消', 'Cancel')))))))
+    }
+
+    /**
      * 模型来源：dsh-model（多家模型汇成一处，直接进 DSH 的模型列表）。启用 / 停用由登录网关在后台做
      * （装插件 → 设置 → 重启 DSH，见 server/gate/model.js），这里只显示状态、进度。
      * 来源登录、选模型、领 API key、更新都在 dsh-model 自己的设置页里。
@@ -1491,6 +1680,7 @@ window.__ModuleLoader__.load({
         ['sudo vpssh status', L('服务状态、版本、健康检查', 'services, versions and health')],
         ['sudo vpssh repair', L('网页打不开时救援：拉起服务、重写站点、放行端口', 'rescue when the page does not open: restarts services, rewrites the site, opens ports')],
         ['sudo vpssh backup', L('备份数据（保留最近 3 份）', 'back up the data (keeps the last 3)')],
+        ['sudo vpssh restore <file>', L('从「备份与恢复」下载的文件恢复（网页打不开时用）', 'restore from a file downloaded under Backup and restore (when the page does not open)')],
         ['sudo vpssh rollback', L('切回上一个版本', 'switch back to the previous version')],
         ['sudo vpssh reset-admin', L('忘记管理员密码时重置', 'reset a forgotten admin password')],
       ]
@@ -1703,6 +1893,7 @@ window.__ModuleLoader__.load({
         gate.data?.health ? h(AccountCard, { health: gate.data.health }) : null,
         gate.data?.health ? h(ModelCard) : null,
         h(VersionCard, { plugin: d?.version, update: gate.data?.update }),
+        gate.data?.health ? h(BackupCard) : null,
 
         settings ? h('div', { style: S.card },
           h('div', { style: S.h2 }, L('全局', 'Global')),

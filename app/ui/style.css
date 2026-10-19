@@ -48,6 +48,8 @@ h1 { font-size: 20px; margin: 0 0 6px; }
 .lead { color: var(--muted); margin: 0 0 22px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 22px; }
 .card + .card { margin-top: 16px; }
+.card.update { display: flex; align-items: center; gap: 16px; padding: 14px 18px; margin-bottom: 16px; border-color: var(--accent); }
+.card.update span { flex: 1; }
 
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .row.wide { grid-template-columns: 1fr 140px; }

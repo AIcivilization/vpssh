@@ -63,6 +63,9 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     /** 验过的网站证书指纹（host:port → sha256）：Caddy 每 12 小时左右换一次网站证书，换了再验一次 */
     private final Map<String, String> verified = new ConcurrentHashMap<>();
+    /** 新版本（Update.check 查到的）；没有就是 null */
+    private volatile JSONObject update;
+    private long updateCheckedAt;
 
     static boolean zh() {
         return Locale.getDefault().getLanguage().startsWith("zh");
@@ -197,6 +200,12 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
+        public String update() {
+            JSONObject u = update;
+            return u == null ? "" : u.toString();
+        }
+
+        @JavascriptInterface
         public void openUrl(String url) {
             ui.post(() -> openExternal(Uri.parse(url)));
         }
@@ -229,6 +238,27 @@ public class MainActivity extends Activity {
         }
         String origin = "https://" + (host.contains(":") ? "[" + host + "]" : host) + (u.getPort() == -1 || u.getPort() == 443 ? "" : ":" + u.getPort());
         return new JSONObject().put("url", origin + "/").put("name", host).put("ca", ca);
+    }
+
+    // —— 新版本提醒：打开 App 时查，之后最多 6 小时查一次 ——
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (System.currentTimeMillis() - updateCheckedAt < 6 * 3_600_000L) return;
+        updateCheckedAt = System.currentTimeMillis();
+        io.submit(() -> {
+            JSONObject u = Update.check(BuildConfig.VERSION_NAME);
+            if (u == null) return;
+            update = u;
+            ui.post(() -> {
+                home.evaluateJavascript("window.onUpdate && window.onUpdate()", null);
+                // 正在用服务器上的页面：提示一下，回到服务器列表就能下载
+                if (web.getVisibility() == View.VISIBLE) {
+                    Toast.makeText(this, t("vpssh 有新版本 " + u.optString("latest") + "，回到服务器列表下载", "vpssh " + u.optString("latest") + " is available; go back to the server list to download it"), Toast.LENGTH_LONG).show();
+                }
+            });
+        });
     }
 
     // —— 页面切换 ——

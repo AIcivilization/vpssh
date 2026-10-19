@@ -51,6 +51,7 @@ vpssh runs on your own server. There is no server of ours, and the AI uses your 
 - **Common tasks without tokens**: look things up or install Docker / Nginx / fail2ban and more from ready-made recipes, with the plan shown before anything runs; `/vps-help` lists every free command.
 - **Gets along with existing sites**: a machine that already serves a site (e.g. dsh-vps with Caddy on 80/443) is fine. vpssh adds one line to Caddy's config; with a domain both share 443, told apart by name.
 - **Fearless upgrades**: one-click upgrades back up first and return to the previous version if anything fails; uninstalling keeps your data by default.
+- **Your data moves with you**: VPS Manager → Backup and restore makes an encrypted backup (locked with the admin password) and downloads it to your computer; on a new server, install vpssh and upload it to get conversations, machines and keys back.
 - **Works without a model key**: turn on Model sources (provided by [dsh-model](https://github.com/AIcivilization/dsh-model)) and WorkBuddy free credits, subscriptions such as Codex / Kimi, and API keys for Gemini / Groq / OpenRouter / SiliconFlow / DeepSeek come together right in the model list.
 - **Chinese and English**: the interface, the installer and the command line follow the system language.
 
@@ -135,7 +136,8 @@ Add `-i ~/.ssh/id_ed25519` for a key, `-p 2222` for another SSH port; `--domain`
 | **Phone and tablet** | Opens on a live, auto-refreshing server status; scan a QR code to sign in, add it to the home screen for full-screen use; on Android there is an app that adds servers by QR code and switches between them |
 | **Account and security** | Password sign-in with rate limiting; set, change or remove a domain at any time; restrict access to your own devices (WireGuard) |
 | **Model sources** (optional) | Turn on dsh-model in one click under VPS Manager → Model sources: 16 sources (WorkBuddy free credits, local models, subscriptions, API keys), failover across sources for same-name models, low-credit notices, daily check-ins; sign in, pick models and get API keys under Settings → dsh-model |
-| **Versions** | Check for updates and upgrade in one click from the web page, with automatic rollback on failure; uninstall from the web page too |
+| **Backup and restore** | One click backs up and downloads conversations, settings, the machine list, the key used to reach your machines, model sources and the sign-in account, encrypted with the admin password; restoring saves the current data first and puts it back if anything fails; restore onto another server works too |
+| **Versions** | Check for updates and upgrade in one click from the web page, with automatic rollback on failure; uninstall from the web page too; the desktop and Android apps tell you when a new version is out |
 
 <p align="center">
   <img src="docs/screenshots/manage.jpg" alt="VPS Manager: machines, phone QR code, account and security, version" width="820">
@@ -166,6 +168,7 @@ sudo vpssh status       # services and configuration at a glance
 sudo vpssh setup-url    # get the first-time setup link again
 sudo vpssh reset-admin  # forgot the admin password: run first-time setup again
 sudo vpssh model enable # turn on Model sources (dsh-model); status to check, disable to turn off
+sudo vpssh restore <file> # restore a backup downloaded under Backup and restore (when the page does not open)
 sudo vpssh uninstall    # backs up first and keeps the data unless you add --delete-data
 ```
 

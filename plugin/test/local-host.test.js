@@ -74,6 +74,12 @@ test('本机登记：有 VPSSH_LOCAL_USER 才做，只做一次，用户删了�
   assert.equal((await readHosts(env)).hosts[first.added].group, '本机', '分组不丢')
   assert.deepEqual(await ensureLocalHost({ env: { ...env, VPSSH_LOCAL_USER: 'root' }, probe: false }), { skipped: 'already-done' })
 
+  // 端口变了（从别的服务器的备份恢复过来）：跟着改
+  const ported = await ensureLocalHost({ env: { ...env, VPSSH_LOCAL_USER: 'root', VPSSH_LOCAL_PORT: '22' }, probe: false })
+  assert.equal(ported.updated, first.added)
+  assert.doesNotMatch(await readFile(paths(env).sshDropin, 'utf8'), /Port 2222/)
+  assert.deepEqual(await ensureLocalHost({ env: { ...env, VPSSH_LOCAL_USER: 'root', VPSSH_LOCAL_PORT: '22' }, probe: false }), { skipped: 'already-done' })
+
   // 用户把它删了：账号再变也不加回来
   await writeHosts({ ...(await readHosts(env)), hosts: {} }, env)
   assert.deepEqual(await ensureLocalHost({ env, probe: false }), { skipped: 'already-done' })

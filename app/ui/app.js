@@ -51,12 +51,31 @@ function go(v, data) {
 	main.replaceChildren();
 	window.scrollTo(0, 0);
 	({ "": Home, install: InstallForm, uninstall: UninstallForm, connect: ConnectForm, progress: Progress, error: LoadError }[v] || Home)(data);
+	const banner = v === "progress" ? null : UpdateBanner();
+	if (banner) main.prepend(banner);
 }
 
 // ———————————————————— 服务器列表 ————————————————————
 
+/** 桌面版有新版本：一条提示，点了在浏览器里下载安装包 */
+function UpdateBanner() {
+	const u = state.update;
+	if (!u?.available) return null;
+	return h("div", { class: "card update" },
+		h("span", null, L(`有新版本 vpssh ${u.latest}（现在是 ${u.current}）。下载后装上覆盖即可，服务器列表、登录状态都留着。`, `vpssh ${u.latest} is available (you have ${u.current}). Install it over this one; your servers and sign-ins are kept.`)),
+		h("button", { class: "primary", onclick: () => api.openExternal(u.url) }, L("下载新版", "Download")));
+}
+
+// 查到新版时直接插到页面最上面：不重画，表单里填了一半的不丢
+api.onUpdate?.((info) => {
+	state.update = info;
+	const banner = view === "progress" || main.querySelector(".card.update") ? null : UpdateBanner();
+	if (banner) main.prepend(banner);
+});
+
 function Home() {
 	main.append(h("h1", null, L("服务器", "Servers")), h("p", { class: "lead" }, L("点「打开」进入这台服务器上的 vpssh。菜单「服务器」里也能随时切换。", "Open a server to use vpssh on it. You can also switch from the Server menu at any time.")));
+
 	if (!state.servers.length) {
 		main.append(h("div", { class: "card empty" },
 			h("p", null, L("还没有服务器。", "No servers yet.")),

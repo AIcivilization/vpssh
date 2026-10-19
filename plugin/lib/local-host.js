@@ -5,7 +5,8 @@
 // VPSSH_LOCAL_USER（账号）、VPSSH_LOCAL_PORT（本机 sshd 端口）。
 // 插件启动时登记一次，之后和管别的机器一样：经 SSH、按风险分级确认。
 // 只登记一次：用户自己把它删了，就不再加回来（记在数据目录的 local-host.json 里）。
-// 登录账号变了（0.1.5 以前用专用账号 vpssh-admin，之后默认用 root）：已登记的那台跟着改，名字、备注、分组不变。
+// 登录账号、端口变了（0.1.5 以前用专用账号 vpssh-admin，之后默认用 root；从别的服务器的备份恢复）：
+// 已登记的那台跟着改，名字、备注、分组不变。
 
 import { access, readFile, writeFile } from 'node:fs/promises'
 import { hostname } from 'node:os'
@@ -16,16 +17,26 @@ import { saveHost } from './onboarding.js'
 
 const exists = (file) => access(file).then(() => true, () => false)
 
-/** 插件写的 SSH 配置里，这台机器用哪个账号登录 */
-export function dropinUser(text, alias) {
+/** 插件写的 SSH 配置里，这台机器的某一项（User、Port） */
+function dropinField(text, alias, key) {
   let inBlock = false
   for (const line of String(text).split('\n')) {
     const host = /^Host\s+(\S+)/.exec(line)
     if (host) inBlock = host[1] === alias
-    const user = inBlock ? /^\s+User\s+(\S+)/.exec(line) : null
-    if (user) return user[1]
+    const m = inBlock ? new RegExp(`^\\s+${key}\\s+(\\S+)`).exec(line) : null
+    if (m) return m[1]
   }
   return ''
+}
+
+/** 插件写的 SSH 配置里，这台机器用哪个账号登录 */
+export function dropinUser(text, alias) {
+  return dropinField(text, alias, 'User')
+}
+
+/** 这台机器的 sshd 端口（没写就是 22） */
+export function dropinPort(text, alias) {
+  return Number(dropinField(text, alias, 'Port')) || 22
 }
 
 /** 给这台机器起别名：主机名；和已有的重名就加 -local */
@@ -45,7 +56,9 @@ export async function ensureLocalHost({ env = process.env, runner, probe = true 
     const doc = await readHosts(env)
     const host = done.alias ? doc.hosts[done.alias] : null
     if (!host) return { skipped: 'already-done' } // 用户删了：不加回来
-    if (dropinUser(await readDropin(env), done.alias) === user) return { skipped: 'already-done' }
+    // 账号、端口都没变就不动。从别的服务器的备份恢复过来时，端口可能不一样
+    const dropin = await readDropin(env)
+    if (dropinUser(dropin, done.alias) === user && dropinPort(dropin, done.alias) === port) return { skipped: 'already-done' }
     const result = await saveHost({ alias: done.alias, hostname: '127.0.0.1', port, user, note: host.note ?? '', group: host.group ?? '', confirm: host.confirm, env, runner, probe })
     return { updated: done.alias, user, probe: result.probe }
   }

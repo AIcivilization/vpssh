@@ -159,9 +159,11 @@ rm -f "$UNIT_FILE"
 systemctl disable --now vpssh-keyd 2>/dev/null || true
 rm -f /etc/systemd/system/vpssh-keyd.service
 # 浏览器一键升级单元
-systemctl disable --now vpssh-upgrade.path vpssh-uninstall.path 2>/dev/null || true
+systemctl disable --now vpssh-upgrade.path vpssh-uninstall.path vpssh-backup.path vpssh-restore.path 2>/dev/null || true
 rm -f /etc/systemd/system/vpssh-upgrade.path /etc/systemd/system/vpssh-upgrade.service \
-	/etc/systemd/system/vpssh-uninstall.path /etc/systemd/system/vpssh-uninstall.service
+	/etc/systemd/system/vpssh-uninstall.path /etc/systemd/system/vpssh-uninstall.service \
+	/etc/systemd/system/vpssh-backup.path /etc/systemd/system/vpssh-backup.service \
+	/etc/systemd/system/vpssh-restore.path /etc/systemd/system/vpssh-restore.service
 systemctl daemon-reload 2>/dev/null || true
 systemctl reset-failed "$SERVICE" 2>/dev/null || true
 

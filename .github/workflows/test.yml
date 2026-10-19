@@ -1,0 +1,82 @@
+# 每次推送、每个 PR 都跑全部测试；发版（release.yml）也先跑这里，不过就不发。
+#   - 服务器版（server/）、命令行（cli/）、插件（plugin/，含用真 DSH 校验工具定义的测试：装 manifest.json 里的 DSH 版本）
+#   - 桌面版（app/）的单元测试
+#   - 安卓版（android/）能编译
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    inputs:
+      ref:
+        description: "测哪个提交（发版时是标签）"
+        type: string
+        required: false
+
+jobs:
+  server-plugin-cli:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: 脚本语法
+        run: |
+          for f in server/install.sh server/uninstall.sh server/bin/vpssh; do bash -n "$f"; done
+          for f in server/gate/*.js server/keyd/*.js; do node --check "$f"; done
+
+      # 插件里有几项测试要用真的 DSH 校验（工具定义、skill、审批）：装这一版 vpssh 测过的那个 DSH
+      - name: 装 DSH（manifest.json 里的版本）
+        run: |
+          v=$(node -p "require('./manifest.json').dsh")
+          mkdir -p "$RUNNER_TEMP/dsh" && cd "$RUNNER_TEMP/dsh"
+          npm init -y >/dev/null
+          npm install --no-audit --no-fund "@deepseek-ai/dsh@$v"
+          echo "DSH_MODULES=$RUNNER_TEMP/dsh/node_modules" >> "$GITHUB_ENV"
+
+      - name: 测试
+        run: |
+          npm ci --prefix plugin --no-audit --no-fund
+          npm test
+
+  desktop:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: 测试
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1" # 单元测试不启动 Electron
+        run: |
+          npm ci --no-audit --no-fund
+          npm test
+
+  android:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: 编译
+        run: ./gradlew --no-daemon assembleDebug

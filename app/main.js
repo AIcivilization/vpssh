@@ -6,7 +6,7 @@
 "use strict";
 
 const path = require("node:path");
-const { app, BrowserWindow, Menu, dialog, ipcMain, session, shell } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, net, session, shell } = require("electron");
 const { Store } = require("./lib/store.js");
 const { validate } = require("./lib/remote.js");
 const { runJob, readServerInfo } = require("./lib/jobs.js");
@@ -14,6 +14,7 @@ const { verifyWithRoot, chainFromElectron } = require("./lib/certs.js");
 const localKey = require("./lib/localkey.js");
 const { localKeysFor } = require("./lib/localkeys.js");
 const { connect: sshConnect, runAsRoot } = require("./lib/ssh.js");
+const { checkLatest } = require("./lib/update.js");
 
 const PARTITION = "persist:vpssh";
 const UI_FILE = path.join(__dirname, "ui", "index.html");
@@ -167,6 +168,43 @@ function setupCertificates() {
 	});
 }
 
+// ———————————————————— 新版本提醒 ————————————————————
+//
+// 启动后查一次、之后每 6 小时一次；有新版：菜单里出现「下载新版」，服务器列表上方有一条提示。
+// 只提醒，不自己装（下载安装包覆盖安装，服务器列表和登录状态都留着）
+
+let update = null;
+const UPDATE_INTERVAL_MS = 6 * 3_600_000;
+
+async function checkForUpdate({ manual = false } = {}) {
+	const next = await checkLatest({ fetchFn: (url, opts) => net.fetch(url, opts), current: app.getVersion() });
+	if (!next.error || !update) update = next;
+	buildMenu();
+	if (win && isLocalPage(win.webContents.getURL())) win.webContents.send("update", update);
+	if (!manual) return;
+	if (next.error) {
+		dialog.showMessageBox(win, { type: "warning", message: L("查不到新版本（离线？）", "Could not check for a new version (offline?)"), detail: next.error });
+	} else if (next.available) {
+		const { response } = await dialog.showMessageBox(win, {
+			type: "info",
+			message: L(`有新版本 vpssh ${next.latest}`, `vpssh ${next.latest} is available`),
+			detail: L(`现在是 ${next.current}。下载安装包，装上覆盖旧版即可（服务器列表、登录状态都留着）。`, `You have ${next.current}. Download the installer and install over this one (your servers and sign-ins are kept).`),
+			buttons: [L("下载新版", "Download"), L("以后再说", "Later")],
+			defaultId: 0,
+			cancelId: 1,
+		});
+		if (response === 0) shell.openExternal(next.url);
+	} else {
+		dialog.showMessageBox(win, { type: "info", message: L(`已是最新版本（${next.current}）`, `You have the latest version (${next.current})`) });
+	}
+}
+
+function updateMenuItem() {
+	return update?.available
+		? { label: L(`下载新版 vpssh ${update.latest}…`, `Download vpssh ${update.latest}…`), click: () => shell.openExternal(update.url) }
+		: { label: L("检查更新…", "Check for updates…"), click: () => checkForUpdate({ manual: true }) };
+}
+
 // ———————————————————— 菜单 ————————————————————
 
 function buildMenu() {
@@ -198,7 +236,12 @@ function buildMenu() {
 		],
 	};
 	const template = [
-		...(process.platform === "darwin" ? [{ role: "appMenu" }] : []),
+		...(process.platform === "darwin"
+			? [{
+				label: app.name,
+				submenu: [{ role: "about" }, updateMenuItem(), { type: "separator" }, { role: "services" }, { type: "separator" }, { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" }, { role: "quit" }],
+			}]
+			: []),
 		serverMenu,
 		{ role: "editMenu" },
 		{
@@ -217,7 +260,7 @@ function buildMenu() {
 			role: "help",
 			submenu: [
 				{ label: L("vpssh 说明（GitHub）", "vpssh on GitHub"), click: () => shell.openExternal("https://github.com/AIcivilization/vpssh#readme") },
-				...(process.platform === "darwin" ? [] : [{ role: "about" }]),
+				...(process.platform === "darwin" ? [] : [updateMenuItem(), { role: "about" }]),
 			],
 		},
 	];
@@ -238,7 +281,7 @@ const publicServer = (s) => ({ id: s.id, name: s.name, url: s.url, ssh: s.ssh ||
 const errText = (err) => (err && err.zh ? L(err.zh, err.en) : String(err?.message || err));
 
 function registerIpc() {
-	handle("state", () => ({ lang, version: app.getVersion(), platform: process.platform, servers: store.list().map(publicServer), jobRunning }));
+	handle("state", () => ({ lang, version: app.getVersion(), platform: process.platform, servers: store.list().map(publicServer), jobRunning, update }));
 	handle("open", (id) => {
 		const s = store.get(id);
 		if (s) openServer(s);
@@ -383,6 +426,10 @@ app.whenReady().then(() => {
 	registerIpc();
 	buildMenu();
 	createWindow();
+	if (!process.argv.includes("--smoke-test")) {
+		setTimeout(() => checkForUpdate(), 5000);
+		setInterval(() => checkForUpdate(), UPDATE_INTERVAL_MS);
+	}
 	app.on("activate", () => {
 		if (!BrowserWindow.getAllWindows().length) createWindow();
 	});

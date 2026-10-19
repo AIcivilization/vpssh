@@ -1936,6 +1936,190 @@ async function handleUpdate(req, res, user) {
 	return json(202, { ok: true, from: info.current, to: info.latest });
 }
 
+//#region 备份与恢复（「VPS 管理 → 备份与恢复」；真正干活的是 root 跑的 gate/backup.js）
+
+const BACKUP_EXT = ".vpssh-backup";
+const RESTORE_UPLOAD_LIMIT = 2 * 1024 ** 3;
+
+function backupDownloadDir() {
+	return path.join(GATE_HOME, "backups", "download");
+}
+
+function readJsonFile(file) {
+	try {
+		return JSON.parse(fs.readFileSync(file, "utf8"));
+	} catch {
+		return null;
+	}
+}
+
+/** 写操作必须是本站页面发起（fetch 必带 Origin），跨站一律拒绝 */
+function sameOriginWrite(req) {
+	try {
+		return req.headers.origin !== void 0 && new URL(req.headers.origin).host === requestAuthority(req.headers) && String(req.headers["sec-fetch-site"] || "") !== "cross-site";
+	} catch {
+		return false;
+	}
+}
+
+function latestBackupFile() {
+	try {
+		const files = fs.readdirSync(backupDownloadDir()).filter((f) => f.endsWith(BACKUP_EXT));
+		const withTime = files.map((name) => ({ name, st: fs.statSync(path.join(backupDownloadDir(), name)) }));
+		withTime.sort((a, b) => b.st.mtimeMs - a.st.mtimeMs);
+		return withTime[0] ? { name: withTime[0].name, size: withTime[0].st.size, at: withTime[0].st.mtimeMs } : null;
+	} catch {
+		return null;
+	}
+}
+
+function backupInfo() {
+	const upload = path.join(STATE_DIR, "restore.upload");
+	let uploaded = null;
+	try {
+		const st = fs.statSync(upload);
+		uploaded = { size: st.size, at: st.mtimeMs };
+	} catch {
+		/* 没传 */
+	}
+	return {
+		backup: readJsonFile(path.join(STATE_DIR, "backup.status.json")),
+		restore: readJsonFile(path.join(STATE_DIR, "restore.status.json")),
+		file: latestBackupFile(),
+		uploaded,
+		requested: { backup: fs.existsSync(path.join(STATE_DIR, "backup.request")), restore: fs.existsSync(path.join(STATE_DIR, "restore.request")) },
+	};
+}
+
+/**
+ * GET /gate/backup：状态；GET /gate/backup?download=1：下载最新的备份（加密的，没有密码打不开）。
+ * POST /gate/backup { password }：核对管理员密码后写 state/backup.request（密码也是备份的加密密码）。
+ * 同一时间只做一件事：备份、恢复、升级在跑就不接新的
+ */
+async function handleBackup(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (req.method === "GET") {
+		if (/[?&]download=1(?:&|$)/.test(req.url || "")) {
+			const f = latestBackupFile();
+			if (!f) return json(404, { error: "no_backup" });
+			res.writeHead(200, {
+				"content-type": "application/octet-stream",
+				"content-length": String(f.size),
+				"content-disposition": `attachment; filename="${f.name}"`,
+				"cache-control": "no-store",
+			});
+			fs.createReadStream(path.join(backupDownloadDir(), f.name)).pipe(res);
+			log(`backup downloaded by ${user}: ${f.name}`);
+			return;
+		}
+		return json(200, backupInfo());
+	}
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	if (!sameOriginWrite(req)) return json(403, { error: "cross_origin" });
+	const ip = clientIp(req);
+	if (loginRateLimited(ip)) return json(429, { error: "rate_limited" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	const info = backupInfo();
+	if (info.requested.backup || info.requested.restore || info.backup?.state === "running" || info.restore?.state === "running") return json(409, { error: "busy" });
+	const admin = loadAdmin();
+	if (!admin || admin.username !== user) return json(409, { error: "admin_changed" });
+	const password = typeof body?.password === "string" ? body.password : "";
+	if (!verifyAdmin(admin, admin.username, password)) {
+		recordLoginFailure(ip);
+		log(`backup rejected (wrong password) from ${ip}`);
+		return json(400, { error: "wrong_password" });
+	}
+	clearLoginFailures(ip);
+	// 请求文件里有密码：root 读到就删（gate/backup.js takeRequest）
+	fs.writeFileSync(path.join(STATE_DIR, "backup.request"), JSON.stringify({ password, by: user, at: Date.now() }) + "\n", { mode: 0o600 });
+	log(`backup requested by ${user}`);
+	return json(202, { ok: true });
+}
+
+/**
+ * PUT /gate/restore：上传备份文件（原样的字节，存成 state/restore.upload）；
+ * POST /gate/restore { password, backupPassword }：核对现在的管理员密码，再交给 root 恢复
+ * （backupPassword 是备份时的管理员密码，不填就当和现在的一样）；DELETE：丢掉传上来的文件
+ */
+async function handleRestore(req, res, user) {
+	const json = (status, body) => {
+		res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" });
+		res.end(JSON.stringify(body));
+	};
+	if (!sameOriginWrite(req)) return json(403, { error: "cross_origin" });
+	const upload = path.join(STATE_DIR, "restore.upload");
+	const info = backupInfo();
+	const busy = info.requested.backup || info.requested.restore || info.backup?.state === "running" || info.restore?.state === "running";
+	if (req.method === "DELETE") {
+		if (!busy) fs.rmSync(upload, { force: true });
+		return json(200, { ok: true });
+	}
+	if (req.method === "PUT") {
+		if (busy) return json(409, { error: "busy" });
+		const part = upload + ".part";
+		const out = fs.createWriteStream(part, { mode: 0o600 });
+		let size = 0;
+		let head = Buffer.alloc(0);
+		const ok = await new Promise((resolve) => {
+			req.on("data", (chunk) => {
+				size += chunk.byteLength;
+				if (head.length < 8) head = Buffer.concat([head, chunk.subarray(0, 8 - head.length)]);
+				if (size > RESTORE_UPLOAD_LIMIT) {
+					req.destroy();
+					resolve("too_large");
+				}
+			});
+			req.pipe(out);
+			out.on("finish", () => resolve(true));
+			req.on("error", () => resolve(false));
+			out.on("error", () => resolve(false));
+		});
+		if (ok !== true || head.toString("latin1") !== "VPSSHBK1") {
+			out.destroy();
+			fs.rmSync(part, { force: true });
+			return json(400, { error: ok === "too_large" ? "too_large" : ok === true ? "not_backup" : "upload_failed" });
+		}
+		fs.renameSync(part, upload);
+		log(`restore file uploaded by ${user} (${size} bytes)`);
+		return json(200, { ok: true, size });
+	}
+	if (req.method !== "POST") return json(405, { error: "method_not_allowed" });
+	const ip = clientIp(req);
+	if (loginRateLimited(ip)) return json(429, { error: "rate_limited" });
+	let body;
+	try {
+		body = JSON.parse(await readBody(req, 16 * 1024));
+	} catch {
+		return json(400, { error: "bad_request" });
+	}
+	if (busy) return json(409, { error: "busy" });
+	if (!info.uploaded) return json(409, { error: "no_upload" });
+	const admin = loadAdmin();
+	if (!admin || admin.username !== user) return json(409, { error: "admin_changed" });
+	const password = typeof body?.password === "string" ? body.password : "";
+	if (!verifyAdmin(admin, admin.username, password)) {
+		recordLoginFailure(ip);
+		log(`restore rejected (wrong password) from ${ip}`);
+		return json(400, { error: "wrong_password" });
+	}
+	clearLoginFailures(ip);
+	const backupPassword = typeof body?.backupPassword === "string" && body.backupPassword ? body.backupPassword : password;
+	fs.rmSync(path.join(STATE_DIR, "restore.status.json"), { force: true });
+	fs.writeFileSync(path.join(STATE_DIR, "restore.request"), JSON.stringify({ password: backupPassword, by: user, at: Date.now() }) + "\n", { mode: 0o600 });
+	log(`restore requested by ${user}`);
+	return json(202, { ok: true });
+}
+
+//#endregion
+
 //#region 根证书（手机 App 扫码连接用）
 
 /**
@@ -2303,6 +2487,8 @@ function main() {
 				if (pathname === "/gate/domain") return handleDomain(req, res, user);
 				if (pathname === "/gate/model") return handleModel(req, res, user);
 				if (pathname === "/gate/restart") return handleRestart(req, res, user);
+				if (pathname === "/gate/backup") return handleBackup(req, res, user);
+				if (pathname === "/gate/restore") return handleRestore(req, res, user);
 				proxyHttp(req, res);
 			})
 			.catch((err) => {

@@ -26,6 +26,12 @@ let manual = false;
 function render() {
 	const servers = JSON.parse(app.list());
 	const banner = message ? h("div", { class: message.kind }, message.text) : null;
+	const u = app.update() ? JSON.parse(app.update()) : null;
+	const updateBox = u
+		? h("div", { class: "update" },
+			h("div", null, L(`有新版本 vpssh ${u.latest}（现在是 ${u.current}）。下载 apk 装上覆盖即可，服务器和登录都留着。`, `vpssh ${u.latest} is available (you have ${u.current}). Install the apk over this one; your servers and sign-ins are kept.`)),
+			h("button", { class: "primary", onclick: () => app.openUrl(u.url) }, L("下载新版", "Download")))
+		: null;
 	const list = servers.length
 		? [h("h2", null, L("服务器", "Servers")), ...servers.map((s) => h("div", { class: "server", onclick: () => app.open(s.id) },
 			h("div", { class: "info" },
@@ -48,6 +54,7 @@ function render() {
 			h("button", { class: "primary wide", onclick: () => add(document.getElementById("addr").value) }, L("添加", "Add")))
 		: null;
 	main.replaceChildren(
+		...(updateBox ? [updateBox] : []),
 		...(banner ? [banner] : []),
 		...list,
 		h("button", { class: "primary wide", onclick: () => { message = null; app.scan(); } }, L("扫码添加", "Scan to add")),
@@ -73,5 +80,9 @@ function add(text) {
 window.onScan = (text) => add(text);
 window.showError = (text) => { message = { kind: "error", text }; render(); };
 window.refresh = () => render();
+window.onUpdate = () => {
+	// 手动添加框里填了一半的不丢：开着就等下次再画
+	if (!manual) render();
+};
 
 render();

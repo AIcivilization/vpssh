@@ -51,6 +51,7 @@ vpssh 装在你自己的服务器上，没有我们的服务器，AI 用你自�
 - **不花 token 的常用操作**：查信息、装 Docker / Nginx / fail2ban 等常见软件走现成的菜谱，先给你看计划再执行；`/vps-help` 列出全部免费命令。
 - **和现有网站和平共处**：机器上已经有网站（比如 dsh-vps 用 Caddy 占着 80/443）也能装，vpssh 只给 Caddy 加一行配置，有域名时两边共用 443、按域名区分。
 - **升级不怕**：一键升级前自动备份，升级失败自动回到原来的版本；卸载默认保留数据。
+- **数据带得走**：「VPS 管理 → 备份与恢复」一键备份（用管理员密码加密）下载到自己电脑；换服务器、服务器坏了，装好 vpssh 后上传恢复，对话、机器清单、钥匙原样回来。
 - **没有模型 key 也能用**：打开「模型来源」（由 [dsh-model](https://github.com/AIcivilization/dsh-model) 提供），WorkBuddy 免费积分、Codex / Kimi 等订阅、Gemini / Groq / OpenRouter / 硅基流动 / DeepSeek 等 API key 汇成一处，直接出现在模型列表里。
 - **中文、英文**：界面、安装过程、命令行提示都跟随系统语言。
 
@@ -135,7 +136,8 @@ npx vpssh install root@服务器IP
 | **手机、平板** | 打开就是持续刷新的服务器状态；扫码登录，加到主屏幕全屏使用；安卓可装 App，扫码添加、多台服务器切换 |
 | **账号与安全** | 登录密码 + 限流；访问地址可以随时设域名、换域名、改回 IP；可以切成「只有我的设备能访问」（WireGuard） |
 | **模型来源**（可选） | 「VPS 管理 → 模型来源」一键启用 dsh-model：16 个来源（WorkBuddy 免费积分、本地模型、各家订阅、API key），同名模型跨来源自动切换、额度快用完时提醒、每日签到；在「设置 → dsh-model」里登录来源、选模型、领 API key |
-| **版本** | 网页里检查更新、一键升级，失败自动回滚；网页里也能卸载 |
+| **备份与恢复** | 一键备份并下载（对话、设置、机器清单、管机器的钥匙、模型来源、登录账号；用管理员密码加密）；上传备份恢复，先把现在的数据留底，失败自动换回去；可以恢复到另一台服务器 |
+| **版本** | 网页里检查更新、一键升级，失败自动回滚；网页里也能卸载；桌面版、安卓 App 有新版时会提醒 |
 
 <p align="center">
   <img src="docs/screenshots/manage.jpg" alt="VPS 管理：机器、手机扫码、账号与安全、版本" width="820">
@@ -166,6 +168,7 @@ sudo vpssh status       # 看各服务和配置
 sudo vpssh setup-url    # 重新取初始设置链接
 sudo vpssh reset-admin  # 忘了管理员密码：重新走初始设置
 sudo vpssh model enable # 启用模型来源（dsh-model）；status 看状态，disable 停用
+sudo vpssh restore <文件> # 用「备份与恢复」下载的备份恢复（网页打不开时）
 sudo vpssh uninstall    # 卸载：先备份，默认保留数据（加 --delete-data 才删）
 ```
 

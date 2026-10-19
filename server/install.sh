@@ -577,6 +577,8 @@ step6_gate() {
 	node --check "$INSTALL_ROOT/gate/site-block.js" || die "$(M "gate/site-block.js 语法检查失败" "gate/site-block.js failed its syntax check")"
 	fetch_file gate/model.js "$INSTALL_ROOT/gate/model.js"
 	node --check "$INSTALL_ROOT/gate/model.js" || die "$(M "gate/model.js 语法检查失败" "gate/model.js failed its syntax check")"
+	fetch_file gate/backup.js "$INSTALL_ROOT/gate/backup.js"
+	node --check "$INSTALL_ROOT/gate/backup.js" || die "$(M "gate/backup.js 语法检查失败" "gate/backup.js failed its syntax check")"
 	fetch_file bin/vpssh "$INSTALL_ROOT/bin/vpssh"
 	# 卸载脚本留一份在服务器上：sudo vpssh uninstall、网页上的「卸载」都用它
 	fetch_file uninstall.sh "$INSTALL_ROOT/uninstall.sh"

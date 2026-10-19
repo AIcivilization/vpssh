@@ -21,6 +21,8 @@ input { width: 100%; font: inherit; padding: 12px; border-radius: 10px; border: 
 .hint { color: var(--muted); font-size: 12.5px; margin-top: 8px; }
 .error { overflow-wrap: anywhere; color: var(--danger); background: rgba(240,100,100,.1); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13.5px; }
 .ok { color: var(--ok); background: rgba(63,192,122,.1); border-radius: 10px; padding: 10px 12px; margin-bottom: 12px; font-size: 13.5px; }
+.update { border: 1px solid var(--accent); border-radius: 10px; padding: 12px; margin-bottom: 12px; font-size: 13.5px; line-height: 1.6; }
+.update button { margin-top: 8px; }
 ol { padding-left: 20px; margin: 8px 0 0; color: var(--muted); font-size: 13px; }
 .foot { color: var(--muted); font-size: 12px; margin-top: 24px; text-align: center; }
 .foot a { color: var(--muted); }
